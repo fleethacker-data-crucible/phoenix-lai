@@ -34,6 +34,7 @@ switch ($Phase) {
     4 { $fail = [Phoenix.Tests.Phase4Gate]::Run($Model, (Join-Path $root 'dev\ref\outputs\greedy.txt'), (Join-Path $root 'dev\ref\outputs\logprobs.tsv'), $out) }
     5 { $fail = [Phoenix.Tests.Phase5Gate]::Run($out) }
     6 { $fail = [Phoenix.Tests.KernelTests]::Run($out); if ($fail.Count -eq 0) { $fail = [Phoenix.Tests.Phase6Gate]::Run($Model, (Join-Path $root 'dev\ref\outputs\greedy.txt'), (Join-Path $root 'dev\ref\outputs\logprobs.tsv'), $out) } }
+    7 { $fail = [Phoenix.Tests.Phase7Gate]::Run((Join-Path $root 'models'), (Join-Path $root 'dev\ref\outputs'), $out) }
     default { Write-Host "No gate for phase $Phase."; exit 2 }
 }
 

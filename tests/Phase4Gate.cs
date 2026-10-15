@@ -87,7 +87,7 @@ namespace Phoenix.Tests
 
         public interface IForward { float[] Forward(int token, int pos); }
 
-        sealed class CpuForward : IForward
+        public sealed class CpuForward : IForward
         {
             readonly LlamaCpu _m;
             public CpuForward(LlamaCpu m) { _m = m; }

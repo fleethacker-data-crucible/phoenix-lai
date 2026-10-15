@@ -25,7 +25,7 @@ namespace Phoenix
         }
     }
 
-    public static unsafe class CpuRef
+    public static unsafe partial class CpuRef
     {
         public const int QK8_0 = 32;
         public const int BlockQ8_0Bytes = 34; // ggml_half d; int8 qs[32]
@@ -35,7 +35,15 @@ namespace Phoenix
         {
             public ushort[] D;
             public sbyte[] Qs;
-            public Q8Activations(int n) { D = new ushort[n / QK8_0]; Qs = new sbyte[n]; }
+            // Q8_K (for k-quant weights): per 256 block a float scale, int8 quants and sums of 16.
+            public float[] KD;
+            public sbyte[] KQs;
+            public short[] KBsums;
+            public Q8Activations(int n)
+            {
+                D = new ushort[n / QK8_0]; Qs = new sbyte[n];
+                if (n % QK_K == 0) { KD = new float[n / QK_K]; KQs = new sbyte[n]; KBsums = new short[n / 16]; }
+            }
         }
 
         public static void QuantizeQ8_0(float[] x, Q8Activations q)
@@ -67,6 +75,9 @@ namespace Phoenix
                 case GgmlType.Q8_0: MatVecQ8_0(w, x, xq, y); return;
                 case GgmlType.F32: MatVecF32(w, x, y); return;
                 case GgmlType.F16: MatVecF16(w, x, y); return;
+                case GgmlType.Q4_K:
+                case GgmlType.Q5_K:
+                case GgmlType.Q6_K: MatVecK(w, x, xq, y); return;
             }
             throw new NotSupportedException("MatVec for " + GgmlTypes.Name(w.Type) + " (" + w.Name + ") is not implemented yet.");
         }
@@ -148,6 +159,11 @@ namespace Phoenix
                 case GgmlType.F16:
                     for (int j = 0; j < w.Cols; j++) dst[j] = Half.ToFloat(((ushort*)row)[j]);
                     return;
+            }
+            if (w.Type == GgmlType.Q4_K || w.Type == GgmlType.Q5_K || w.Type == GgmlType.Q6_K)
+            {
+                DequantizeRowK(w.Type, row, w.Cols, dst);
+                return;
             }
             throw new NotSupportedException("GetRow for " + GgmlTypes.Name(w.Type) + " is not implemented yet.");
         }

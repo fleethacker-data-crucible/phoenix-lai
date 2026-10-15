@@ -1,0 +1,1 @@
+# llama-completion -m models/Llama-3.2-1B-Instruct-Q5_K_M-requant.gguf -p <prompt> -n 24 -c 512 -ngl 0 --temp 0 -s 1 -no-cnv -fa off

@@ -124,6 +124,25 @@ namespace Phoenix
         public uint And(uint a, uint b) { return S.Value(Op.BitwiseAnd, U32, a, b); }
         public uint Or(uint a, uint b) { return S.Value(Op.BitwiseOr, U32, a, b); }
         public uint Shl(uint a, uint n) { return S.Value(Op.ShiftLeftLogical, U32, a, n); }
+        public uint Shr(uint a, uint n) { return S.Value(Op.ShiftRightLogical, U32, a, n); }
+        public uint ISubS(uint a, uint b) { return S.Value(Op.ISub, I32, a, b); }
+        public uint AsI(uint u) { return S.Value(Op.Bitcast, I32, u); }
+        public uint SMin(uint a, uint b) { return S.Glsl(I32, Spv.GlslSMin, a, b); }
+        public uint RoundEven(uint f) { return S.Glsl(F32, Spv.GlslRoundEven, f); }
+
+        // Byte at byteIndex of a u32 buffer (little-endian), as u32.
+        public uint ByteAt(Buf b, uint byteIndex)
+        {
+            uint word = Ld(b, Shr(byteIndex, C(2)));
+            return And(Shr(word, IMul(And(byteIndex, C(3)), C(8))), C(0xFF));
+        }
+
+        // fp16 in the low (high=false) or high half of a word, as f32.
+        public uint HalfOf(uint word, bool high)
+        {
+            uint v2 = S.Glsl(S.TypeVector(F32, 2), Spv.GlslUnpackHalf2x16, word);
+            return S.Value(Op.CompositeExtract, F32, v2, high ? 1u : 0u);
+        }
         public uint IAddS(uint a, uint b) { return S.Value(Op.IAdd, I32, a, b); }
         public uint IMulS(uint a, uint b) { return S.Value(Op.IMul, I32, a, b); }
 
