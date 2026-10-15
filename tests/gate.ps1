@@ -30,6 +30,8 @@ $Model = (Resolve-Path $Model).Path
 $out = [Console]::Out
 switch ($Phase) {
     2 { $fail = [Phoenix.Tests.Phase2Gate]::Run($Model, (Join-Path $root 'dev\ref\outputs\load-log.txt'), $out) }
+    3 { $fail = [Phoenix.Tests.Phase3Gate]::Run($Model, (Join-Path $root 'dev\ref\samples.txt'), (Join-Path $root 'dev\ref\outputs\tokens.tsv'), $out) }
+    4 { $fail = [Phoenix.Tests.Phase4Gate]::Run($Model, (Join-Path $root 'dev\ref\outputs\greedy.txt'), (Join-Path $root 'dev\ref\outputs\logprobs.tsv'), $out) }
     default { Write-Host "No gate for phase $Phase."; exit 2 }
 }
 
