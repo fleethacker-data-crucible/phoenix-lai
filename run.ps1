@@ -5,10 +5,11 @@
 param(
     [switch]$CheckOnly,
     [switch]$SmokeTest,
-    [string]$Root = $PSScriptRoot
+    [string]$Root
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $Root) { $Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
 
 if ($PSVersionTable.PSVersion.Major -ne 5) {
     Write-Host -ForegroundColor Red "Run with Windows PowerShell 5.1 (powershell.exe), not $($PSVersionTable.PSVersion)."
