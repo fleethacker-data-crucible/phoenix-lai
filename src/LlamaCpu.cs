@@ -10,6 +10,7 @@ namespace Phoenix
     {
         public readonly int NEmbd, NFf, NLayer, NHead, NHeadKv, HeadDim, NRot, NVocab, MaxCtx;
         public readonly float Eps, RopeBase;
+        public readonly ModelConfig Config;
 
         sealed class Layer
         {
@@ -30,18 +31,9 @@ namespace Phoenix
 
         public LlamaCpu(GgufFile g, int maxCtx)
         {
-            string arch = g.GetString("general.architecture");
-            if (arch != "llama") throw new NotSupportedException("Architecture '" + arch + "' is not supported yet.");
-
-            NEmbd = (int)g.GetInt("llama.embedding_length");
-            NFf = (int)g.GetInt("llama.feed_forward_length");
-            NLayer = (int)g.GetInt("llama.block_count");
-            NHead = (int)g.GetInt("llama.attention.head_count");
-            NHeadKv = g.Has("llama.attention.head_count_kv") ? (int)g.GetInt("llama.attention.head_count_kv") : NHead;
-            HeadDim = g.Has("llama.attention.key_length") ? (int)g.GetInt("llama.attention.key_length") : NEmbd / NHead;
-            NRot = g.Has("llama.rope.dimension_count") ? (int)g.GetInt("llama.rope.dimension_count") : HeadDim;
-            Eps = g.GetFloat("llama.attention.layer_norm_rms_epsilon");
-            RopeBase = g.Has("llama.rope.freq_base") ? g.GetFloat("llama.rope.freq_base") : 10000f;
+            Config = ModelConfig.FromGguf(g);
+            NEmbd = Config.NEmbd; NFf = Config.NFf; NLayer = Config.NLayer; NHead = Config.NHead; NHeadKv = Config.NHeadKv;
+            HeadDim = Config.HeadDim; NRot = Config.NRot; Eps = Config.Eps; RopeBase = Config.RopeBase;
             MaxCtx = maxCtx;
             _kvDim = NHeadKv * HeadDim;
 
@@ -103,7 +95,8 @@ namespace Phoenix
         {
             if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
             CpuRef.GetRow(_tokEmbd, token, _x);
-            CpuRef.RopeTable(pos, NRot, RopeBase, _ropeFreqs, _cs);
+            Config.RopeTable(pos, _ropeFreqs, _cs);
+            float attnTemp = Config.AttnTemperature(pos);
 
             int group = NHead / NHeadKv;
             float scale = 1.0f / (float)Math.Sqrt(HeadDim);
@@ -119,6 +112,7 @@ namespace Phoenix
                 CpuRef.MatVec(l.Wk, _xb, _qEmbd, _k);
                 CpuRef.MatVec(l.Wv, _xb, _qEmbd, _v);
                 CpuRef.Rope(_q, NHead, HeadDim, NRot, _cs);
+                if (attnTemp != 1f) for (int i = 0; i < _q.Length; i++) _q[i] *= attnTemp;
                 CpuRef.Rope(_k, NHeadKv, HeadDim, NRot, _cs);
 
                 int cOff = pos * _kvDim;
@@ -176,6 +170,14 @@ namespace Phoenix
             CpuRef.RmsNorm(_x, _outputNorm, Eps, _xb);
             CpuRef.MatVec(_output, _xb, _qEmbd, _logits);
             return _logits;
+        }
+
+        // Feeds tokens[start .. start+count) at positions start.. ; returns the logits after the last one.
+        public float[] Prefill(IList<int> tokens, int start, int count)
+        {
+            float[] logits = null;
+            for (int i = start; i < start + count; i++) logits = Forward(tokens[i], i);
+            return logits;
         }
 
         public int ContextLength { get { return MaxCtx; } }

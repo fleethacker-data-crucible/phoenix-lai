@@ -20,6 +20,10 @@ namespace Phoenix
                 case GgmlType.Q4_K: return BlockQ4_KBytes;
                 case GgmlType.Q5_K: return BlockQ5_KBytes;
                 case GgmlType.Q6_K: return BlockQ6_KBytes;
+                case GgmlType.Q3_K: return BlockQ3_KBytes;
+                case GgmlType.IQ2_XXS: return BlockIQ2_XXSBytes;
+                case GgmlType.IQ2_S: return BlockIQ2_SBytes;
+                case GgmlType.IQ3_S: return BlockIQ3_SBytes;
             }
             throw new NotSupportedException(GgmlTypes.Name(t) + " is not a k-quant.");
         }
@@ -85,6 +89,12 @@ namespace Phoenix
         // For Q4_K/Q5_K also returns 8 scales and 8 mins; for Q6_K 16 signed scales.
         static void UnpackK(GgmlType t, byte* blk, sbyte* a, int* scales, int* mins, out float d, out float dmin)
         {
+            if (t == GgmlType.Q3_K)
+            {
+                UnpackQ3K(blk, a, scales, out d);
+                dmin = 0;
+                return;
+            }
             if (t == GgmlType.Q6_K)
             {
                 byte* ql = blk; byte* qh = blk + 128; sbyte* sc = (sbyte*)(blk + 192);
@@ -138,6 +148,7 @@ namespace Phoenix
 
         public static void DequantizeRowK(GgmlType t, byte* row, int n, float[] dst)
         {
+            if (IsIQ(t)) throw new NotSupportedException("Dequantizing " + GgmlTypes.Name(t) + " rows is not implemented.");
             int nb = n / QK_K, bytes = KBlockBytes(t);
             sbyte* a = stackalloc sbyte[QK_K];
             int* scales = stackalloc int[16];
@@ -147,7 +158,7 @@ namespace Phoenix
                 float d, dmin;
                 UnpackK(t, row + (long)b * bytes, a, scales, mins, out d, out dmin);
                 int o = b * QK_K;
-                if (t == GgmlType.Q6_K)
+                if (t == GgmlType.Q6_K || t == GgmlType.Q3_K)
                 {
                     for (int e = 0; e < QK_K; e++) dst[o + e] = d * scales[e / 16] * a[e];
                 }
@@ -169,7 +180,8 @@ namespace Phoenix
             int* aux32 = stackalloc int[8];
             for (int l = 0; l < 8; l++) sums[l] = 0;
             float sumf = 0;
-            int sub = t == GgmlType.Q6_K ? 16 : 32;   // elements per scale
+            bool sixteen = t == GgmlType.Q6_K || t == GgmlType.Q3_K;
+            int sub = sixteen ? 16 : 32;   // elements per scale
 
             for (int i = 0; i < nb; i++)
             {
@@ -187,7 +199,7 @@ namespace Phoenix
                 float dd = d * yd;
                 for (int l = 0; l < 8; l++) sums[l] += dd * aux32[l];
 
-                if (t != GgmlType.Q6_K)
+                if (!sixteen)
                 {
                     int sumi = 0;
                     for (int j = 0; j < QK_K / 16; j++) sumi += y.KBsums[i * 16 + j] * mins[j / 2];
@@ -212,7 +224,8 @@ namespace Phoenix
                 delegate(int r, ParallelLoopState st, IntPtr[] scratch)
                 {
                     byte* s0 = (byte*)scratch[0];
-                    y[r] = DotK(t, (byte*)basePtr + r * rowBytes, nb, bytes, xq, (sbyte*)s0, (int*)(s0 + QK_K), (int*)(s0 + QK_K + 64));
+                    byte* row = (byte*)basePtr + r * rowBytes;
+                    y[r] = IsIQ(t) ? DotIQ(t, row, nb, xq) : DotK(t, row, nb, bytes, xq, (sbyte*)s0, (int*)(s0 + QK_K), (int*)(s0 + QK_K + 64));
                     return scratch;
                 },
                 delegate(IntPtr[] scratch) { System.Runtime.InteropServices.Marshal.FreeHGlobal(scratch[0]); });

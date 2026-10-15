@@ -73,8 +73,10 @@ namespace Phoenix.Tests
             CpuRef.RopeTable(7, nRot, 500000f, null, cs);
             List<GpuBuffer> keep = new List<GpuBuffer>();
             GpuBuffer gx = Up(gpu, keep, x), gcs = Up(gpu, keep, cs);
-            Run1(gpu, Kernels.Rope(), new GpuBuffer[] { gx, gcs }, new uint[] { (uint)nHeads, (uint)headDim, (uint)(nRot / 2) }, (uint)((nHeads * nRot / 2 + 63) / 64));
+            float post = 1.25f;
+            Run1(gpu, Kernels.Rope(), new GpuBuffer[] { gx, gcs }, new uint[] { (uint)nHeads, (uint)headDim, (uint)(nRot / 2), *(uint*)&post }, (uint)((nHeads * nRot / 2 + 63) / 64));
             CpuRef.Rope(x, nHeads, headDim, nRot, cs);
+            for (int i = 0; i < x.Length; i++) x[i] *= post;
             Report("rope", x, Down(gx, x.Length), 1e-5f, fail, output);
             foreach (GpuBuffer b in keep) b.Dispose();
         }
@@ -155,7 +157,7 @@ namespace Phoenix.Tests
             CpuRef.QuantizeQ8_0(x, q);
             List<GpuBuffer> keep = new List<GpuBuffer>();
             GpuBuffer gx = Up(gpu, keep, x), gq = Up(gpu, keep, new float[n / 4]), gd = Up(gpu, keep, new float[nb]);
-            Run1(gpu, Kernels.QuantizeQ8(), new GpuBuffer[] { gx, gq, gd }, new uint[] { (uint)nb }, (uint)((nb + 63) / 64));
+            Run1(gpu, KernelsQuant.Q80(), new GpuBuffer[] { gx, gq, gd }, new uint[] { (uint)nb, (uint)n, 0 }, (uint)((nb + 7) / 8));
             float[] d = Down(gd, nb), words = Down(gq, n / 4);
             int qBad = 0, dBad = 0;
             for (int b = 0; b < nb; b++) if (d[b] != Half.ToFloat(q.D[b])) dBad++;
@@ -165,8 +167,33 @@ namespace Phoenix.Tests
                 sbyte v = (sbyte)(w >> (8 * (i % 4)));
                 if (v != q.Qs[i]) qBad++;
             }
-            output.WriteLine("  {0,-10} scale mismatches {1}/{2}, quant mismatches {3}/{4}", "quantize", dBad, nb, qBad, n);
+            output.WriteLine("  {0,-10} scale mismatches {1}/{2}, quant mismatches {3}/{4}", "quant q8_0", dBad, nb, qBad, n);
             if (dBad > 0 || qBad > n / 1000) fail.Add("quantize: " + dBad + " scale and " + qBad + " value mismatches");
+            foreach (GpuBuffer b in keep) b.Dispose();
+            QuantK(gpu, fail, output);
+        }
+
+        static void QuantK(GpuDevice gpu, List<string> fail, TextWriter output)
+        {
+            Random r = new Random(6);
+            int n = 4096, nb = n / 256;
+            float[] x = Rand(r, n, 3);
+            x[300] = 5f; x[301] = -5f;   // a tie in max |x| (first index must win)
+            CpuRef.Q8Activations q = new CpuRef.Q8Activations(n);
+            CpuRef.QuantizeQ8_K(x, q);
+            List<GpuBuffer> keep = new List<GpuBuffer>();
+            GpuBuffer gx = Up(gpu, keep, x), gq = Up(gpu, keep, new float[n / 4]), gd = Up(gpu, keep, new float[nb]);
+            Run1(gpu, KernelsQuant.Q8K(), new GpuBuffer[] { gx, gq, gd }, new uint[] { (uint)nb, (uint)n, 0 }, (uint)nb);
+            float[] d = Down(gd, nb), words = Down(gq, n / 4);
+            int qBad = 0, dBad = 0;
+            for (int b = 0; b < nb; b++) if (Math.Abs(d[b] - q.KD[b]) > 1e-6f * Math.Abs(q.KD[b])) dBad++;
+            for (int i = 0; i < n; i++)
+            {
+                uint w = BitConverter.ToUInt32(BitConverter.GetBytes(words[i / 4]), 0);
+                if ((sbyte)(w >> (8 * (i % 4))) != q.KQs[i]) qBad++;
+            }
+            output.WriteLine("  {0,-10} scale mismatches {1}/{2}, quant mismatches {3}/{4}", "quant q8_K", dBad, nb, qBad, n);
+            if (dBad > 0 || qBad > 0) fail.Add("quant q8_K: " + dBad + " scale and " + qBad + " value mismatches");
             foreach (GpuBuffer b in keep) b.Dispose();
         }
     }

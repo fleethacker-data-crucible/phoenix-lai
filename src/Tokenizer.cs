@@ -17,6 +17,10 @@ namespace Phoenix
         const string Llama3Pattern =
             @"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+        // Mistral "tekken" pre-tokenizer (original tokenizer.json form; .NET supports the Unicode classes directly).
+        const string TekkenPattern =
+            @"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
         public readonly string[] Tokens;
         public readonly int[] TokenTypes;
         public readonly int BosId = -1, EosId = -1;
@@ -49,7 +53,10 @@ namespace Phoenix
             string model = g.GetString("tokenizer.ggml.model");
             if (model != "gpt2") throw new NotSupportedException("Tokenizer model '" + model + "' is not supported yet.");
             string pre = g.Has("tokenizer.ggml.pre") ? g.GetString("tokenizer.ggml.pre") : "default";
-            if (pre != "llama-bpe") throw new NotSupportedException("Pre-tokenizer '" + pre + "' is not supported yet.");
+            string pattern;
+            if (pre == "llama-bpe") pattern = Llama3Pattern;
+            else if (pre == "tekken") pattern = TekkenPattern;
+            else throw new NotSupportedException("Pre-tokenizer '" + pre + "' is not supported yet.");
 
             Tokens = g.GetArray<string>("tokenizer.ggml.tokens");
             TokenTypes = g.Has("tokenizer.ggml.token_type") ? g.GetArray<int>("tokenizer.ggml.token_type") : null;
@@ -73,7 +80,7 @@ namespace Phoenix
                         _specials.Add(new KeyValuePair<string, int>(Tokens[i], i));
             _specials.Sort(delegate(KeyValuePair<string, int> a, KeyValuePair<string, int> b) { return b.Key.Length.CompareTo(a.Key.Length); });
 
-            _pre = new Regex(Llama3Pattern, RegexOptions.CultureInvariant);
+            _pre = new Regex(pattern, RegexOptions.CultureInvariant);
         }
 
         public int VocabSize { get { return Tokens.Length; } }
