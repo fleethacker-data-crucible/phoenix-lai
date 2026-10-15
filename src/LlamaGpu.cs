@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace Phoenix
 {
-    public sealed unsafe class LlamaGpu : IDisposable
+    public sealed unsafe class LlamaGpu : ILanguageModel
     {
         public readonly int NEmbd, NFf, NLayer, NHead, NHeadKv, HeadDim, NRot, NVocab, MaxCtx;
         public readonly float Eps, RopeBase;
@@ -326,6 +326,9 @@ namespace Phoenix
 
         // Starts a new sequence. The KV cache needs no clearing: attention only reads positions < pos + 1.
         public void Reset() { }
+
+        public int ContextLength { get { return MaxCtx; } }
+        public int VocabSize { get { return NVocab; } }
 
         public void Dispose()
         {
