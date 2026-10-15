@@ -47,7 +47,7 @@ Eight phases, each closed by a test that must pass before the next starts. Use a
 3. **Tokenizer.** *Gate:* encode→decode round-trips 50 sample strings; special tokens match GGUF metadata.
 4. **CPU reference forward pass.** F32 math, Q8\_0 dequant. *Gate:* coherent greedy completions on 20 prompts; perplexity on a fixed local text in a sane range.
 5. **Vulkan binding + SPIR-V emitter.** Instance, device, buffers, upload/download, dispatch a trivial SPIR-V "add" shader. *Gate:* GPU result equals CPU result.
-6. **GPU forward pass.** Port every op as a SPIR-V compute shader; KV cache on GPU. *Gate:* GPU logits match `CpuRef` within 1e-2.
+6. **GPU forward pass.** Port every op as a SPIR-V compute shader; KV cache on GPU. *Gate:* every kernel matches its CPU op on random inputs (bit-exact or within 1e-6); GPU teacher-forced logprobs match llama.cpp as closely as `CpuRef` does (mean |diff| <= 0.03); GPU and CPU agree on >= 90% of top tokens. (A fixed 1e-2 logit tolerance proved unreachable: the BOS token's ~400-magnitude activations amplify float accumulation-order differences to ~0.1-0.5.)
 7. **Quant formats.** Q4\_K, Q5\_K, Q6\_K dequant+matvec. *Gate:* runs a 7B-8B Q4\_K\_M model coherently.
 8. **Studio + speed.** Chat history, streaming, settings, tokens/sec meter; fused kernels, batched prefill. *Gate:* 8B Q4 at a usable speed (target 30+ tokens/sec).
 

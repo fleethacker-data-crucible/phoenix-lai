@@ -49,7 +49,7 @@ namespace Phoenix.Tests
                     }
                 }
                 sw.Stop();
-                CompareLogprobs(g, tok, cases, logprobsPath, fail, output);
+                CompareLogprobs(tok, cases, logprobsPath, delegate { return new CpuForward(new LlamaCpu(g, 128)); }, fail, output);
                 output.WriteLine("greedy: {0} cases, {1} forward passes in {2:N1} s ({3:N2} tokens/s on CPU)",
                     cases.Count, totalTokens, sw.Elapsed.TotalSeconds, totalTokens / sw.Elapsed.TotalSeconds);
             }
@@ -82,7 +82,21 @@ namespace Phoenix.Tests
         // Mean is the main signal; single positions near a tie can move ~0.25 from accumulation order alone.
         const double MaxLogprobDiff = 0.3, MeanLogprobDiff = 0.03;
 
-        static void CompareLogprobs(GgufFile g, Tokenizer tok, List<KeyValuePair<string, string>> cases, string path, List<string> fail, TextWriter output)
+        // A fresh model (empty KV cache) per case.
+        public delegate IForward ModelFactory();
+
+        public interface IForward { float[] Forward(int token, int pos); }
+
+        sealed class CpuForward : IForward
+        {
+            readonly LlamaCpu _m;
+            public CpuForward(LlamaCpu m) { _m = m; }
+            public float[] Forward(int token, int pos) { return _m.Forward(token, pos); }
+        }
+
+        public static List<KeyValuePair<string, string>> Cases(string greedyPath) { return LoadCases(greedyPath); }
+
+        public static void CompareLogprobs(Tokenizer tok, List<KeyValuePair<string, string>> cases, string path, ModelFactory newModel, List<string> fail, TextWriter output)
         {
             Dictionary<int, List<double[]>> byCase = new Dictionary<int, List<double[]>>(); // {pos, token, logprob}
             foreach (string raw in File.ReadAllLines(path, Encoding.UTF8))
@@ -101,7 +115,7 @@ namespace Phoenix.Tests
                 List<double[]> refs;
                 if (!byCase.TryGetValue(c, out refs)) { fail.Add("no logprob reference for case " + c); continue; }
                 List<int> ids = tok.Encode(cases[c].Value.Trim(), true, true);
-                LlamaCpu model = new LlamaCpu(g, 128);
+                IForward model = newModel();
                 double[] lp = new double[ids.Count];
                 for (int p = 0; p + 1 < ids.Count; p++)
                 {

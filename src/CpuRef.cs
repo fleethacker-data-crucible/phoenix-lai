@@ -162,24 +162,34 @@ namespace Phoenix
             for (int i = 0; i < x.Length; i++) y[i] = x[i] * scale * weight[i];
         }
 
-        // Llama "normal" RoPE: rotates adjacent pairs (x[2i], x[2i+1]) in each head.
+        // cos/sin for each rotated pair at position pos: cs[2i] = cos, cs[2i+1] = sin.
         // freqFactors (rope_freqs.weight) divide theta, as in ggml's rope with freq_factors.
-        public static void Rope(float[] x, int nHeads, int headDim, int nRot, int pos, float freqBase, float* freqFactors)
+        public static void RopeTable(int pos, int nRot, float freqBase, float* freqFactors, float[] cs)
         {
             float thetaScale = (float)Math.Pow(freqBase, -2.0 / nRot);
+            float theta = pos;
+            for (int i0 = 0; i0 < nRot; i0 += 2)
+            {
+                float ff = freqFactors != null ? freqFactors[i0 / 2] : 1.0f;
+                float t = theta / ff;
+                cs[i0] = (float)Math.Cos(t);
+                cs[i0 + 1] = (float)Math.Sin(t);
+                theta *= thetaScale;
+            }
+        }
+
+        // Llama "normal" RoPE: rotates adjacent pairs (x[2i], x[2i+1]) in each head.
+        public static void Rope(float[] x, int nHeads, int headDim, int nRot, float[] cs)
+        {
             for (int h = 0; h < nHeads; h++)
             {
                 int o = h * headDim;
-                float theta = pos;
                 for (int i0 = 0; i0 < nRot; i0 += 2)
                 {
-                    float ff = freqFactors != null ? freqFactors[i0 / 2] : 1.0f;
-                    float t = theta / ff;
-                    float c = (float)Math.Cos(t), s = (float)Math.Sin(t);
+                    float c = cs[i0], s = cs[i0 + 1];
                     float a = x[o + i0], b = x[o + i0 + 1];
                     x[o + i0] = a * c - b * s;
                     x[o + i0 + 1] = a * s + b * c;
-                    theta *= thetaScale;
                 }
             }
         }
