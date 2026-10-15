@@ -49,7 +49,7 @@ function Test-Locality {
     foreach ($b in $binaries) { $failures.Add("Binary in repo: $($b.FullName)") }
 
     foreach ($f in $files) {
-        $lines = Get-Content $f.FullName
+        $lines = @(Get-Content $f.FullName)
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $line = $lines[$i]
             $where = "$($f.Name):$($i + 1)"
@@ -67,6 +67,9 @@ function Test-Locality {
                 if (-not $dll.EndsWith('.dll')) { $dll += '.dll' }
                 if ($DllAllowlist -notcontains $dll) { $failures.Add("$where imports '$dll' (not on allowlist)") }
             }
+
+            # 3b. The target must be a string literal so the allowlist check above can see it.
+            if ($line -match '(DllImport|LibraryImport)\s*\(\s*[^"\s]') { $failures.Add("$where has a DllImport without a literal DLL name") }
 
             # 4. No assembly references smuggled in via source directives.
             if ($line -match '^\s*#r\s|extern\s+alias') { $failures.Add("$where adds an assembly reference") }

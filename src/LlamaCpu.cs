@@ -25,7 +25,7 @@ namespace Phoenix
         readonly int _kvDim;
 
         // Scratch buffers.
-        readonly float[] _x, _xb, _q, _qHalf, _k, _v, _attn, _ffGate, _ffUp, _logits;
+        readonly float[] _x, _xb, _q, _qHalf, _k, _v, _attn, _ffGate, _ffUp, _logits, _cs;
         readonly CpuRef.Q8Activations _qEmbd, _qFf;
 
         public LlamaCpu(GgufFile g, int maxCtx)
@@ -75,6 +75,7 @@ namespace Phoenix
             _attn = new float[NHead * HeadDim];
             _ffGate = new float[NFf]; _ffUp = new float[NFf];
             _logits = new float[NVocab];
+            _cs = new float[NRot];
             _qEmbd = new CpuRef.Q8Activations(Math.Max(NEmbd, NHead * HeadDim));
             _qFf = new CpuRef.Q8Activations(NFf);
         }
@@ -94,16 +95,21 @@ namespace Phoenix
             return (float*)t.Data;
         }
 
+        // Diagnostics: when >= 0, Forward stops after this many layers and returns the residual stream instead of logits.
+        public int DebugLayers = -1;
+
         // Run one token at position pos; returns logits (shared buffer, valid until the next call).
         public float[] Forward(int token, int pos)
         {
             if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
             CpuRef.GetRow(_tokEmbd, token, _x);
+            CpuRef.RopeTable(pos, NRot, RopeBase, _ropeFreqs, _cs);
 
             int group = NHead / NHeadKv;
             float scale = 1.0f / (float)Math.Sqrt(HeadDim);
 
-            for (int il = 0; il < NLayer; il++)
+            int nRun = DebugLayers >= 0 ? Math.Min(DebugLayers, NLayer) : NLayer;
+            for (int il = 0; il < nRun; il++)
             {
                 Layer l = _layers[il];
 
@@ -112,8 +118,8 @@ namespace Phoenix
                 CpuRef.MatVec(l.Wq, _xb, _qEmbd, _q);
                 CpuRef.MatVec(l.Wk, _xb, _qEmbd, _k);
                 CpuRef.MatVec(l.Wv, _xb, _qEmbd, _v);
-                CpuRef.Rope(_q, NHead, HeadDim, NRot, pos, RopeBase, _ropeFreqs);
-                CpuRef.Rope(_k, NHeadKv, HeadDim, NRot, pos, RopeBase, _ropeFreqs);
+                CpuRef.Rope(_q, NHead, HeadDim, NRot, _cs);
+                CpuRef.Rope(_k, NHeadKv, HeadDim, NRot, _cs);
 
                 int cOff = pos * _kvDim;
                 for (int i = 0; i < _kvDim; i++)
@@ -166,6 +172,7 @@ namespace Phoenix
                 for (int i = 0; i < NEmbd; i++) _x[i] += _xb[i];
             }
 
+            if (DebugLayers >= 0) return (float[])_x.Clone();
             CpuRef.RmsNorm(_x, _outputNorm, Eps, _xb);
             CpuRef.MatVec(_output, _xb, _qEmbd, _logits);
             return _logits;

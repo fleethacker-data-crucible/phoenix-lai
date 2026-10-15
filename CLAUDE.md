@@ -32,6 +32,6 @@ Local LLM Studio: a C# (.NET 8, WinForms) app that runs Llama-family GGUF models
 
 ## Workflow
 - Work phase by phase (see plan roadmap, phases 1–8). Don't start a phase until the previous gate test passes.
-- `CpuRef` is ground truth; GPU output must match it (logits within 1e-2).
+- `CpuRef` is ground truth for each op (kernel tests); end to end, the GPU must match llama.cpp's logprobs as closely as `CpuRef` does.
 - Gates compare against llama.cpp outputs generated on the dev machine (saved under `dev\ref\outputs\`), plus self-checks (round-trips, GPU vs `CpuRef`).
 - Use a 1B Q8_0 Llama model until phase 7. Llama-family only.
