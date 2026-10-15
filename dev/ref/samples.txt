@@ -1,0 +1,20 @@
+Hello world
+The quick brown fox jumps over the lazy dog.
+ leading space
+trailing space 
+Multiple   spaces	and	tabs
+Line one
+1234567890 3.14159 -42 1e10
+It's, they're, we'll, I'd, don't
+café naïve résumé Zürich
+日本語のテキスト
+Привет, мир!
+emoji 🙂🚀 test
+def add(a, b):\n    return a + b
+for (int i = 0; i < n; i++) { sum += x[i]; }
+<|begin_of_text|> special token text
+https://example.com/path?q=1&x=2
+UPPERCASE lowercase MiXeD
+...!!!???---
+a
+The capital of France is
