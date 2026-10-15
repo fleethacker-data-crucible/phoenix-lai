@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Phoenix
 {
-    public sealed unsafe class LlamaCpu
+    public sealed unsafe class LlamaCpu : ILanguageModel
     {
         public readonly int NEmbd, NFf, NLayer, NHead, NHeadKv, HeadDim, NRot, NVocab, MaxCtx;
         public readonly float Eps, RopeBase;
@@ -177,6 +177,11 @@ namespace Phoenix
             CpuRef.MatVec(_output, _xb, _qEmbd, _logits);
             return _logits;
         }
+
+        public int ContextLength { get { return MaxCtx; } }
+        public int VocabSize { get { return NVocab; } }
+        public void Reset() { }
+        public void Dispose() { }
 
         // Greedy generation: feeds the prompt, then appends argmax tokens.
         public List<int> Greedy(IList<int> prompt, int nPredict, int stopToken)
