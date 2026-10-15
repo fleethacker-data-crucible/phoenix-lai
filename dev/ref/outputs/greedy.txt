@@ -10,11 +10,11 @@ The three primary colors are red, blue, and yellow. These colors are combined in
 ### PROMPT: def fibonacci(n):
 def fibonacci(n): 
     """
-    This function generates the Fibonacci sequence up to the nth number.
+    This function generates the first n numbers in the Fibonacci sequence.
     
-    Parameters:
-    n (int
+    Args:
+        n (int
 
 ### PROMPT: Water boils at a temperature of
-Water boils at a temperature of 100 degrees Celsius at standard atmospheric pressure. At standard atmospheric pressure, water boils at 100 degrees Celsius. At standard
+Water boils at a temperature of 212 degrees Fahrenheit at standard atmospheric pressure. At standard atmospheric pressure, water boils at a temperature of 212 degrees Fahrenheit
 
