@@ -43,7 +43,7 @@ namespace Phoenix
         public const uint FunctionControlNone = 0, SelectionControlNone = 0, LoopControlNone = 0;
         // GLSL.std.450 extended instructions
         public const uint GlslRoundEven = 2, GlslFAbs = 4, GlslFSign = 6, GlslFloor = 8, GlslSin = 13, GlslCos = 14, GlslTanh = 21,
-            GlslExp = 27, GlslLog = 28, GlslSqrt = 31, GlslInverseSqrt = 32, GlslFMin = 37, GlslUMin = 38, GlslFMax = 40,
+            GlslExp = 27, GlslLog = 28, GlslSMin = 39, GlslUnpackHalf2x16 = 62, GlslSqrt = 31, GlslInverseSqrt = 32, GlslFMin = 37, GlslUMin = 38, GlslFMax = 40,
             GlslUMax = 41, GlslFma = 50;
     }
 
