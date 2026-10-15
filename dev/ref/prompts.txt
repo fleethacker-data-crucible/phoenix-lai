@@ -1,0 +1,5 @@
+The capital of France is
+Once upon a time
+The three primary colors are
+def fibonacci(n):
+Water boils at a temperature of
