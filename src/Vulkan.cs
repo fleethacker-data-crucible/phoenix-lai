@@ -13,12 +13,13 @@ namespace Phoenix
             ShaderModuleCreateInfo = 16, PipelineShaderStageCreateInfo = 18, ComputePipelineCreateInfo = 29,
             PipelineLayoutCreateInfo = 30, DescriptorSetLayoutCreateInfo = 32, DescriptorPoolCreateInfo = 33,
             DescriptorSetAllocateInfo = 34, WriteDescriptorSet = 35, CommandPoolCreateInfo = 39,
-            CommandBufferAllocateInfo = 40, CommandBufferBeginInfo = 42, MemoryBarrier = 46;
+            CommandBufferAllocateInfo = 40, CommandBufferBeginInfo = 42, MemoryBarrier = 46, QueryPoolCreateInfo = 11;
     }
 
     public static class VkConst
     {
         public const uint QueueCompute = 0x2;
+        public const uint BufferUsageIndirect = 0x100;
         public const uint BufferUsageTransferSrc = 0x1, BufferUsageTransferDst = 0x2, BufferUsageStorage = 0x20;
         public const uint MemoryDeviceLocal = 0x1, MemoryHostVisible = 0x2, MemoryHostCoherent = 0x4, MemoryHostCached = 0x8;
         public const int DescriptorTypeStorageBuffer = 7;
@@ -114,6 +115,9 @@ namespace Phoenix
     [StructLayout(LayoutKind.Sequential)] public struct VkMemoryBarrier
     { public int sType; public IntPtr pNext; public uint srcAccessMask; public uint dstAccessMask; }
 
+    [StructLayout(LayoutKind.Sequential)] public struct VkQueryPoolCreateInfo
+    { public int sType; public IntPtr pNext; public uint flags; public int queryType; public uint queryCount; public uint pipelineStatistics; }
+
     [StructLayout(LayoutKind.Sequential)] public struct VkBufferCopy
     { public ulong srcOffset; public ulong dstOffset; public ulong size; }
 
@@ -124,6 +128,8 @@ namespace Phoenix
         [DllImport("vulkan-1.dll")] public static extern void vkDestroyInstance(IntPtr instance, IntPtr alloc);
         [DllImport("vulkan-1.dll")] public static extern int vkEnumeratePhysicalDevices(IntPtr instance, uint* count, IntPtr* devices);
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceProperties(IntPtr phys, byte* props);          // VkPhysicalDeviceProperties (824 bytes)
+        [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceProperties2(IntPtr phys, byte* props2); // VkPhysicalDeviceProperties2 (+ pNext chain)
+        [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceFeatures2(IntPtr phys, byte* features2);    // VkPhysicalDeviceFeatures2 (+ pNext chain)
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceMemoryProperties(IntPtr phys, byte* props);    // VkPhysicalDeviceMemoryProperties (520 bytes)
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceQueueFamilyProperties(IntPtr phys, uint* count, VkQueueFamilyProperties* props);
         [DllImport("vulkan-1.dll")] public static extern int vkCreateDevice(IntPtr phys, VkDeviceCreateInfo* info, IntPtr alloc, IntPtr* device);
@@ -165,6 +171,7 @@ namespace Phoenix
         [DllImport("vulkan-1.dll")] public static extern void vkCmdBindDescriptorSets(IntPtr cmd, int bindPoint, ulong layout, uint firstSet, uint count, ulong* sets, uint dynCount, uint* dynOffsets);
         [DllImport("vulkan-1.dll")] public static extern void vkCmdPushConstants(IntPtr cmd, ulong layout, uint stages, uint offset, uint size, void* values);
         [DllImport("vulkan-1.dll")] public static extern void vkCmdDispatch(IntPtr cmd, uint x, uint y, uint z);
+        [DllImport("vulkan-1.dll")] public static extern void vkCmdDispatchIndirect(IntPtr cmd, ulong buffer, ulong offset);
         [DllImport("vulkan-1.dll")] public static extern void vkCmdCopyBuffer(IntPtr cmd, ulong src, ulong dst, uint count, VkBufferCopy* regions);
         [DllImport("vulkan-1.dll")] public static extern void vkCmdPipelineBarrier(IntPtr cmd, uint srcStage, uint dstStage, uint depFlags,
             uint memBarrierCount, VkMemoryBarrier* memBarriers, uint bufBarrierCount, IntPtr bufBarriers, uint imgBarrierCount, IntPtr imgBarriers);
@@ -174,6 +181,12 @@ namespace Phoenix
         [DllImport("vulkan-1.dll")] public static extern void vkDestroyFence(IntPtr device, ulong fence, IntPtr alloc);
         [DllImport("vulkan-1.dll")] public static extern int vkWaitForFences(IntPtr device, uint count, ulong* fences, uint waitAll, ulong timeout);
         [DllImport("vulkan-1.dll")] public static extern int vkResetFences(IntPtr device, uint count, ulong* fences);
+
+        [DllImport("vulkan-1.dll")] public static extern int vkCreateQueryPool(IntPtr device, VkQueryPoolCreateInfo* info, IntPtr alloc, ulong* pool);
+        [DllImport("vulkan-1.dll")] public static extern void vkDestroyQueryPool(IntPtr device, ulong pool, IntPtr alloc);
+        [DllImport("vulkan-1.dll")] public static extern void vkCmdResetQueryPool(IntPtr cmd, ulong pool, uint first, uint count);
+        [DllImport("vulkan-1.dll")] public static extern void vkCmdWriteTimestamp(IntPtr cmd, uint stage, ulong pool, uint query);
+        [DllImport("vulkan-1.dll")] public static extern int vkGetQueryPoolResults(IntPtr device, ulong pool, uint first, uint count, UIntPtr dataSize, void* data, ulong stride, uint flags);
 
         public static void Check(int result, string what)
         {

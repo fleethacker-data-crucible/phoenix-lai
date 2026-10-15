@@ -12,6 +12,8 @@ namespace Phoenix
     {
         // Runs one token at position pos (positions must be fed in order); returns logits.
         float[] Forward(int token, int pos);
+        // Feeds tokens[start .. start+count) at positions start..start+count-1; returns the last logits.
+        float[] Prefill(IList<int> tokens, int start, int count);
         void Reset();
         int ContextLength { get; }
         int VocabSize { get; }
@@ -46,7 +48,10 @@ namespace Phoenix
         readonly GpuDevice _gpu;
         readonly ILanguageModel _model;
         readonly List<int> _fed = new List<int>();   // tokens whose K/V are in the cache, by position
-        readonly int _eot, _startHeader, _endHeader;
+        // Chat template family, detected from the vocabulary.
+        readonly bool _mistral;
+        readonly int _eot, _startHeader, _endHeader;           // Llama 3
+        readonly int _inst, _instEnd, _sys, _sysEnd;            // Mistral ([INST] ... [/INST])
 
         ChatEngine(string path, GgufFile g, GpuDevice gpu, ILanguageModel model, string backend, int ctx)
         {
@@ -56,7 +61,13 @@ namespace Phoenix
             _eot = TokenId("<|eot_id|>");
             _startHeader = TokenId("<|start_header_id|>");
             _endHeader = TokenId("<|end_header_id|>");
-            if (_startHeader < 0 || _endHeader < 0) throw new NotSupportedException("Model has no Llama 3 chat-template tokens.");
+            _inst = TokenId("[INST]");
+            _instEnd = TokenId("[/INST]");
+            _sys = TokenId("[SYSTEM_PROMPT]");
+            _sysEnd = TokenId("[/SYSTEM_PROMPT]");
+            _mistral = _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
+            if (!_mistral && (_startHeader < 0 || _endHeader < 0))
+                throw new NotSupportedException("Model has neither Llama 3 nor Mistral chat-template tokens.");
         }
 
         int TokenId(string text)
@@ -113,6 +124,7 @@ namespace Phoenix
         // Llama 3 instruct template; ends with an open assistant header.
         public List<int> Template(IList<ChatMessage> messages)
         {
+            if (_mistral) return MistralTemplate(messages);
             List<int> ids = new List<int>();
             ids.Add(Tokenizer.BosId);
             foreach (ChatMessage m in messages)
@@ -127,6 +139,32 @@ namespace Phoenix
             ids.AddRange(Tokenizer.Encode("assistant", false, false));
             ids.Add(_endHeader);
             ids.AddRange(Tokenizer.Encode("\n\n", false, false));
+            return ids;
+        }
+
+        // Mistral template (Devstral / Mistral Small): <s>[SYSTEM_PROMPT]sys[/SYSTEM_PROMPT][INST]user[/INST]reply</s>...
+        // Message text is encoded without special-token parsing, so user text cannot inject control tokens.
+        List<int> MistralTemplate(IList<ChatMessage> messages)
+        {
+            List<int> ids = new List<int>();
+            ids.Add(Tokenizer.BosId);
+            foreach (ChatMessage m in messages)
+            {
+                string text = m.Text.Trim();
+                if (m.Role == "system")
+                {
+                    if (_sys < 0) { ids.Add(_inst); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_instEnd); continue; }
+                    ids.Add(_sys); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_sysEnd);
+                }
+                else if (m.Role == "user")
+                {
+                    ids.Add(_inst); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_instEnd);
+                }
+                else
+                {
+                    ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(Tokenizer.EosId);
+                }
+            }
             return ids;
         }
 
@@ -158,11 +196,13 @@ namespace Phoenix
 
             Stopwatch sw = Stopwatch.StartNew();
             float[] logits = null;
-            for (int i = reuse; i < prompt.Count; i++)
+            const int Chunk = 256; // prompt is fed in chunks so Stop stays responsive
+            for (int i = reuse; i < prompt.Count; i += Chunk)
             {
                 if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
-                logits = _model.Forward(prompt[i], i);
-                _fed.Add(prompt[i]);
+                int n = Math.Min(Chunk, prompt.Count - i);
+                logits = _model.Prefill(prompt, i, n);
+                for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
             }
             st.PromptSeconds = sw.Elapsed.TotalSeconds;
 

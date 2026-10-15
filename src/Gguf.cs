@@ -19,6 +19,7 @@ namespace Phoenix
     {
         F32 = 0, F16 = 1, Q4_0 = 2, Q4_1 = 3, Q5_0 = 6, Q5_1 = 7, Q8_0 = 8, Q8_1 = 9,
         Q2_K = 10, Q3_K = 11, Q4_K = 12, Q5_K = 13, Q6_K = 14, Q8_K = 15,
+        IQ2_XXS = 16, IQ3_S = 21, IQ2_S = 22,
         I8 = 24, I16 = 25, I32 = 26, I64 = 27, F64 = 28, BF16 = 30
     }
 
@@ -49,6 +50,9 @@ namespace Phoenix
                 case GgmlType.Q5_K: blockSize = 256; typeSize = 176; return true;
                 case GgmlType.Q6_K: blockSize = 256; typeSize = 210; return true;
                 case GgmlType.Q8_K: blockSize = 256; typeSize = 292; return true;
+                case GgmlType.IQ2_XXS: blockSize = 256; typeSize = 66; return true;
+                case GgmlType.IQ2_S: blockSize = 256; typeSize = 82; return true;
+                case GgmlType.IQ3_S: blockSize = 256; typeSize = 110; return true;
             }
             blockSize = 0; typeSize = 0;
             return false;
@@ -119,7 +123,13 @@ namespace Phoenix
             FileLength = new FileInfo(Path).Length;
             if (FileLength < 24) throw new InvalidDataException("File too small to be GGUF.");
 
-            _mmf = MemoryMappedFile.CreateFromFile(Path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            // Shared read access, so the same model can be opened more than once (and by other readers).
+            FileStream fs = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            try
+            {
+                _mmf = MemoryMappedFile.CreateFromFile(fs, null, 0, MemoryMappedFileAccess.Read, null, HandleInheritability.None, false);
+            }
+            catch { fs.Dispose(); throw; }
             _view = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
             _view.SafeMemoryMappedViewHandle.AcquirePointer(ref _base);
             _base += _view.PointerOffset;

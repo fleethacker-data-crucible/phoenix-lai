@@ -119,14 +119,14 @@ namespace Phoenix.Tests
             using (GpuBuffer gd = gpu.CreateBuffer((ulong)(nb + 1) * 4, true))
             using (GpuBuffer gy = gpu.CreateBuffer((ulong)rows * 4, true))
             using (GpuKernel kq = gpu.CreateKernel(KernelsK.QuantizeQ8K(), 3, 4, 2))
-            using (GpuKernel km = gpu.CreateKernel(KernelsK.MatVec(t.Type), 4, 12, 2))
+            using (GpuKernel km = gpu.CreateKernel(KernelsK.MatVec(t.Type), 4, 16, 2))
             {
                 fixed (byte* pb = blocks) gpu.Upload(gw, 0, (IntPtr)pb, (ulong)blocks.Length);
                 gx.Upload(x, 0);
                 uint gxs = (uint)Math.Min(rows, 65535), gys = (uint)((rows + gxs - 1) / gxs);
                 gpu.Begin();
                 gpu.Record(kq, new GpuBuffer[] { gx, gq, gd }, new uint[] { (uint)nb }, (uint)((nb + 63) / 64), 1, 1);
-                gpu.Record(km, new GpuBuffer[] { gw, gq, gd, gy }, new uint[] { (uint)rows, (uint)nb, gxs }, gxs, gys, 1);
+                gpu.Record(km, new GpuBuffer[] { gw, gq, gd, gy }, new uint[] { (uint)rows, (uint)nb, gxs, 0 }, gxs, gys, 1);
                 gpu.SubmitAndWait();
                 float[] got = new float[rows];
                 gy.Download(got, 0);

@@ -23,11 +23,16 @@ namespace Phoenix
             FOrdEqual = 180, FOrdNotEqual = 182, FOrdLessThan = 184, FOrdGreaterThan = 186, FOrdLessThanEqual = 188, FOrdGreaterThanEqual = 190,
             ShiftRightLogical = 194, ShiftRightArithmetic = 195, ShiftLeftLogical = 196, BitwiseOr = 197, BitwiseXor = 198,
             BitwiseAnd = 199, Not = 200, BitFieldUExtract = 203, ControlBarrier = 224, MemoryBarrier = 225,
+            GroupNonUniformIAdd = 349, GroupNonUniformFAdd = 350, GroupNonUniformFMax = 361,
+            Extension = 10, SDot = 4450, UDot = 4451, SUDot = 4452,
             Phi = 245, LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Return = 253;
     }
 
     public static class Spv
     {
+        public const uint CapabilityDotProductInput4x8BitPacked = 6018, CapabilityDotProduct = 6019, PackedVectorFormat4x8Bit = 0;
+        public const uint CapabilityGroupNonUniform = 61, CapabilityGroupNonUniformArithmetic = 63, ScopeSubgroup = 3, GroupOperationReduce = 0;
+        public const uint BuiltInSubgroupSize = 36, BuiltInNumSubgroups = 38, BuiltInSubgroupId = 40, BuiltInSubgroupLocalInvocationId = 41;
         public const uint CapabilityShader = 1, CapabilityFloat16 = 9, CapabilityInt16 = 22, CapabilityInt8 = 39,
             CapabilityStorageBuffer16BitAccess = 4433, CapabilityStorageBuffer8BitAccess = 4448;
         public const uint AddressingLogical = 0, MemoryModelGLSL450 = 1;
@@ -53,6 +58,8 @@ namespace Phoenix
         public const uint Magic = 0x07230203;
         public const uint Version13 = 0x00010300;
 
+        readonly List<uint> _extensions = new List<uint>();
+        readonly HashSet<string> _extNames = new HashSet<string>();
         readonly List<uint> _capabilities = new List<uint>(), _extImports = new List<uint>(), _memoryModel = new List<uint>(),
             _entryPoints = new List<uint>(), _execModes = new List<uint>(), _debug = new List<uint>(),
             _annotations = new List<uint>(), _globals = new List<uint>(), _functions = new List<uint>();
@@ -106,6 +113,11 @@ namespace Phoenix
         public void Capability(uint cap)
         {
             if (_caps.Add(cap)) Emit(_capabilities, Op.Capability, cap);
+        }
+
+        public void Extension(string name)
+        {
+            if (_extNames.Add(name)) Emit(_extensions, Op.Extension, StringWords(name));
         }
 
         public uint GlslStd450()
@@ -261,7 +273,7 @@ namespace Phoenix
             w.Add(0);          // generator
             w.Add(_nextId);    // bound
             w.Add(0);          // schema
-            w.AddRange(_capabilities); w.AddRange(_extImports); w.AddRange(_memoryModel);
+            w.AddRange(_capabilities); w.AddRange(_extensions); w.AddRange(_extImports); w.AddRange(_memoryModel);
             w.AddRange(_entryPoints); w.AddRange(_execModes); w.AddRange(_debug);
             w.AddRange(_annotations); w.AddRange(_globals); w.AddRange(_functions);
             return w.ToArray();

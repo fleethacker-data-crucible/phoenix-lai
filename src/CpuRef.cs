@@ -75,9 +75,13 @@ namespace Phoenix
                 case GgmlType.Q8_0: MatVecQ8_0(w, x, xq, y); return;
                 case GgmlType.F32: MatVecF32(w, x, y); return;
                 case GgmlType.F16: MatVecF16(w, x, y); return;
+                case GgmlType.Q3_K:
                 case GgmlType.Q4_K:
                 case GgmlType.Q5_K:
-                case GgmlType.Q6_K: MatVecK(w, x, xq, y); return;
+                case GgmlType.Q6_K:
+                case GgmlType.IQ2_XXS:
+                case GgmlType.IQ2_S:
+                case GgmlType.IQ3_S: MatVecK(w, x, xq, y); return;
             }
             throw new NotSupportedException("MatVec for " + GgmlTypes.Name(w.Type) + " (" + w.Name + ") is not implemented yet.");
         }
@@ -160,7 +164,7 @@ namespace Phoenix
                     for (int j = 0; j < w.Cols; j++) dst[j] = Half.ToFloat(((ushort*)row)[j]);
                     return;
             }
-            if (w.Type == GgmlType.Q4_K || w.Type == GgmlType.Q5_K || w.Type == GgmlType.Q6_K)
+            if (w.Type == GgmlType.Q3_K || w.Type == GgmlType.Q4_K || w.Type == GgmlType.Q5_K || w.Type == GgmlType.Q6_K)
             {
                 DequantizeRowK(w.Type, row, w.Cols, dst);
                 return;

@@ -6,6 +6,13 @@ using System.Text;
 
 namespace Phoenix
 {
+    // Where a buffer lives.
+    //   Device:   VRAM, GPU only.
+    //   Upload:   written by the CPU every step, read by the GPU: VRAM through the CPU-visible window (resizable BAR / 256 MB BAR)
+    //             when available, else host memory.
+    //   Readback: written by the GPU, read by the CPU: host-cached memory.
+    public enum BufferKind { Device, Upload, Readback }
+
     public sealed unsafe class GpuBuffer : IDisposable
     {
         public ulong Buffer, Memory, Size;
@@ -18,6 +25,14 @@ namespace Phoenix
             RequireMapped();
             if ((dstOffsetFloats + src.Length) * 4 > (long)Size) throw new ArgumentOutOfRangeException("src");
             Marshal.Copy(src, 0, Mapped + (int)(dstOffsetFloats * 4), src.Length);
+        }
+
+        public unsafe void UploadWords(uint[] src)
+        {
+            RequireMapped();
+            if ((long)src.Length * 4 > (long)Size) throw new ArgumentOutOfRangeException("src");
+            uint* d = (uint*)Mapped;
+            for (int i = 0; i < src.Length; i++) d[i] = src[i];
         }
 
         public void Download(float[] dst, long srcOffsetFloats)
@@ -47,6 +62,7 @@ namespace Phoenix
         public ulong Module, SetLayout, PipelineLayout, Pipeline, DescriptorPool;
         public int BindingCount;
         public uint PushBytes;
+        public string Name = "kernel";
         internal IntPtr Device;
         internal readonly Dictionary<string, ulong> Sets = new Dictionary<string, ulong>(); // cached by buffer tuple
 
@@ -69,11 +85,24 @@ namespace Phoenix
         public string DeviceName;
         public uint ApiVersion, VendorId, DeviceType;
         public ulong DeviceLocalBytes;
-        public ulong FallbackBytes;   // "device-local" buffers that had to live in system memory
+        public ulong FallbackBytes;
+        public uint SubgroupSize;          // threads per subgroup (wave) in compute shaders
+        public bool SubgroupArithmetic;    // subgroupAdd etc. supported in compute shaders
+        public bool IntegerDot;            // packed 4x8-bit integer dot product (shaderIntegerDotProduct) enabled
+        public bool IntegerDotAccelerated; // ...and the hardware has native instructions for it   // "device-local" buffers that had to live in system memory
         const int VkErrorOutOfDeviceMemory = -2;
 
         ulong _cmdPool, _fence;
         bool _recording;
+
+        // GPU timestamp profiling: per-kernel-name total milliseconds across submits.
+        public bool Profiling;
+        public float TimestampPeriodNs;
+        public readonly Dictionary<string, double> ProfileMs = new Dictionary<string, double>();
+        public readonly Dictionary<string, int> ProfileCount = new Dictionary<string, int>();
+        const uint MaxQueries = 8192;
+        ulong _queryPool;
+        readonly List<string> _queryLabels = new List<string>();
         GpuBuffer _staging;
         const ulong StagingBytes = 64UL << 20;
         readonly uint[] _memFlags = new uint[32];
@@ -102,7 +131,7 @@ namespace Phoenix
             app.sType = VkSType.ApplicationInfo;
             app.pApplicationName = Str("Local LLM Studio");
             app.pEngineName = Str("Phoenix");
-            app.apiVersion = VkConst.MakeApiVersion(1, 2, 0);
+            app.apiVersion = VkConst.MakeApiVersion(1, 3, 0);
             VkInstanceCreateInfo ici = new VkInstanceCreateInfo();
             ici.sType = VkSType.InstanceCreateInfo;
             ici.pApplicationInfo = (IntPtr)(&app);
@@ -141,6 +170,24 @@ namespace Phoenix
             int len = 0;
             while (len < 256 && p[20 + len] != 0) len++;
             DeviceName = Encoding.UTF8.GetString(p + 20, len);
+            TimestampPeriodNs = *(float*)(p + 720); // VkPhysicalDeviceLimits.timestampPeriod
+
+            // Subgroup properties (Vulkan 1.1): VkPhysicalDeviceProperties2 { sType, pNext, properties[824] } -> chained
+            // VkPhysicalDeviceSubgroupProperties { sType, pNext, subgroupSize, supportedStages, supportedOperations, quad }.
+            if (ApiVersion >= VkConst.MakeApiVersion(1, 1, 0))
+            {
+                byte* sub = stackalloc byte[32];
+                byte* p2 = stackalloc byte[16 + 824 + 64];
+                for (int i = 0; i < 32; i++) sub[i] = 0;
+                for (int i = 0; i < 16 + 824 + 64; i++) p2[i] = 0;
+                *(int*)sub = 1000094000;            // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES
+                *(int*)p2 = 1000059001;             // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2
+                *(IntPtr*)(p2 + 8) = (IntPtr)sub;
+                Vk.vkGetPhysicalDeviceProperties2(Physical, p2);
+                SubgroupSize = *(uint*)(sub + 16);
+                uint stages = *(uint*)(sub + 20), ops = *(uint*)(sub + 24);
+                SubgroupArithmetic = (stages & VkConst.ShaderStageCompute) != 0 && (ops & 0x4) != 0 && SubgroupSize >= 8;
+            }
 
             byte* mp = stackalloc byte[1024];
             Vk.vkGetPhysicalDeviceMemoryProperties(Physical, mp);
@@ -154,6 +201,34 @@ namespace Phoenix
                 if ((flags & 1) != 0 && size > DeviceLocalBytes) DeviceLocalBytes = size; // VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
             }
 
+            // Integer dot product (Vulkan 1.3 core): VkPhysicalDeviceShaderIntegerDotProductFeatures { sType, pNext, VkBool32 }.
+            byte* dotFeat = stackalloc byte[24];
+            for (int i = 0; i < 24; i++) dotFeat[i] = 0;
+            *(int*)dotFeat = 1000280000;
+            if (ApiVersion >= VkConst.MakeApiVersion(1, 3, 0))
+            {
+                byte* f2 = stackalloc byte[16 + 224 + 16];          // VkPhysicalDeviceFeatures2 { sType, pNext, VkPhysicalDeviceFeatures (55 x VkBool32) }
+                for (int i = 0; i < 16 + 224 + 16; i++) f2[i] = 0;
+                *(int*)f2 = 1000059000;
+                *(IntPtr*)(f2 + 8) = (IntPtr)dotFeat;
+                Vk.vkGetPhysicalDeviceFeatures2(Physical, f2);
+                IntegerDot = *(uint*)(dotFeat + 16) != 0;
+                if (IntegerDot)
+                {
+                    byte* dp = stackalloc byte[16 + 30 * 4 + 8];       // VkPhysicalDeviceShaderIntegerDotProductProperties
+                    byte* p2 = stackalloc byte[16 + 824 + 64];
+                    for (int i = 0; i < 16 + 30 * 4 + 8; i++) dp[i] = 0;
+                    for (int i = 0; i < 16 + 824 + 64; i++) p2[i] = 0;
+                    *(int*)dp = 1000280001;
+                    *(int*)p2 = 1000059001;
+                    *(IntPtr*)(p2 + 8) = (IntPtr)dp;
+                    Vk.vkGetPhysicalDeviceProperties2(Physical, p2);
+                    // integerDotProduct4x8BitPackedSignedAccelerated
+                    IntegerDotAccelerated = *(uint*)(dp + 16 + 4 * 4) != 0; // 4x8BitPacked signed (all our operands fit signed bytes)
+                }
+            }
+            *(uint*)(dotFeat + 16) = IntegerDot ? 1u : 0u;
+
             // Logical device + queue
             float priority = 1.0f;
             VkDeviceQueueCreateInfo qci = new VkDeviceQueueCreateInfo();
@@ -165,6 +240,7 @@ namespace Phoenix
             dci.sType = VkSType.DeviceCreateInfo;
             dci.queueCreateInfoCount = 1;
             dci.pQueueCreateInfos = (IntPtr)(&qci);
+            if (IntegerDot) dci.pNext = (IntPtr)dotFeat;
             IntPtr dev;
             Vk.Check(Vk.vkCreateDevice(Physical, &dci, IntPtr.Zero, &dev), "vkCreateDevice");
             Device = dev;
@@ -222,10 +298,16 @@ namespace Phoenix
         // hostVisible: mapped, coherent memory the CPU can read and write directly.
         public GpuBuffer CreateBuffer(ulong size, bool hostVisible)
         {
+            return CreateBuffer(size, hostVisible ? BufferKind.Readback : BufferKind.Device);
+        }
+
+        public GpuBuffer CreateBuffer(ulong size, BufferKind kind)
+        {
+            bool hostVisible = kind != BufferKind.Device;
             VkBufferCreateInfo bci = new VkBufferCreateInfo();
             bci.sType = VkSType.BufferCreateInfo;
             bci.size = size;
-            bci.usage = VkConst.BufferUsageStorage | VkConst.BufferUsageTransferSrc | VkConst.BufferUsageTransferDst;
+            bci.usage = VkConst.BufferUsageStorage | VkConst.BufferUsageTransferSrc | VkConst.BufferUsageTransferDst | VkConst.BufferUsageIndirect;
             ulong buf;
             Vk.Check(Vk.vkCreateBuffer(Device, &bci, IntPtr.Zero, &buf), "vkCreateBuffer");
 
@@ -238,7 +320,8 @@ namespace Phoenix
                 VkMemoryRequirements req;
                 Vk.vkGetBufferMemoryRequirements(Device, buf, &req);
                 uint required = hostVisible ? VkConst.MemoryHostVisible | VkConst.MemoryHostCoherent : VkConst.MemoryDeviceLocal;
-                uint preferred = hostVisible ? VkConst.MemoryHostCached : 0;
+                uint preferred = kind == BufferKind.Readback ? VkConst.MemoryHostCached
+                               : kind == BufferKind.Upload ? VkConst.MemoryDeviceLocal : 0;
                 int type = FindMemoryType(req.memoryTypeBits, required, preferred);
                 if (type < 0) throw new InvalidOperationException("No suitable memory type.");
 
@@ -415,6 +498,76 @@ namespace Phoenix
             }
         }
 
+        // ---------- reusable command buffers (record once, submit many times) ----------
+
+        IntPtr _defaultCmd;
+
+        public IntPtr AllocateCommandBuffer()
+        {
+            VkCommandBufferAllocateInfo cai = new VkCommandBufferAllocateInfo();
+            cai.sType = VkSType.CommandBufferAllocateInfo;
+            cai.commandPool = _cmdPool;
+            cai.level = 0;
+            cai.commandBufferCount = 1;
+            IntPtr cmd;
+            Vk.Check(Vk.vkAllocateCommandBuffers(Device, &cai, &cmd), "vkAllocateCommandBuffers");
+            return cmd;
+        }
+
+        // Starts recording into cmd; Record/RecordIndirect go there until EndReusable().
+        public void BeginReusable(IntPtr cmd)
+        {
+            if (_recording) throw new InvalidOperationException("Already recording.");
+            if (_defaultCmd == IntPtr.Zero) _defaultCmd = Cmd;
+            Cmd = cmd;
+            Vk.Check(Vk.vkResetCommandBuffer(Cmd, 0), "vkResetCommandBuffer");
+            VkCommandBufferBeginInfo bi = new VkCommandBufferBeginInfo();
+            bi.sType = VkSType.CommandBufferBeginInfo;
+            Vk.Check(Vk.vkBeginCommandBuffer(Cmd, &bi), "vkBeginCommandBuffer");
+            _recording = true;
+            _queryLabels.Clear();
+        }
+
+        public void EndReusable()
+        {
+            if (!_recording) throw new InvalidOperationException("Not recording.");
+            Barrier(VkConst.PipelineStageComputeShader | VkConst.PipelineStageTransfer, VkConst.AccessShaderWrite | VkConst.AccessTransferWrite,
+                VkConst.PipelineStageHost, VkConst.AccessHostRead);
+            Vk.Check(Vk.vkEndCommandBuffer(Cmd), "vkEndCommandBuffer");
+            _recording = false;
+            Cmd = _defaultCmd;
+        }
+
+        // Submits a recorded command buffer and waits for it.
+        public void SubmitReusable(IntPtr cmd)
+        {
+            if (_recording) throw new InvalidOperationException("Still recording.");
+            IntPtr saved = Cmd;
+            Cmd = cmd;
+            try { Submit(); } finally { Cmd = saved; }
+        }
+
+        // Dispatch whose group counts come from args (three u32 at offset), followed by a compute barrier.
+        public void RecordIndirect(GpuKernel k, GpuBuffer[] buffers, uint[] push, GpuBuffer args, ulong offset)
+        {
+            if (!_recording) throw new InvalidOperationException("Call Begin() first.");
+            if (buffers.Length != k.BindingCount) throw new ArgumentException("Kernel expects " + k.BindingCount + " buffers.");
+            if ((push == null ? 0 : push.Length * 4) != k.PushBytes) throw new ArgumentException("Kernel expects " + k.PushBytes + " push-constant bytes.");
+            ulong set = SetFor(k, buffers);
+            Vk.vkCmdBindPipeline(Cmd, VkConst.PipelineBindPointCompute, k.Pipeline);
+            Vk.vkCmdBindDescriptorSets(Cmd, VkConst.PipelineBindPointCompute, k.PipelineLayout, 0, 1, &set, 0, null);
+            if (k.PushBytes > 0)
+                fixed (uint* pp = push) Vk.vkCmdPushConstants(Cmd, k.PipelineLayout, VkConst.ShaderStageCompute, 0, k.PushBytes, pp);
+            Vk.vkCmdDispatchIndirect(Cmd, args.Buffer, offset);
+            Barrier(VkConst.PipelineStageComputeShader, VkConst.AccessShaderWrite,
+                VkConst.PipelineStageComputeShader, VkConst.AccessShaderRead | VkConst.AccessShaderWrite);
+            if (Profiling && _queryPool != 0 && _queryLabels.Count + 1 < MaxQueries)
+            {
+                _queryLabels.Add(k.Name);
+                Vk.vkCmdWriteTimestamp(Cmd, VkConst.PipelineStageComputeShader, _queryPool, (uint)_queryLabels.Count);
+            }
+        }
+
         // ---------- batched recording ----------
 
         public void Begin()
@@ -426,6 +579,22 @@ namespace Phoenix
             bi.flags = VkConst.CommandBufferUsageOneTimeSubmit;
             Vk.Check(Vk.vkBeginCommandBuffer(Cmd, &bi), "vkBeginCommandBuffer");
             _recording = true;
+            _queryLabels.Clear();
+            if (Profiling)
+            {
+                if (_queryPool == 0)
+                {
+                    VkQueryPoolCreateInfo qi = new VkQueryPoolCreateInfo();
+                    qi.sType = VkSType.QueryPoolCreateInfo;
+                    qi.queryType = 2; // VK_QUERY_TYPE_TIMESTAMP
+                    qi.queryCount = MaxQueries;
+                    ulong qp;
+                    Vk.Check(Vk.vkCreateQueryPool(Device, &qi, IntPtr.Zero, &qp), "vkCreateQueryPool");
+                    _queryPool = qp;
+                }
+                Vk.vkCmdResetQueryPool(Cmd, _queryPool, 0, MaxQueries);
+                Vk.vkCmdWriteTimestamp(Cmd, VkConst.PipelineStageComputeShader, _queryPool, 0);
+            }
         }
 
         ulong SetFor(GpuKernel k, GpuBuffer[] buffers)
@@ -468,6 +637,12 @@ namespace Phoenix
         // Records one dispatch followed by a compute->compute barrier.
         public void Record(GpuKernel k, GpuBuffer[] buffers, uint[] push, uint groupsX, uint groupsY, uint groupsZ)
         {
+            Record(k, buffers, push, groupsX, groupsY, groupsZ, true);
+        }
+
+        // barrierAfter = false lets the next dispatch overlap this one (use only when it does not read this one's output).
+        public void Record(GpuKernel k, GpuBuffer[] buffers, uint[] push, uint groupsX, uint groupsY, uint groupsZ, bool barrierAfter)
+        {
             if (!_recording) throw new InvalidOperationException("Call Begin() first.");
             if (buffers.Length != k.BindingCount) throw new ArgumentException("Kernel expects " + k.BindingCount + " buffers.");
             if ((push == null ? 0 : push.Length * 4) != k.PushBytes) throw new ArgumentException("Kernel expects " + k.PushBytes + " push-constant bytes.");
@@ -477,8 +652,14 @@ namespace Phoenix
             if (k.PushBytes > 0)
                 fixed (uint* pp = push) Vk.vkCmdPushConstants(Cmd, k.PipelineLayout, VkConst.ShaderStageCompute, 0, k.PushBytes, pp);
             Vk.vkCmdDispatch(Cmd, groupsX, groupsY, groupsZ);
-            Barrier(VkConst.PipelineStageComputeShader, VkConst.AccessShaderWrite,
-                VkConst.PipelineStageComputeShader, VkConst.AccessShaderRead | VkConst.AccessShaderWrite);
+            if (barrierAfter)
+                Barrier(VkConst.PipelineStageComputeShader, VkConst.AccessShaderWrite,
+                    VkConst.PipelineStageComputeShader, VkConst.AccessShaderRead | VkConst.AccessShaderWrite);
+            if (Profiling && _queryLabels.Count + 1 < MaxQueries)
+            {
+                _queryLabels.Add(k.Name);
+                Vk.vkCmdWriteTimestamp(Cmd, VkConst.PipelineStageComputeShader, _queryPool, (uint)_queryLabels.Count);
+            }
         }
 
         void Barrier(uint srcStage, uint srcAccess, uint dstStage, uint dstAccess)
@@ -500,6 +681,7 @@ namespace Phoenix
             Vk.Check(Vk.vkEndCommandBuffer(Cmd), "vkEndCommandBuffer");
             _recording = false;
             Submit();
+            if (Profiling && _queryLabels.Count > 0) CollectProfile();
         }
 
         // Copies host memory into any buffer (device-local ones go through a reusable staging buffer).
@@ -538,6 +720,21 @@ namespace Phoenix
             fixed (uint* p = src) Upload(dst, 0, (IntPtr)p, (ulong)src.Length * 4);
         }
 
+        void CollectProfile()
+        {
+            int n = _queryLabels.Count + 1;
+            ulong[] ts = new ulong[n];
+            fixed (ulong* pt = ts)
+                Vk.Check(Vk.vkGetQueryPoolResults(Device, _queryPool, 0, (uint)n, (UIntPtr)(n * 8), pt, 8, 0x1 | 0x2), "vkGetQueryPoolResults");
+            for (int i = 1; i < n; i++)
+            {
+                double ms = (ts[i] - ts[i - 1]) * TimestampPeriodNs / 1e6;
+                string label = _queryLabels[i - 1];
+                double sum; ProfileMs.TryGetValue(label, out sum); ProfileMs[label] = sum + ms;
+                int c; ProfileCount.TryGetValue(label, out c); ProfileCount[label] = c + 1;
+            }
+        }
+
         void Submit()
         {
             IntPtr cmd = Cmd;
@@ -558,6 +755,7 @@ namespace Phoenix
             {
                 Vk.vkDeviceWaitIdle(Device);
                 if (_fence != 0) Vk.vkDestroyFence(Device, _fence, IntPtr.Zero);
+                if (_queryPool != 0) Vk.vkDestroyQueryPool(Device, _queryPool, IntPtr.Zero);
                 if (_cmdPool != 0) Vk.vkDestroyCommandPool(Device, _cmdPool, IntPtr.Zero);
                 Vk.vkDestroyDevice(Device, IntPtr.Zero);
                 Device = IntPtr.Zero;

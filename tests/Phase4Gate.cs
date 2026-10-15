@@ -98,6 +98,12 @@ namespace Phoenix.Tests
 
         public static void CompareLogprobs(Tokenizer tok, List<KeyValuePair<string, string>> cases, string path, ModelFactory newModel, List<string> fail, TextWriter output)
         {
+            CompareLogprobs(tok, cases, path, newModel, MeanLogprobDiff, MaxLogprobDiff, fail, output);
+        }
+
+        public static void CompareLogprobs(Tokenizer tok, List<KeyValuePair<string, string>> cases, string path, ModelFactory newModel,
+            double meanLimit, double maxLimit, List<string> fail, TextWriter output)
+        {
             Dictionary<int, List<double[]>> byCase = new Dictionary<int, List<double[]>>(); // {pos, token, logprob}
             foreach (string raw in File.ReadAllLines(path, Encoding.UTF8))
             {
@@ -133,12 +139,12 @@ namespace Phoenix.Tests
                     double d = Math.Abs(lp[pos] - r[2]);
                     sum += d; n++;
                     if (d > worst) worst = d;
-                    if (d > MaxLogprobDiff) fail.Add("case " + c + " pos " + pos + ": logprob " + lp[pos].ToString("F4") + " vs llama.cpp " + r[2].ToString("F4"));
+                    if (d > maxLimit) fail.Add("case " + c + " pos " + pos + ": logprob " + lp[pos].ToString("F4") + " vs llama.cpp " + r[2].ToString("F4"));
                 }
             }
             double mean = n > 0 ? sum / n : double.NaN;
-            output.WriteLine("logprobs: {0} positions, mean |diff| {1:F4}, max |diff| {2:F4} (limits {3}, {4})", n, mean, worst, MeanLogprobDiff, MaxLogprobDiff);
-            if (!(mean <= MeanLogprobDiff)) fail.Add("mean logprob diff " + mean.ToString("F4") + " exceeds " + MeanLogprobDiff);
+            output.WriteLine("logprobs: {0} positions, mean |diff| {1:F4}, max |diff| {2:F4} (limits {3}, {4})", n, mean, worst, meanLimit.ToString("G3"), maxLimit.ToString("G3"));
+            if (!(mean <= meanLimit)) fail.Add("mean logprob diff " + mean.ToString("F4") + " exceeds " + meanLimit.ToString("G3"));
         }
 
         static string Show(string s)

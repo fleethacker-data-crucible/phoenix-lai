@@ -1,0 +1,16 @@
+### PROMPT: The capital of France is
+The capital of France is Paris. The population of France is approximately 67 million people. The area of France is about 54,
+
+### PROMPT: Once upon a time
+Once upon a time, in a kingdom far away, there was a young prince named Alexander. He was known for his bravery and kindness
+
+### PROMPT: The three primary colors are
+The three primary colors are red, blue, and green. If it is "true" that any set of three colors is a good combination,
+
+### PROMPT: def fibonacci(n):
+def fibonacci(n): # Defining the fibonacci function with parameter n
+    if n == 0: # Base case: if n
+
+### PROMPT: Water boils at a temperature of
+Water boils at a temperature of 100 degrees Celsius (212 degrees Fahrenheit, 373 degrees Kelvin) at standard
+

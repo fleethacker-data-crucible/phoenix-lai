@@ -146,6 +146,16 @@ namespace Phoenix
         public uint IAddS(uint a, uint b) { return S.Value(Op.IAdd, I32, a, b); }
         public uint IMulS(uint a, uint b) { return S.Value(Op.IMul, I32, a, b); }
 
+        // Packed 4 x 8-bit dot product (SPV_KHR_integer_dot_product), result i32.
+        //   signedB = true: both operands signed bytes (OpSDot); false: a signed, b unsigned bytes (OpSUDot).
+        public uint Dot4(uint a, uint b, bool signedB)
+        {
+            S.Capability(Spv.CapabilityDotProduct);
+            S.Capability(Spv.CapabilityDotProductInput4x8BitPacked);
+            S.Extension("SPV_KHR_integer_dot_product");
+            return S.Value(signedB ? Op.SDot : Op.SUDot, I32, a, b, Spv.PackedVectorFormat4x8Bit);
+        }
+
         // Signed byte k (0..3) of a packed word, sign-extended.
         public uint SByte(uint word, int k)
         {
@@ -202,6 +212,50 @@ namespace Phoenix
             Set(i, IAdd(Get(i, U32), step));
             S.Instr(Op.Branch, header);
             S.Label(merge);
+        }
+
+        // Scalar u32 builtins (SubgroupSize, SubgroupId, ...).
+        readonly Dictionary<uint, uint> _scalarBuiltins = new Dictionary<uint, uint>();
+        public uint ScalarBuiltIn(uint which)
+        {
+            uint var;
+            if (!_scalarBuiltins.TryGetValue(which, out var))
+            {
+                var = S.BuiltInInput(which, U32);
+                _iface.Add(var);
+                _scalarBuiltins[which] = var;
+            }
+            return S.Load(U32, var);
+        }
+
+        // Workgroup-wide float sum, returned in every thread. With subgroup arithmetic: one subgroupAdd per subgroup,
+        // the partials in sh[0..numSubgroups), one barrier. Otherwise a shared-memory tree over sh[0..size).
+        public uint SumAll(uint value, Shared sh, uint lid, uint size, bool subgroups)
+        {
+            if (!subgroups)
+            {
+                St(sh, lid, value);
+                Reduce(sh, lid, size, FAdd);
+                return Ld(sh, C(0));
+            }
+            S.Capability(Spv.CapabilityGroupNonUniform);
+            S.Capability(Spv.CapabilityGroupNonUniformArithmetic);
+            uint part = S.Value(Op.GroupNonUniformFAdd, F32, C(Spv.ScopeSubgroup), Spv.GroupOperationReduce, value);
+            uint sgId = ScalarBuiltIn(Spv.BuiltInSubgroupId), sgLane = ScalarBuiltIn(Spv.BuiltInSubgroupLocalInvocationId);
+            uint nSg = ScalarBuiltIn(Spv.BuiltInNumSubgroups);
+            If(IEq(sgLane, C(0)), delegate { St(sh, sgId, part); });
+            Barrier();
+            // Every thread adds the per-subgroup partials (at most size/8 of them) in a fixed order.
+            uint total = CF(0);
+            for (uint i = 0; i < size / 8; i++)
+                total = FAdd(total, Select(F32, ULt(C(i), nSg), Ld(sh, C(i)), CF(0)));
+            return total;
+        }
+
+        // Matvec output: y[r] = value, or y[r] += value when addTo == 1 (fused residual add).
+        public void StoreRow(Buf y, uint r, uint value, uint addTo)
+        {
+            St(y, r, Select(F32, IEq(addTo, C(1)), FAdd(Ld(y, r), value), value));
         }
 
         // Tree reduction of sh[0..size) into sh[0]; op combines two floats. Ends with a barrier.
@@ -267,14 +321,20 @@ namespace Phoenix
         // bindings: 0 wq u32, 1 wd f32, 2 xq u32, 3 xd f32, 4 y f32. push: rows, nb, groupsX
         public static uint[] MatVecQ8()
         {
+            return MatVecQ8(false);
+        }
+
+        // dot: packed 4x8-bit integer dot products (OpSDot) for the inner products.
+        public static uint[] MatVecQ8(bool dot)
+        {
             KB k = new KB(Wg);
             KB.Buf wq = k.Buffer(0, k.U32, true), wd = k.Buffer(1, k.F32, true), xq = k.Buffer(2, k.U32, true),
                 xd = k.Buffer(3, k.F32, true), y = k.Buffer(4, k.F32, false);
-            k.Push(3);
+            k.Push(4);
             KB.Shared sh = k.SharedArray(k.F32, Wg);
             k.Begin();
             uint bv = k.Local(k.U32), sum = k.Local(k.F32);
-            uint rows = k.PushU(0), nb = k.PushU(1), gx = k.PushU(2);
+            uint rows = k.PushU(0), nb = k.PushU(1), gx = k.PushU(2), addTo = k.PushU(3);
             uint r = k.IAdd(k.GroupX(), k.IMul(k.GroupY(), gx));
             uint lid = k.LocalId();
             k.Set(sum, k.CF(0));
@@ -291,7 +351,8 @@ namespace Phoenix
                     {
                         uint ww = k.Ld(wq, k.IAdd(wBase, k.C(w)));
                         uint xw = k.Ld(xq, k.IAdd(xBase, k.C(w)));
-                        for (int kk = 0; kk < 4; kk++) isum = k.IAddS(isum, k.IMulS(k.SByte(ww, kk), k.SByte(xw, kk)));
+                        if (dot) isum = k.IAddS(isum, k.Dot4(ww, xw, true));
+                        else for (int kk = 0; kk < 4; kk++) isum = k.IAddS(isum, k.IMulS(k.SByte(ww, kk), k.SByte(xw, kk)));
                     }
                     uint scale = k.FMul(k.Ld(wd, blk), k.Ld(xd, b));
                     k.Set(sum, k.FAdd(k.Get(sum, k.F32), k.FMul(k.SToF(isum), scale)));
@@ -301,7 +362,7 @@ namespace Phoenix
             k.Reduce(sh, lid, Wg, k.FAdd);
             k.If(k.ULt(r, rows), delegate
             {
-                k.If(k.IEq(lid, k.C(0)), delegate { k.St(y, r, k.Ld(sh, k.C(0))); });
+                k.If(k.IEq(lid, k.C(0)), delegate { k.StoreRow(y, r, k.Ld(sh, k.C(0)), addTo); });
             });
             return k.Finish();
         }
@@ -335,24 +396,24 @@ namespace Phoenix
             return k.Finish();
         }
 
-        // Normal (adjacent-pair) RoPE with a host-computed cos/sin table. bindings: 0 x, 1 cs (cos,sin per pair).
-        // push: nHeads, headDim, halfRot
+        // Normal (adjacent-pair) RoPE with a host-computed cos/sin table, then x *= post (attention temperature; 1 for K).
+        // bindings: 0 x, 1 cs (cos,sin per pair). push: nHeads, headDim, halfRot, post(bits)
         public static uint[] Rope()
         {
             KB k = new KB(Wg);
             KB.Buf x = k.Buffer(0, k.F32, false), cs = k.Buffer(1, k.F32, true);
-            k.Push(3);
+            k.Push(4);
             k.Begin();
             uint p = k.GlobalId();
-            uint nHeads = k.PushU(0), headDim = k.PushU(1), half = k.PushU(2);
+            uint nHeads = k.PushU(0), headDim = k.PushU(1), half = k.PushU(2), post = k.PushF(3);
             k.If(k.ULt(p, k.IMul(nHeads, half)), delegate
             {
                 uint h = k.UDiv(p, half), i = k.UMod(p, half);
                 uint o = k.IAdd(k.IMul(h, headDim), k.IMul(i, k.C(2)));
                 uint a = k.Ld(x, o), b = k.Ld(x, k.IAdd(o, k.C(1)));
                 uint c = k.Ld(cs, k.IMul(i, k.C(2))), s = k.Ld(cs, k.IAdd(k.IMul(i, k.C(2)), k.C(1)));
-                k.St(x, o, k.FSub(k.FMul(a, c), k.FMul(b, s)));
-                k.St(x, k.IAdd(o, k.C(1)), k.FAdd(k.FMul(a, s), k.FMul(b, c)));
+                k.St(x, o, k.FMul(k.FSub(k.FMul(a, c), k.FMul(b, s)), post));
+                k.St(x, k.IAdd(o, k.C(1)), k.FMul(k.FAdd(k.FMul(a, s), k.FMul(b, c)), post));
             });
             return k.Finish();
         }

@@ -9,6 +9,7 @@ namespace Phoenix
     {
         public readonly int NEmbd, NFf, NLayer, NHead, NHeadKv, HeadDim, NRot, NVocab, MaxCtx;
         public readonly float Eps, RopeBase;
+        public readonly ModelConfig Config;
         public long WeightBytes;
 
         // A weight matrix on the GPU. Q8_0: A = qs bytes, B = f32 scales. K-quants: A = blocks (Q6_K padded), B unused.
@@ -29,42 +30,57 @@ namespace Phoenix
         readonly int _kvDim;
         readonly List<IDisposable> _owned = new List<IDisposable>();
 
-        readonly GpuKernel _kQuant, _kQuantK, _kMvQ4K, _kMvQ5K, _kMvQ6K, _kMatVec, _kNorm, _kRope, _kKv, _kAttn, _kAdd, _kSilu;
+        readonly Dictionary<GgmlType, GpuKernel> _kMvIQ = new Dictionary<GgmlType, GpuKernel>();
+        readonly GpuKernel[] _kQ80 = new GpuKernel[3], _kQ8K = new GpuKernel[3];   // by KernelsQuant.Mode
+        GpuBuffer _iqTables;
+        readonly GpuKernel _kQuant, _kQuantK, _kMvQ4K, _kMvQ5K, _kMvQ6K, _kMatVec, _kNorm, _kRope, _kKv, _kAttn, _kAdd, _kSilu, _kAttnScores, _kAttnSoftmax, _kAttnOut, _kAttnReduce, _kKvT, _kRopeP;
+        GpuBuffer _params, _indirect;
+        IntPtr _graph;            // recorded decode pass, replayed every token
+        readonly uint[] _paramHost = new uint[KernelsAttention.ParamWords], _indirectHost = new uint[6];
+        GpuBuffer _attnPart;
         readonly GpuBuffer _x, _xb, _xb2, _q, _k, _v, _attn, _g, _u, _xq, _xd, _kq, _kd, _cs, _scores, _logits;
         readonly float[] _xHost, _csHost, _logitsHost;
 
         public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx)
         {
             _gpu = gpu;
-            string arch = g.GetString("general.architecture");
-            if (arch != "llama") throw new NotSupportedException("Architecture '" + arch + "' is not supported yet.");
-            NEmbd = (int)g.GetInt("llama.embedding_length");
-            NFf = (int)g.GetInt("llama.feed_forward_length");
-            NLayer = (int)g.GetInt("llama.block_count");
-            NHead = (int)g.GetInt("llama.attention.head_count");
-            NHeadKv = g.Has("llama.attention.head_count_kv") ? (int)g.GetInt("llama.attention.head_count_kv") : NHead;
-            HeadDim = g.Has("llama.attention.key_length") ? (int)g.GetInt("llama.attention.key_length") : NEmbd / NHead;
-            NRot = g.Has("llama.rope.dimension_count") ? (int)g.GetInt("llama.rope.dimension_count") : HeadDim;
-            Eps = g.GetFloat("llama.attention.layer_norm_rms_epsilon");
-            RopeBase = g.Has("llama.rope.freq_base") ? g.GetFloat("llama.rope.freq_base") : 10000f;
+            Config = ModelConfig.FromGguf(g);
+            NEmbd = Config.NEmbd; NFf = Config.NFf; NLayer = Config.NLayer; NHead = Config.NHead; NHeadKv = Config.NHeadKv;
+            HeadDim = Config.HeadDim; NRot = Config.NRot; Eps = Config.Eps; RopeBase = Config.RopeBase;
             MaxCtx = maxCtx;
             _kvDim = NHeadKv * HeadDim;
             if (NEmbd % 32 != 0 || NFf % 32 != 0) throw new NotSupportedException("Dimensions must be multiples of 32.");
 
             try
             {
-                _kQuant = Kernel(Kernels.QuantizeQ8(), 3, 1);
-                _kMatVec = Kernel(Kernels.MatVecQ8(), 5, 3);
-                _kQuantK = Kernel(KernelsK.QuantizeQ8K(), 3, 1);
-                _kMvQ4K = Kernel(KernelsK.MatVec(GgmlType.Q4_K), 4, 3);
-                _kMvQ5K = Kernel(KernelsK.MatVec(GgmlType.Q5_K), 4, 3);
-                _kMvQ6K = Kernel(KernelsK.MatVec(GgmlType.Q6_K), 4, 3);
-                _kNorm = Kernel(Kernels.RmsNorm(), 3, 2);
-                _kRope = Kernel(Kernels.Rope(), 2, 3);
-                _kKv = Kernel(Kernels.KvStore(), 4, 2);
-                _kAttn = Kernel(Kernels.Attention(), 5, 6);
-                _kAdd = Kernel(Kernels.Add(), 2, 1);
-                _kSilu = Kernel(Kernels.SiluMul(), 2, 1);
+                _kQuant = null;
+                foreach (KernelsQuant.Mode md in new KernelsQuant.Mode[] { KernelsQuant.Mode.Plain, KernelsQuant.Mode.SiluMul, KernelsQuant.Mode.RmsNorm })
+                {
+                    string suffix = md == KernelsQuant.Mode.Plain ? "" : md == KernelsQuant.Mode.SiluMul ? " +silu" : " +norm";
+                    _kQ80[(int)md] = Kernel(KernelsQuant.Q80(md, gpu.SubgroupArithmetic), KernelsQuant.Bindings(md), KernelsQuant.PushWords, "quant q8_0" + suffix);
+                    _kQ8K[(int)md] = Kernel(KernelsQuant.Q8K(md, gpu.SubgroupArithmetic), KernelsQuant.Bindings(md), KernelsQuant.PushWords, "quant q8_K" + suffix);
+                }
+                _kMatVec = Kernel(Kernels.MatVecQ8(gpu.IntegerDot), 5, 4, "matvec q8_0");
+                _kQuantK = null;
+                _kMvQ4K = Kernel(KernelsK.MatVec(GgmlType.Q4_K, gpu.SubgroupArithmetic, gpu.IntegerDot), 4, 4, "matvec q4_K");
+                _kMvQ5K = Kernel(KernelsK.MatVec(GgmlType.Q5_K, gpu.SubgroupArithmetic, gpu.IntegerDot), 4, 4, "matvec q5_K");
+                _kMvQ6K = Kernel(KernelsK.MatVec(GgmlType.Q6_K, gpu.SubgroupArithmetic, gpu.IntegerDot), 4, 4, "matvec q6_K");
+                _kNorm = Kernel(Kernels.RmsNorm(), 3, 2, "rmsnorm");
+                _kRope = Kernel(Kernels.Rope(), 2, 4, "rope");
+                _kKv = Kernel(Kernels.KvStore(), 4, 2, "kv store");
+                _kAttn = Kernel(Kernels.Attention(), 5, 6, "attention");
+                uint grp = (uint)(NHead / NHeadKv);
+                if (NHead % NHeadKv == 0 && grp <= KernelsAttention.MaxGroup && HeadDim <= KernelsAttention.MaxHeadDim)
+                {
+                    _kAttnScores = Kernel(KernelsAttention.Scores(grp), 4, 4, "attn scores");
+                    _kAttnSoftmax = Kernel(KernelsAttention.Softmax(), 2, 1, "attn softmax");
+                    _kAttnOut = Kernel(KernelsAttention.OutputPartial(grp), 4, 4, "attn out");
+                    _kAttnReduce = Kernel(KernelsAttention.OutputReduce(), 3, 1, "attn reduce");
+                    _kKvT = Kernel(KernelsAttention.KvStore(), 5, 2, "kv store");
+                    _kRopeP = Kernel(KernelsAttention.Rope(), 3, 4, "rope");
+                }
+                _kAdd = Kernel(Kernels.Add(), 2, 1, "add");
+                _kSilu = Kernel(Kernels.SiluMul(), 2, 1, "silu*up");
 
                 _tokEmbd = new Weight(T(g, "token_embd.weight"));
                 _output = UploadW(g.TensorsByName.ContainsKey("output.weight") ? T(g, "output.weight") : T(g, "token_embd.weight"));
@@ -92,15 +108,20 @@ namespace Phoenix
                 }
 
                 int qDim = NHead * HeadDim, maxIn = Math.Max(Math.Max(NEmbd, qDim), NFf);
-                _x = Buf((ulong)NEmbd * 4, true); _xb = Buf((ulong)NEmbd * 4, true); _xb2 = Buf((ulong)NEmbd * 4, true);
-                _q = Buf((ulong)qDim * 4, true); _k = Buf((ulong)_kvDim * 4, true); _v = Buf((ulong)_kvDim * 4, true);
-                _attn = Buf((ulong)qDim * 4, true);
-                _g = Buf((ulong)NFf * 4, true); _u = Buf((ulong)NFf * 4, true);
-                _xq = Buf((ulong)maxIn, true); _xd = Buf((ulong)(maxIn / 32) * 4, true);
-                _kq = Buf((ulong)maxIn, true); _kd = Buf((ulong)(maxIn / 256 + 1) * 4, true);
-                _cs = Buf((ulong)NRot * 4, true);
+                // Per-token inputs written by the CPU; everything else stays in VRAM.
+                _x = Buf((ulong)NEmbd * 4, BufferKind.Upload); _cs = Buf((ulong)NRot * 4, BufferKind.Upload);
+                _xb = Buf((ulong)NEmbd * 4, false); _xb2 = Buf((ulong)NEmbd * 4, false);
+                _q = Buf((ulong)qDim * 4, false); _k = Buf((ulong)_kvDim * 4, false); _v = Buf((ulong)_kvDim * 4, false);
+                _attn = Buf((ulong)qDim * 4, false);
+                _g = Buf((ulong)NFf * 4, false); _u = Buf((ulong)NFf * 4, false);
+                _xq = Buf((ulong)maxIn, false); _xd = Buf((ulong)(maxIn / 32) * 4, false);
+                _kq = Buf((ulong)maxIn, false); _kd = Buf((ulong)(maxIn / 256 + 1) * 4, false);
                 _scores = Buf((ulong)NHead * (ulong)maxCtx * 4, false);
                 _logits = Buf((ulong)NVocab * 4, true);
+                _params = Buf((ulong)KernelsAttention.ParamWords * 4, BufferKind.Upload);
+                _indirect = Buf(6 * 4, BufferKind.Upload);
+                if (_kAttnOut != null)
+                    _attnPart = Buf((ulong)((maxCtx + KernelsAttention.Chunk - 1) / KernelsAttention.Chunk) * (ulong)(NHead * HeadDim) * 4, false);
                 _xHost = new float[NEmbd]; _csHost = new float[NRot]; _logitsHost = new float[NVocab];
             }
             catch { Dispose(); throw; }
@@ -115,14 +136,25 @@ namespace Phoenix
 
         GpuKernel Kernel(uint[] spirv, int bindings, int pushWords)
         {
+            return Kernel(spirv, bindings, pushWords, "kernel");
+        }
+
+        GpuKernel Kernel(uint[] spirv, int bindings, int pushWords, string name)
+        {
             GpuKernel k = _gpu.CreateKernel(spirv, bindings, (uint)pushWords * 4, 1024);
+            k.Name = name;
             _owned.Add(k);
             return k;
         }
 
         GpuBuffer Buf(ulong bytes, bool hostVisible)
         {
-            GpuBuffer b = _gpu.CreateBuffer(Math.Max(bytes, 4), hostVisible);
+            return Buf(bytes, hostVisible ? BufferKind.Readback : BufferKind.Device);
+        }
+
+        GpuBuffer Buf(ulong bytes, BufferKind kind)
+        {
+            GpuBuffer b = _gpu.CreateBuffer(Math.Max(bytes, 4), kind);
             _owned.Add(b);
             return b;
         }
@@ -145,7 +177,8 @@ namespace Phoenix
                 case GgmlType.Q5_K:
                 case GgmlType.Q6_K: return UploadK(t);
             }
-            throw new NotSupportedException(t.Name + " is " + GgmlTypes.Name(t.Type) + "; the GPU supports q8_0, q4_K, q5_K and q6_K.");
+            if (KernelsIQ.Handles(t.Type)) return UploadPacked(t);
+            throw new NotSupportedException(t.Name + " is " + GgmlTypes.Name(t.Type) + "; the GPU supports q8_0, q3_K-q6_K, iq2_xxs, iq2_s and iq3_s.");
         }
 
         // Repacks block_q8_0 {fp16 d; int8 qs[32]} into aligned arrays: qs bytes (4 per u32 word) and f32 scales.
@@ -178,6 +211,50 @@ namespace Phoenix
                 fixed (float* pd = d) _gpu.Upload(q.B, (ulong)r0 * (ulong)q.Nb * 4, (IntPtr)pd, (ulong)nr * (ulong)q.Nb * 4);
             }
             WeightBytes += (long)w.Rows * w.Cols + (long)w.Rows * q.Nb * 4;
+            return q;
+        }
+
+        // Q3_K / IQ formats: payload words (block without its fp16 d) + one f32 scale per block.
+        GW UploadPacked(GgufTensor t)
+        {
+            Weight w = new Weight(t);
+            if (w.Cols % CpuRef.QK_K != 0) throw new NotSupportedException(t.Name + ": rows must be a multiple of 256.");
+            GW q = new GW();
+            q.Type = t.Type; q.Rows = w.Rows; q.Cols = w.Cols; q.Nb = w.Cols / CpuRef.QK_K;
+            long blocks = (long)w.Rows * q.Nb;
+            int bb = CpuRef.KBlockBytes(t.Type), pb = KernelsIQ.PayloadBytes(t.Type);
+            int dOff = KernelsIQ.DOffset(t.Type), pOff = KernelsIQ.PayloadOffset(t.Type);
+            q.A = Buf((ulong)blocks * (ulong)pb, false);
+            q.B = Buf((ulong)blocks * 4, false);
+            int perChunk = (16 << 20) / pb;
+            byte[] payload = new byte[(long)perChunk * pb];
+            float[] d = new float[perChunk];
+            for (long b0 = 0; b0 < blocks; b0 += perChunk)
+            {
+                int n = (int)Math.Min(perChunk, blocks - b0);
+                fixed (byte* dst = payload)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        byte* src = t.Data + (b0 + i) * bb;
+                        d[i] = Half.ToFloat(*(ushort*)(src + dOff));
+                        byte* o = dst + (long)i * pb;
+                        for (int j = 0; j < pb; j++) o[j] = src[pOff + j];
+                    }
+                    _gpu.Upload(q.A, (ulong)b0 * (ulong)pb, (IntPtr)dst, (ulong)n * (ulong)pb);
+                }
+                fixed (float* pd = d) _gpu.Upload(q.B, (ulong)b0 * 4, (IntPtr)pd, (ulong)n * 4);
+            }
+            WeightBytes += blocks * (pb + 4);
+
+            GpuKernel k;
+            if (!_kMvIQ.TryGetValue(t.Type, out k)) _kMvIQ[t.Type] = Kernel(KernelsIQ.MatVec(t.Type), 6, 4, "matvec " + GgmlTypes.Name(t.Type));
+            if (_iqTables == null)
+            {
+                uint[] tab = KernelsIQ.Tables();
+                _iqTables = Buf((ulong)tab.Length * 4, false);
+                _gpu.Upload(_iqTables, tab);
+            }
             return q;
         }
 
@@ -229,31 +306,59 @@ namespace Phoenix
         // Quantizes x into the activation format(s) the following matvecs need (Q8_0 and/or Q8_K).
         void Quant(GpuBuffer x, int n, params GW[] users)
         {
+            Quant(KernelsQuant.Mode.Plain, x, null, n, users);
+        }
+
+        // Fused transform + quantize: SiluMul quantizes silu(x) * aux, RmsNorm quantizes x / rms(x) * aux.
+        void Quant(KernelsQuant.Mode mode, GpuBuffer x, GpuBuffer aux, int n, params GW[] users)
+        {
             bool q80 = false, q8k = false;
             foreach (GW w in users) { if (w.Type == GgmlType.Q8_0) q80 = true; else q8k = true; }
+            uint[] push = { 0, (uint)n, Bits(Eps) };
+            GpuBuffer[] q0 = mode == KernelsQuant.Mode.Plain ? new GpuBuffer[] { x, _xq, _xd } : new GpuBuffer[] { x, _xq, _xd, aux };
+            GpuBuffer[] qk = mode == KernelsQuant.Mode.Plain ? new GpuBuffer[] { x, _kq, _kd } : new GpuBuffer[] { x, _kq, _kd, aux };
             if (q80)
             {
                 int nb = n / 32;
-                _gpu.Record(_kQuant, new GpuBuffer[] { x, _xq, _xd }, new uint[] { (uint)nb }, Groups(nb, Kernels.Wg), 1, 1);
+                push[0] = (uint)nb;
+                _gpu.Record(_kQ80[(int)mode], q0, (uint[])push.Clone(), Groups(nb, 8), 1, 1, !q8k);
             }
             if (q8k)
             {
                 int nb = n / CpuRef.QK_K;
-                _gpu.Record(_kQuantK, new GpuBuffer[] { x, _kq, _kd }, new uint[] { (uint)nb }, Groups(nb, Kernels.Wg), 1, 1);
+                push[0] = (uint)nb;
+                _gpu.Record(_kQ8K[(int)mode], qk, (uint[])push.Clone(), (uint)nb, 1, 1);
             }
         }
 
         // Uses the activations last quantized by Quant().
         void MatVec(GW w, GpuBuffer y)
         {
+            MatVec(w, y, true);
+        }
+
+        void MatVec(GW w, GpuBuffer y, bool barrierAfter)
+        {
+            MatVec(w, y, barrierAfter, false);
+        }
+
+        // addInto: y += W·x (fused residual add) instead of y = W·x.
+        void MatVec(GW w, GpuBuffer y, bool barrierAfter, bool addInto)
+        {
             uint gx = (uint)Math.Min(w.Rows, 65535), gy = (uint)((w.Rows + gx - 1) / gx);
-            uint[] push = new uint[] { (uint)w.Rows, (uint)w.Nb, gx };
+            uint[] push = new uint[] { (uint)w.Rows, (uint)w.Nb, gx, addInto ? 1u : 0u };
             switch (w.Type)
             {
-                case GgmlType.Q8_0: _gpu.Record(_kMatVec, new GpuBuffer[] { w.A, w.B, _xq, _xd, y }, push, gx, gy, 1); return;
-                case GgmlType.Q4_K: _gpu.Record(_kMvQ4K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1); return;
-                case GgmlType.Q5_K: _gpu.Record(_kMvQ5K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1); return;
-                case GgmlType.Q6_K: _gpu.Record(_kMvQ6K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1); return;
+                case GgmlType.Q8_0: _gpu.Record(_kMatVec, new GpuBuffer[] { w.A, w.B, _xq, _xd, y }, push, gx, gy, 1, barrierAfter); return;
+                case GgmlType.Q4_K: _gpu.Record(_kMvQ4K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1, barrierAfter); return;
+                case GgmlType.Q5_K: _gpu.Record(_kMvQ5K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1, barrierAfter); return;
+                case GgmlType.Q6_K: _gpu.Record(_kMvQ6K, new GpuBuffer[] { w.A, _kq, _kd, y }, push, gx, gy, 1, barrierAfter); return;
+            }
+            GpuKernel kiq;
+            if (_kMvIQ.TryGetValue(w.Type, out kiq))
+            {
+                _gpu.Record(kiq, new GpuBuffer[] { w.A, w.B, _kq, _kd, y, _iqTables }, push, gx, gy, 1, barrierAfter);
+                return;
             }
             throw new NotSupportedException(GgmlTypes.Name(w.Type));
         }
@@ -266,66 +371,129 @@ namespace Phoenix
         // Diagnostics: when >= 0, Forward stops after this many layers and returns the residual stream instead of logits.
         public int DebugLayers = -1;
 
+        // Wide decode attention (n and chunk count come from the params buffer). With indirect = true the two
+        // n-dependent grids come from the indirect-args buffer, so the recording does not depend on the position.
+        void Attention(Layer l, int n, float scale, bool indirect)
+        {
+            uint group = (uint)(NHead / NHeadKv);
+            if (_kAttnScores != null)
+            {
+                uint chunks = (uint)((n + KernelsAttention.Chunk - 1) / KernelsAttention.Chunk);
+                GpuBuffer[] sb = { _q, l.KCache, _scores, _params };
+                uint[] sp = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, Bits(scale) };
+                if (indirect) _gpu.RecordIndirect(_kAttnScores, sb, sp, _indirect, 0);
+                else _gpu.Record(_kAttnScores, sb, sp, Groups(n, KernelsAttention.KeysPerGroup), (uint)NHeadKv, 1);
+                _gpu.Record(_kAttnSoftmax, new GpuBuffer[] { _scores, _params }, new uint[] { (uint)MaxCtx }, (uint)NHead, 1, 1);
+                GpuBuffer[] ob = { _scores, l.VCache, _attnPart, _params };
+                uint[] op = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, (uint)NHead };
+                if (indirect) _gpu.RecordIndirect(_kAttnOut, ob, op, _indirect, 12);
+                else _gpu.Record(_kAttnOut, ob, op, chunks, (uint)NHeadKv, 1);
+                _gpu.Record(_kAttnReduce, new GpuBuffer[] { _attnPart, _attn, _params }, new uint[] { (uint)(NHead * HeadDim) }, Groups(NHead * HeadDim, Kernels.Wg), 1, 1);
+                return;
+            }
+            _gpu.Record(_kAttn, new GpuBuffer[] { _q, l.KCache, l.VCache, _scores, _attn },
+                new uint[] { (uint)n, (uint)HeadDim, (uint)_kvDim, group, (uint)MaxCtx, Bits(scale) }, (uint)NHead, 1, 1);
+        }
+
         // Run one token at position pos; returns logits (shared buffer, valid until the next call).
         public float[] Forward(int token, int pos)
         {
             if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
             CpuRef.GetRow(_tokEmbd, token, _xHost);
             _x.Upload(_xHost, 0);
-            CpuRef.RopeTable(pos, NRot, RopeBase, _ropeFreqs, _csHost);
+            Config.RopeTable(pos, _ropeFreqs, _csHost);
             _cs.Upload(_csHost, 0);
 
+            int n = pos + 1;
+            uint chunks = (uint)((n + KernelsAttention.Chunk - 1) / KernelsAttention.Chunk);
+            _paramHost[0] = (uint)pos; _paramHost[1] = (uint)n; _paramHost[2] = chunks; _paramHost[3] = Bits(Config.AttnTemperature(pos));
+            _params.UploadWords(_paramHost);
+            _indirectHost[0] = Groups(n, KernelsAttention.KeysPerGroup); _indirectHost[1] = (uint)NHeadKv; _indirectHost[2] = 1;
+            _indirectHost[3] = chunks; _indirectHost[4] = (uint)NHeadKv; _indirectHost[5] = 1;
+            _indirect.UploadWords(_indirectHost);
+
+            bool replay = _kAttnScores != null && !_gpu.Profiling && DebugLayers < 0;
+            if (replay)
+            {
+                if (_graph == IntPtr.Zero)
+                {
+                    IntPtr g = _gpu.AllocateCommandBuffer();
+                    _gpu.BeginReusable(g);
+                    RecordPass(pos, true);
+                    _gpu.EndReusable();
+                    _graph = g;
+                }
+                _gpu.SubmitReusable(_graph);
+            }
+            else
+            {
+                _gpu.Begin();
+                RecordPass(pos, false);
+                _gpu.SubmitAndWait();
+            }
+
+            if (DebugLayers >= 0)
+            {
+                float[] hidden = new float[NEmbd];
+                _x.Download(hidden, 0);
+                return hidden;
+            }
+            _logits.Download(_logitsHost, 0);
+            return _logitsHost;
+        }
+
+        // Records one decode step. Position-dependent values come from _params / _indirect (or pos when not replaying).
+        void RecordPass(int pos, bool indirect)
+        {
             int qDim = NHead * HeadDim;
             float scale = 1.0f / (float)Math.Sqrt(HeadDim);
             uint halfRot = (uint)(NRot / 2);
-
-            _gpu.Begin();
             int nRun = DebugLayers >= 0 ? Math.Min(DebugLayers, NLayer) : NLayer;
             for (int il = 0; il < nRun; il++)
             {
                 Layer l = _layers[il];
 
-                Norm(_x, l.AttnNorm, _xb);
-                Quant(_xb, NEmbd, l.Wq, l.Wk, l.Wv);
-                MatVec(l.Wq, _q);
-                MatVec(l.Wk, _k);
+                Quant(KernelsQuant.Mode.RmsNorm, _x, l.AttnNorm, NEmbd, l.Wq, l.Wk, l.Wv);
+                MatVec(l.Wq, _q, false);   // Q, K, V are independent: let them overlap
+                MatVec(l.Wk, _k, false);
                 MatVec(l.Wv, _v);
-                _gpu.Record(_kRope, new GpuBuffer[] { _q, _cs }, new uint[] { (uint)NHead, (uint)HeadDim, halfRot }, Groups(NHead * (int)halfRot, Kernels.Wg), 1, 1);
-                _gpu.Record(_kRope, new GpuBuffer[] { _k, _cs }, new uint[] { (uint)NHeadKv, (uint)HeadDim, halfRot }, Groups(NHeadKv * (int)halfRot, Kernels.Wg), 1, 1);
-                _gpu.Record(_kKv, new GpuBuffer[] { _k, _v, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)pos }, Groups(_kvDim, Kernels.Wg), 1, 1);
-                _gpu.Record(_kAttn, new GpuBuffer[] { _q, l.KCache, l.VCache, _scores, _attn },
-                    new uint[] { (uint)(pos + 1), (uint)HeadDim, (uint)_kvDim, (uint)(NHead / NHeadKv), (uint)MaxCtx, Bits(scale) }, (uint)NHead, 1, 1);
+                if (_kRopeP != null)
+                {
+                    _gpu.Record(_kRopeP, new GpuBuffer[] { _q, _cs, _params }, new uint[] { (uint)NHead, (uint)HeadDim, halfRot, 1 }, Groups(NHead * (int)halfRot, Kernels.Wg), 1, 1, false);
+                    _gpu.Record(_kRopeP, new GpuBuffer[] { _k, _cs, _params }, new uint[] { (uint)NHeadKv, (uint)HeadDim, halfRot, 0 }, Groups(NHeadKv * (int)halfRot, Kernels.Wg), 1, 1);
+                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, _params }, new uint[] { (uint)_kvDim, (uint)MaxCtx }, Groups(_kvDim, Kernels.Wg), 1, 1);
+                }
+                else
+                {
+                    _gpu.Record(_kRope, new GpuBuffer[] { _q, _cs }, new uint[] { (uint)NHead, (uint)HeadDim, halfRot, Bits(Config.AttnTemperature(pos)) }, Groups(NHead * (int)halfRot, Kernels.Wg), 1, 1, false);
+                    _gpu.Record(_kRope, new GpuBuffer[] { _k, _cs }, new uint[] { (uint)NHeadKv, (uint)HeadDim, halfRot, Bits(1f) }, Groups(NHeadKv * (int)halfRot, Kernels.Wg), 1, 1);
+                    _gpu.Record(_kKv, new GpuBuffer[] { _k, _v, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)pos }, Groups(_kvDim, Kernels.Wg), 1, 1);
+                }
+                Attention(l, pos + 1, scale, indirect);
                 Quant(_attn, qDim, l.Wo);
-                MatVec(l.Wo, _xb2);
-                Add(_x, _xb2, NEmbd);
+                MatVec(l.Wo, _x, true, true);             // x += Wo·attn
 
-                Norm(_x, l.FfnNorm, _xb);
-                Quant(_xb, NEmbd, l.Gate, l.Up);
-                MatVec(l.Gate, _g);
+                Quant(KernelsQuant.Mode.RmsNorm, _x, l.FfnNorm, NEmbd, l.Gate, l.Up);
+                MatVec(l.Gate, _g, false); // gate and up overlap
                 MatVec(l.Up, _u);
-                _gpu.Record(_kSilu, new GpuBuffer[] { _g, _u }, new uint[] { (uint)NFf }, Groups(NFf, Kernels.Wg), 1, 1);
-                Quant(_g, NFf, l.Down);
-                MatVec(l.Down, _xb2);
-                Add(_x, _xb2, NEmbd);
+                Quant(KernelsQuant.Mode.SiluMul, _g, _u, NFf, l.Down);
+                MatVec(l.Down, _x, true, true);           // x += Down·(silu(gate)·up)
             }
-            if (DebugLayers >= 0)
-            {
-                _gpu.SubmitAndWait();
-                float[] hidden = new float[NEmbd];
-                _x.Download(hidden, 0);
-                return hidden;
-            }
-            Norm(_x, _outputNorm, _xb);
-            Quant(_xb, NEmbd, _output);
+            if (DebugLayers >= 0) return;
+            Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, NEmbd, _output);
             MatVec(_output, _logits);
-            _gpu.SubmitAndWait();
-
-            _logits.Download(_logitsHost, 0);
-            return _logitsHost;
         }
 
         // Starts a new sequence. The KV cache needs no clearing: attention only reads positions < pos + 1.
         public void Reset() { }
+
+        // Feeds tokens[start .. start+count) at positions start.. ; returns the logits after the last one.
+        public float[] Prefill(IList<int> tokens, int start, int count)
+        {
+            float[] logits = null;
+            for (int i = start; i < start + count; i++) logits = Forward(tokens[i], i);
+            return logits;
+        }
 
         public int ContextLength { get { return MaxCtx; } }
         public int VocabSize { get { return NVocab; } }
