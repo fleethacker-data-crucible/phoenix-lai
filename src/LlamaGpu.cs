@@ -11,7 +11,10 @@ namespace Phoenix
         public readonly float Eps, RopeBase;
         public readonly ModelConfig Config;
         public long WeightBytes;
-        int Ring { get { return (MaxCtx + 1) & ~1; } }   // cache slots (even, for fp16 pairs)
+        int Ring { get { return (MaxCtx + 7) & ~7; } }   // cache slots (a multiple of 8: fp16 pairs, q8 / q4 words)
+        public readonly KvType Kv, KvV;   // K / V cache formats                      // KV cache format (fp16, or 8 / 4-bit with KernelsKv)
+        // Words of one cache value group the decode store handles per thread: 2 values (fp16) or 64 (quantized).
+        int KvStoreGroups(int values) { return Kv == KvType.F16 && KvV == KvType.F16 ? values / 2 : values / 64; }
 
         // A weight matrix on the GPU. Q8_0: A = qs bytes, B = f32 scales. K-quants: A = blocks (Q6_K padded), B unused.
         sealed class GW { public GgmlType Type; public GpuBuffer A, B; public int Rows, Cols, Nb; }
@@ -42,7 +45,10 @@ namespace Phoenix
         readonly GpuBuffer _x, _xb, _xb2, _q, _k, _v, _attn, _g, _u, _xq, _xd, _kq, _kd, _cs, _scores, _logits;
         readonly float[] _xHost, _csHost, _logitsHost;
 
-        public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx)
+        public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx) : this(gpu, g, maxCtx, KvType.F16, KvType.F16) { }
+        public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv) : this(gpu, g, maxCtx, kv, kv) { }
+
+        public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv, KvType kvV)
         {
             _gpu = gpu;
             Config = ModelConfig.FromGguf(g);
@@ -50,6 +56,8 @@ namespace Phoenix
             HeadDim = Config.HeadDim; NRot = Config.NRot; Eps = Config.Eps; RopeBase = Config.RopeBase;
             MaxCtx = maxCtx;
             _kvDim = NHeadKv * HeadDim;
+            Kv = _kvDim % 64 == 0 ? kv : KvType.F16;
+            KvV = _kvDim % 64 == 0 ? kvV : KvType.F16;
             if (NEmbd % 32 != 0 || NFf % 32 != 0) throw new NotSupportedException("Dimensions must be multiples of 32.");
 
             try
@@ -73,11 +81,11 @@ namespace Phoenix
                 uint grp = (uint)(NHead / NHeadKv);
                 if (NHead % NHeadKv == 0 && grp <= KernelsAttention.MaxGroup && HeadDim <= KernelsAttention.MaxHeadDim)
                 {
-                    _kAttnScores = Kernel(KernelsAttention.Scores(grp), 4, 5, "attn scores");
+                    _kAttnScores = Kernel(KernelsAttention.Scores(grp, KernelsAttention.MaxHeadDim, Kv), 4, 5, "attn scores");
                     _kAttnSoftmax = Kernel(KernelsAttention.Softmax(), 2, 1, "attn softmax");
-                    _kAttnOut = Kernel(KernelsAttention.OutputPartial(grp), 4, 5, "attn out");
+                    _kAttnOut = Kernel(KernelsAttention.OutputPartial(grp, KvV), 4, 5, "attn out");
                     _kAttnReduce = Kernel(KernelsAttention.OutputReduce(), 3, 1, "attn reduce");
-                    _kKvT = Kernel(KernelsAttention.KvStore(), 5, 2, "kv store");
+                    _kKvT = Kernel(KernelsKv.Store(Kv, KvV), 5, 2, "kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
                     _kRopeP = Kernel(KernelsAttention.Rope(), 3, 4, "rope");
                 }
                 _kAdd = Kernel(Kernels.Add(), 2, 1, "add");
@@ -104,9 +112,9 @@ namespace Phoenix
                     l.Up = UploadW(T(g, p + "ffn_up.weight"));
                     l.Down = UploadW(T(g, p + "ffn_down.weight"));
                     // Wide attention path: packed fp16 cache (2 bytes per value); the simple fallback kernels use f32.
-                    ulong perValue = _kAttnScores != null ? 2UL : 4UL;
-                    l.KCache = Buf((ulong)Ring * (ulong)_kvDim * perValue, false);
-                    l.VCache = Buf((ulong)Ring * (ulong)_kvDim * perValue, false);
+                    bool wide = _kAttnScores != null;
+                    l.KCache = Buf(wide ? KernelsKv.CacheBytes(Kv, Ring, _kvDim) : (ulong)Ring * (ulong)_kvDim * 4, false);
+                    l.VCache = Buf(wide ? KernelsKv.CacheBytes(KvV, Ring, _kvDim) : (ulong)Ring * (ulong)_kvDim * 4, false);
                     _layers[i] = l;
                 }
 
@@ -464,7 +472,7 @@ namespace Phoenix
                 {
                     _gpu.Record(_kRopeP, new GpuBuffer[] { _q, _cs, _params }, new uint[] { (uint)NHead, (uint)HeadDim, halfRot, 1 }, Groups(NHead * (int)halfRot, Kernels.Wg), 1, 1, false);
                     _gpu.Record(_kRopeP, new GpuBuffer[] { _k, _cs, _params }, new uint[] { (uint)NHeadKv, (uint)HeadDim, halfRot, 0 }, Groups(NHeadKv * (int)halfRot, Kernels.Wg), 1, 1);
-                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, _params }, new uint[] { (uint)_kvDim, (uint)Ring }, Groups(_kvDim / 2, Kernels.Wg), 1, 1);
+                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, _params }, new uint[] { (uint)_kvDim, (uint)Ring }, Groups(KvStoreGroups(_kvDim), Kernels.Wg), 1, 1);
                 }
                 else
                 {
@@ -542,8 +550,8 @@ namespace Phoenix
             _kMmQ6K = Kernel(KernelsPrefillK.MatMulK(GgmlType.Q6_K, MmTok), 4, 4, "pf matmul q6_K");
             _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");
             _kRopeRows = Kernel(KernelsPrefillK.RopeRows(), 2, 4, "pf rope");
-            _kKvRows = Kernel(KernelsPrefill.KvStoreRows(), 4, 5, "pf kv store");
-            _kAttnPre = Kernel(KernelsPrefill.Attention(), 4, 8, "pf attention");
+            _kKvRows = Kernel(KernelsKv.StoreRows(Kv, KvV), 4, 5, "pf kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
+            _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 8, "pf attention");
             _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
             ulong T = (ulong)PrefillChunk, d = (ulong)NEmbd, qDim = (ulong)(NHead * HeadDim);
             ulong maxIn = (ulong)Math.Max(Math.Max(NEmbd, NHead * HeadDim), NFf);
@@ -600,8 +608,8 @@ namespace Phoenix
                 Mm(l.Wv, _pV, T, false, true);
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pQ, _pCs }, new uint[] { (uint)NHead, (uint)HeadDim, half, (uint)T }, Groups(T * NHead * (int)half, Kernels.Wg), 1, 1, false);
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pK, _pCs }, new uint[] { (uint)NHeadKv, (uint)HeadDim, half, (uint)T }, Groups(T * NHeadKv * (int)half, Kernels.Wg), 1, 1);
-                for (uint par = 0; par < 2; par++)
-                    _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)Ring, (uint)p0, (uint)T, par }, Groups(T * _kvDim / 2, Kernels.Wg), 1, 1);
+                for (uint par = 0; par < KernelsKv.Passes(Kv); par++)
+                    _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(_kvDim), Kernels.Wg), 1, 1);
                 _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
                     new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale) }, (uint)T, (uint)NHead, 1);
                 RowQuantK(KernelsQuant.Mode.Plain, _pAtt, null, T * qDim);

@@ -323,7 +323,10 @@ namespace Phoenix
         // Streaming softmax over 256-key chunks, so any context length works. Scores use f16(q) like the decode path.
         // Grid (T, nHead). bindings: 0 q [T][nHead][hd], 1 kc, 2 vc, 3 out [T][nHead][hd].
         // push: hd, kvDim, ring, nHead, nKv, p0, window, scale(bits)
-        public static uint[] Attention()
+        public static uint[] Attention() { return Attention(KvType.F16, KvType.F16); }
+
+        // kvType: the K cache format; vType: the V cache format (KernelsKv).
+        public static uint[] Attention(KvType kvType, KvType vType)
         {
             KB k = new KB(AttWg);
             KB.Buf q = k.Buffer(0, k.F32, true), kc = k.Buffer(1, k.U32, true), vc = k.Buffer(2, k.U32, true), ob = k.Buffer(3, k.F32, false);
@@ -357,7 +360,7 @@ namespace Phoenix
                 k.For(d, k.C(0), hd, k.C(1), delegate
                 {
                     uint dd = k.Get(d, k.U32);
-                    k.Set(acc, k.FAdd(k.Get(acc, k.F32), k.FMul(k.Ld(qs, dd), KernelsAttention.HalfAt(k, kc, k.IAdd(k.IMul(k.IAdd(kRow0, dd), ring), slot)))));
+                    k.Set(acc, k.FAdd(k.Get(acc, k.F32), k.FMul(k.Ld(qs, dd), KernelsKv.K(k, kvType, kc, k.IAdd(kRow0, dd), slot, ring, kvDim))));
                 });
                 uint s = k.Select(k.F32, valid, k.FMul(k.Get(acc, k.F32), scale), k.CF(float.NegativeInfinity));
                 k.St(red, lid, s);
@@ -377,9 +380,9 @@ namespace Phoenix
                 {
                     uint jj = k.Get(j, k.U32);
                     uint pj = k.Ld(sc, jj);
-                    uint vRow = k.IMul(k.UMod(k.IAdd(c0, jj), ring), kvDim);
-                    k.Set(o0, k.FAdd(k.Get(o0, k.F32), k.FMul(pj, KernelsAttention.HalfAt(k, vc, k.IAdd(vRow, k.IAdd(kRow0, k.Select(k.U32, k.ULt(lid, hd), lid, k.C(0))))))));
-                    k.Set(o1, k.FAdd(k.Get(o1, k.F32), k.FMul(pj, KernelsAttention.HalfAt(k, vc, k.IAdd(vRow, k.IAdd(kRow0, k.Select(k.U32, has1, d1, k.C(0))))))));
+                    uint vSlot = k.UMod(k.IAdd(c0, jj), ring);
+                    k.Set(o0, k.FAdd(k.Get(o0, k.F32), k.FMul(pj, KernelsKv.V(k, vType, vc, vSlot, k.IAdd(kRow0, k.Select(k.U32, k.ULt(lid, hd), lid, k.C(0))), ring, kvDim))));
+                    k.Set(o1, k.FAdd(k.Get(o1, k.F32), k.FMul(pj, KernelsKv.V(k, vType, vc, vSlot, k.IAdd(kRow0, k.Select(k.U32, has1, d1, k.C(0))), ring, kvDim))));
                 });
                 k.Set(m, mNew);
                 k.Barrier();

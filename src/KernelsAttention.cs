@@ -99,12 +99,14 @@ namespace Phoenix
         // the 4 partial dot products are added in a fixed order. Scores every query head of the group.
         // Grid: (ceil(n / 16), nHeadKv). bindings: 0 q, 1 kc (packed fp16), 2 scores, 3 params.
         // push: headDim, kvDim, maxCtx (score row stride), scale(bits), ring
-        public static uint[] Scores(uint group) { return Scores(group, MaxHeadDim); }
+        public static uint[] Scores(uint group) { return Scores(group, MaxHeadDim, KvType.F16); }
+        public static uint[] Scores(uint group, uint maxHeadDim) { return Scores(group, maxHeadDim, KvType.F16); }
 
         // Shared memory needed by Scores (bytes): the group's queries as packed fp16 pairs + the partial sums.
         public static uint ScoresShared(uint group, uint maxHeadDim) { return (group * maxHeadDim / 2 + group * KeysPerGroup * Lanes) * 4; }
 
-        public static uint[] Scores(uint group, uint maxHeadDim)
+        // kv: cache format (KernelsKv).
+        public static uint[] Scores(uint group, uint maxHeadDim, KvType kvType)
         {
             KB k = new KB(KeysPerGroup * Lanes);
             KB.Buf q = k.Buffer(0, k.F32, true), kc = k.Buffer(1, k.U32, true), sc = k.Buffer(2, k.F32, false), prm = k.Buffer(3, k.U32, true);
@@ -135,11 +137,11 @@ namespace Phoenix
             for (int a = 0; a < group; a++) k.Set(acc[a], k.CF(0));
             uint tSafe = k.Select(k.U32, k.ULt(t, n), t, k.C(0));
             uint slot = k.UMod(k.IAdd(first, tSafe), ring);
-            uint kBase = k.IAdd(k.IMul(k.IMul(kvh, headDim), ring), slot);
+            uint kRow = k.IMul(kvh, headDim);
             k.For(d, lane, headDim, k.C(Lanes), delegate
             {
                 uint dd = k.Get(d, k.U32);
-                uint kv = HalfAt(k, kc, k.IAdd(kBase, k.IMul(dd, ring)));
+                uint kv = KernelsKv.K(k, kvType, kc, k.IAdd(kRow, dd), slot, ring, kvDim);
                 for (int a = 0; a < group; a++)
                 {
                     uint qi = k.IAdd(k.IMul(k.C((uint)a), headDim), dd);
@@ -204,7 +206,9 @@ namespace Phoenix
 
         // Partial weighted V over one 32-key chunk. Grid: (nChunks, nHeadKv).
         // bindings: 0 p, 1 vc (packed fp16), 2 partial, 3 params. push: headDim, kvDim, maxCtx, nHead, ring
-        public static uint[] OutputPartial(uint group)
+        public static uint[] OutputPartial(uint group) { return OutputPartial(group, KvType.F16); }
+
+        public static uint[] OutputPartial(uint group, KvType kvType)
         {
             KB k = new KB(OutWg);
             KB.Buf p = k.Buffer(0, k.F32, true), vc = k.Buffer(1, k.U32, true), part = k.Buffer(2, k.F32, false), prm = k.Buffer(3, k.U32, true);
@@ -227,7 +231,7 @@ namespace Phoenix
                 k.For(j, t0, t1, k.C(1), delegate
                 {
                     uint t = k.Get(j, k.U32);
-                    uint v = HalfAt(k, vc, k.IAdd(k.IMul(k.UMod(k.IAdd(first, t), ring), kvDim), vOff));
+                    uint v = KernelsKv.V(k, kvType, vc, k.UMod(k.IAdd(first, t), ring), vOff, ring, kvDim);
                     for (int a = 0; a < group; a++)
                     {
                         uint pv = k.Ld(p, k.IAdd(k.IMul(k.IAdd(h0, k.C((uint)a)), maxCtx), t));
