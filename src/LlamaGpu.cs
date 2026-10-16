@@ -491,12 +491,133 @@ namespace Phoenix
         public void Reset() { }
         public int MinReuse(int fed) { return 0; }
 
-        // Feeds tokens[start .. start+count) at positions start.. ; returns the logits after the last one.
+        // Feeds tokens[start .. start+count) at positions start.. ; returns the logits after the last one. Chunks of up to
+        // PrefillChunk tokens go through the batched kernels (KernelsPrefillK) when every matrix is Q4_K / Q6_K; a short
+        // tail (< 8 tokens) and other models use the decode pass.
         public float[] Prefill(IList<int> tokens, int start, int count)
         {
             float[] logits = null;
-            for (int i = start; i < start + count; i++) logits = Forward(tokens[i], i);
+            int i = start, end = start + count;
+            if (UsePrefill && PrefillSupported())
+                while (end - i >= 8)
+                {
+                    int T = Math.Min(PrefillChunk, end - i);
+                    logits = PrefillChunkRun(tokens, i, T);
+                    i += T;
+                }
+            for (; i < end; i++) logits = Forward(tokens[i], i);
             return logits;
+        }
+
+        // ---- batched prefill ----
+        public static int PrefillChunk = 512;   // tokens per chunk
+        public static bool UsePrefill = true;
+        const uint MmTok = 16;                  // tokens per matmul workgroup
+        const int LayersPerSubmit = 8;          // short GPU jobs (no driver timeout on long prompts)
+        GpuKernel _kMmQ4K, _kMmQ6K, _kRowNorm, _kRopeRows, _kKvRows, _kAttnPre, _kCopyRange;
+        GpuBuffer _pX, _pXb, _pQ, _pK, _pV, _pAtt, _pG, _pU, _pKq, _pKd, _pCs, _pUp;
+        int _prefillState;   // 0 unknown, 1 supported, -1 not
+
+        bool PrefillSupported()
+        {
+            if (_prefillState != 0) return _prefillState > 0;
+            bool ok = _gpu.IntegerDot && _kAttnScores != null && Config.AttnTempScale == 0 && NRot == HeadDim && DebugLayers < 0;
+            if (ok)
+                foreach (Layer l in _layers)
+                    foreach (GW w in new GW[] { l.Wq, l.Wk, l.Wv, l.Wo, l.Gate, l.Up, l.Down })
+                        if (w.Type != GgmlType.Q4_K && w.Type != GgmlType.Q6_K) ok = false;
+            _prefillState = ok ? 1 : -1;
+            return ok;
+        }
+
+        void EnsurePrefill()
+        {
+            if (_kMmQ4K != null) return;
+            _kMmQ4K = Kernel(KernelsPrefillK.MatMulK(GgmlType.Q4_K, MmTok), 4, 4, "pf matmul q4_K");
+            _kMmQ6K = Kernel(KernelsPrefillK.MatMulK(GgmlType.Q6_K, MmTok), 4, 4, "pf matmul q6_K");
+            _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");
+            _kRopeRows = Kernel(KernelsPrefillK.RopeRows(), 2, 4, "pf rope");
+            _kKvRows = Kernel(KernelsPrefill.KvStoreRows(), 4, 5, "pf kv store");
+            _kAttnPre = Kernel(KernelsPrefill.Attention(), 4, 8, "pf attention");
+            _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
+            ulong T = (ulong)PrefillChunk, d = (ulong)NEmbd, qDim = (ulong)(NHead * HeadDim);
+            ulong maxIn = (ulong)Math.Max(Math.Max(NEmbd, NHead * HeadDim), NFf);
+            _pX = Buf(T * d * 4, false); _pXb = Buf(T * d * 4, false);
+            _pQ = Buf(T * qDim * 4, false); _pK = Buf(T * (ulong)_kvDim * 4, false); _pV = Buf(T * (ulong)_kvDim * 4, false);
+            _pAtt = Buf(T * qDim * 4, false);
+            _pG = Buf(T * (ulong)NFf * 4, false); _pU = Buf(T * (ulong)NFf * 4, false);
+            _pKq = Buf(T * maxIn, false); _pKd = Buf(T * (maxIn / 256) * 4, false);
+            _pCs = Buf(T * (ulong)NRot * 4, BufferKind.Upload);
+            _pUp = Buf(T * d * 4, BufferKind.Upload);
+        }
+
+        // Q8_K-quantizes n values of x (T rows back to back); SiluMul quantizes silu(x) * aux.
+        void RowQuantK(KernelsQuant.Mode mode, GpuBuffer x, GpuBuffer aux, int n)
+        {
+            int nb = n / CpuRef.QK_K;
+            GpuBuffer[] b = mode == KernelsQuant.Mode.Plain ? new GpuBuffer[] { x, _pKq, _pKd } : new GpuBuffer[] { x, _pKq, _pKd, aux };
+            _gpu.Record(_kQ8K[(int)mode], b, new uint[] { (uint)nb, (uint)n, Bits(Eps) }, (uint)nb, 1, 1);
+        }
+
+        void Mm(GW w, GpuBuffer y, int T, bool addTo, bool barrierAfter)
+        {
+            _gpu.Record(w.Type == GgmlType.Q4_K ? _kMmQ4K : _kMmQ6K, new GpuBuffer[] { w.A, _pKq, _pKd, y },
+                new uint[] { (uint)w.Rows, (uint)w.Nb, (uint)T, addTo ? 1u : 0u }, Groups(w.Rows, KernelsPrefillK.Threads), Groups(T, MmTok), 1, barrierAfter);
+        }
+
+        float[] PrefillChunkRun(IList<int> tokens, int p0, int T)
+        {
+            if (p0 + T > MaxCtx) throw new InvalidOperationException("Context full.");
+            EnsurePrefill();
+            int d = NEmbd, qDim = NHead * HeadDim;
+            float[] host = new float[T * d], row = new float[d], cs = new float[T * NRot], one = new float[NRot];
+            for (int t = 0; t < T; t++)
+            {
+                CpuRef.GetRow(_tokEmbd, tokens[p0 + t], row);
+                Array.Copy(row, 0, host, t * d, d);
+                Config.RopeTable(p0 + t, _ropeFreqs, one);
+                Array.Copy(one, 0, cs, t * NRot, NRot);
+            }
+            _pUp.Upload(host, 0);
+            _pCs.Upload(cs, 0);
+            uint eps = Bits(Eps), half = (uint)(NRot / 2);
+            float scale = 1.0f / (float)Math.Sqrt(HeadDim);
+
+            _gpu.Begin();
+            _gpu.Record(_kCopyRange, new GpuBuffer[] { _pUp, _pX }, new uint[] { (uint)(T * d), 0, 0 }, Groups(T * d, Kernels.Wg), 1, 1);
+            for (int il = 0; il < NLayer; il++)
+            {
+                Layer l = _layers[il];
+                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.AttnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
+                RowQuantK(KernelsQuant.Mode.Plain, _pXb, null, T * d);
+                Mm(l.Wq, _pQ, T, false, false);
+                Mm(l.Wk, _pK, T, false, false);
+                Mm(l.Wv, _pV, T, false, true);
+                _gpu.Record(_kRopeRows, new GpuBuffer[] { _pQ, _pCs }, new uint[] { (uint)NHead, (uint)HeadDim, half, (uint)T }, Groups(T * NHead * (int)half, Kernels.Wg), 1, 1, false);
+                _gpu.Record(_kRopeRows, new GpuBuffer[] { _pK, _pCs }, new uint[] { (uint)NHeadKv, (uint)HeadDim, half, (uint)T }, Groups(T * NHeadKv * (int)half, Kernels.Wg), 1, 1);
+                for (uint par = 0; par < 2; par++)
+                    _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)Ring, (uint)p0, (uint)T, par }, Groups(T * _kvDim / 2, Kernels.Wg), 1, 1);
+                _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
+                    new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale) }, (uint)T, (uint)NHead, 1);
+                RowQuantK(KernelsQuant.Mode.Plain, _pAtt, null, T * qDim);
+                Mm(l.Wo, _pX, T, true, true);                      // x += Wo·attn
+
+                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.FfnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
+                RowQuantK(KernelsQuant.Mode.Plain, _pXb, null, T * d);
+                Mm(l.Gate, _pG, T, false, false);
+                Mm(l.Up, _pU, T, false, true);
+                RowQuantK(KernelsQuant.Mode.SiluMul, _pG, _pU, T * NFf);
+                Mm(l.Down, _pX, T, true, true);                    // x += Down·(silu(gate)·up)
+
+                if ((il + 1) % LayersPerSubmit == 0 && il + 1 < NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
+            }
+            // The last token's hidden state goes to the decode buffer for the output head.
+            _gpu.Record(_kCopyRange, new GpuBuffer[] { _pX, _x }, new uint[] { (uint)d, (uint)((T - 1) * d), 0 }, Groups(d, Kernels.Wg), 1, 1);
+            Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, NEmbd, _output);
+            MatVec(_output, _logits);
+            _gpu.SubmitAndWait();
+            _logits.Download(_logitsHost, 0);
+            return _logitsHost;
         }
 
         public int ContextLength { get { return MaxCtx; } }

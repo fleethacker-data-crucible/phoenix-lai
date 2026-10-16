@@ -69,6 +69,16 @@ namespace Phoenix
             ThreadPool.QueueUserWorkItem(delegate { try { GetEmbedder(); } catch { } });
         }
 
+        // Loads the embedding model now and runs one query through it (driver shader compiles, first-use page-ins), so
+        // the first chat message does not pay for it. Skipped when there is no index with vectors.
+        public void WarmUpNow()
+        {
+            RagIndex ix = _index;
+            if (!Enabled || ix == null || ix.Dim == 0) return;
+            Embedder e = GetEmbedder();
+            if (e != null) e.Query("warm up");
+        }
+
         public string EmbedBackend { get { Embedder e = _embedder; return e != null ? e.Backend : null; } }
 
         // True when docs\ holds files but there is no usable index yet.

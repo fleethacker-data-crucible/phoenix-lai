@@ -209,6 +209,17 @@ namespace Phoenix
             return ids;
         }
 
+        // Runs a short throwaway generation so every GPU pipeline is created and the first real prompt starts at full
+        // speed; the cache is cleared afterwards.
+        public void WarmUp()
+        {
+            SamplerSettings s = new SamplerSettings(); s.Temperature = 0;
+            List<ChatMessage> m = new List<ChatMessage>();
+            m.Add(new ChatMessage("system", "Warm up.")); m.Add(new ChatMessage("user", "Hi"));
+            Generate(m, s, 2, null, null);
+            ClearCache();
+        }
+
         public void ClearCache() { _fed.Clear(); _model.Reset(); }
 
         // VRAM of the GPU this model runs on (this process's use and its current budget); false on the CPU.
