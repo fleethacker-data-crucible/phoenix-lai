@@ -262,6 +262,9 @@ namespace Phoenix
             // Asking for the docs by name ("via rag", "in my docs") means the user wants something from them: any single
             // matching word is enough, and if nothing matches at all (e.g. "a random function"), a few random sections.
             bool explicitDocs = ExplicitRe.IsMatch(query);
+            // The library is a syntax reference for writing code: other messages (chat, "what files do I have") get
+            // nothing, so a shared word like "files" no longer drags unrelated sections into the prompt.
+            if (!explicitDocs && !IsCodeRequest(query)) return hits;
             Dictionary<ulong, float> q = new Dictionary<ulong, float>();
             AddQueryTerms(q, query, 1f);
             if (!string.IsNullOrEmpty(context)) AddQueryTerms(q, context, 0.5f);
@@ -274,10 +277,82 @@ namespace Phoenix
             lock (_swapLock)
             {
                 if (_index == null) return hits;
-                hits = _index.Search(q, qv, TopK, BudgetChars, MinRelative, explicitDocs ? 0f : MinCoverage, explicitDocs ? 0.05f : MinLift, MaxDrop, RrfK);
+                bool[] allowed = explicitDocs ? null : CodeFiles(_index, query);
+                hits = _index.Search(q, qv, TopK, BudgetChars, MinRelative, explicitDocs ? 0f : MinCoverage, explicitDocs ? 0.05f : MinLift, MaxDrop, RrfK, allowed);
                 if (hits.Count == 0 && explicitDocs) hits = _index.RandomHits(3, BudgetChars);
                 return hits;
             }
+        }
+
+        // A message that asks for code (write / fix / explain code, syntax questions) or contains code.
+        static readonly System.Text.RegularExpressions.Regex CodeVerbRe = new System.Text.RegularExpressions.Regex(
+            @"\b(write|create|make|implement|build|generate|code|fix|refactor|debug|convert|rewrite|optimi[sz]e|add|declare|define|" +
+            @"use|call|override|inherit|parse|serialize|loop|iterate|sort|filter|query|example|snippet|syntax|how (do|can|should|to)|what is the)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        static readonly System.Text.RegularExpressions.Regex CodeNounRe = new System.Text.RegularExpressions.Regex(
+            @"\b(code|function|method|class|struct|record|interface|enum|delegate|event|lambda|linq|async|await|task|thread|" +
+            @"generic|constructor|property|field|variable|constant|array|dictionary|hashset|string ?builder|exception|try|catch|" +
+            @"switch|if|foreach|for|while|operator|namespace|using|attribute|reflection|regex|json|xml|sql|select|join|table|" +
+            @"program|script|syntax|keyword|type|cast|nullable|tuple|pattern|statement|expression|compile|error|bug|c#|csharp|" +
+            @"\.net|dotnet|python|javascript|typescript|java|c\+\+|html|css)\b|c#|\.cs\b|\.sql\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        static readonly System.Text.RegularExpressions.Regex CodeTextRe = new System.Text.RegularExpressions.Regex(
+            @"```|=>|\w\.\w+\(|[;{}]\s*$|\b(public|private|static|void|var|int|string|bool|new)\s+\w",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        // Topic folders: docs\code-syntax\<language>\ holds each language's reference sheets. A code request searches only
+        // the folder of the language it is about (from the message or its code), else all of code-syntax\; with no such
+        // folders the whole library is searched. Folder names are matched against these aliases (case-insensitive).
+        const string CodeFolder = "code-syntax";
+        static readonly string[][] LanguageAliases = {
+            new[] { "csharp", "c#", "cs", "dotnet", ".net" }, new[] { "python", "py" }, new[] { "sql", "tsql", "t-sql", "mysql", "postgres", "postgresql", "sqlite" },
+            new[] { "javascript", "js", "node", "nodejs" }, new[] { "typescript", "ts" }, new[] { "java" }, new[] { "cpp", "c++" }, new[] { "c" },
+            new[] { "go", "golang" }, new[] { "rust", "rs" }, new[] { "html" }, new[] { "css" }, new[] { "bash", "sh", "shell" }, new[] { "ps1", "posh" } };
+
+        // Index of the language a message is about, or -1: a named language first, then telltale code.
+        static int DetectLanguage(string text)
+        {
+            string t = text.ToLowerInvariant();
+            for (int i = 0; i < LanguageAliases.Length; i++)
+                foreach (string a in LanguageAliases[i])
+                {
+                    if (a.Length <= 2 && a != "c#") continue;   // "js", "cs", "c": too ambiguous in prose
+                    if (System.Text.RegularExpressions.Regex.IsMatch(t, @"(^|[^\w#+.])" + System.Text.RegularExpressions.Regex.Escape(a) + @"($|[^\w#+])")) return i;
+                }
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\busing System|\bnamespace\s+\w|Console\.Write|\{\s*get;|\bpublic\s+(static\s+)?(class|void|async)\b|\.cs\b")) return 0;
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\s*def\s+\w+\(|^\s*import\s+\w+$|\bprint\(|\.py\b", System.Text.RegularExpressions.RegexOptions.Multiline)) return 1;
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bSELECT\b[\s\S]*\bFROM\b|\bINSERT\s+INTO\b|\bCREATE\s+TABLE\b|\.sql\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return 2;
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bconsole\.log\(|\b(const|let)\s+\w+\s*=|\.js\b")) return 3;
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(Get|Set|New|Write)-[A-Z]\w+|\.ps1\b")) return 13;
+            return -1;
+        }
+
+        // Which files a code request may draw from (null = all), per the topic folders above.
+        static bool[] CodeFiles(RagIndex ix, string query)
+        {
+            int lang = DetectLanguage(query);
+            bool[] inCode = new bool[ix.FileCount], inLang = new bool[ix.FileCount];
+            bool anyCode = false, anyLang = false;
+            for (int f = 0; f < ix.FileCount; f++)
+            {
+                string[] parts = ix.FilePath(f).Replace('\\', '/').ToLowerInvariant().Split('/');
+                for (int p = 0; p < parts.Length - 1; p++)
+                {
+                    if (parts[p] == CodeFolder) { inCode[f] = true; anyCode = true; }
+                    if (lang >= 0 && Array.IndexOf(LanguageAliases[lang], parts[p]) >= 0) { inLang[f] = true; anyLang = true; }
+                }
+                // code-syntax\c#.md: a sheet named after its language counts like a folder of that name
+                string stem = System.IO.Path.GetFileNameWithoutExtension(parts[parts.Length - 1]);
+                if (inCode[f] && lang >= 0 && Array.IndexOf(LanguageAliases[lang], stem) >= 0) { inLang[f] = true; anyLang = true; }
+            }
+            return anyLang ? inLang : anyCode ? inCode : null;
+        }
+
+        public static bool IsCodeRequest(string message)
+        {
+            if (string.IsNullOrEmpty(message)) return false;
+            if (CodeTextRe.IsMatch(message)) return true;
+            return CodeVerbRe.IsMatch(message) && CodeNounRe.IsMatch(message);
         }
 
         static readonly System.Text.RegularExpressions.Regex ExplicitRe = new System.Text.RegularExpressions.Regex(
@@ -292,8 +367,11 @@ namespace Phoenix
             if (!Enabled || ix == null || ix.FileCount == 0) return null;
             List<string> names = new List<string>();
             for (int i = 0; i < ix.FileCount && i < 20; i++) names.Add(ix.FilePath(i));
-            return "The user has a local docs library they call their \"RAG\": " + string.Join(", ", names.ToArray()) +
-                   (ix.FileCount > 20 ? ", and more" : "") + ". Sections that match a message are pasted into that message for you. Only bring up the docs when the user asks about them or they help.";
+            return "Syntax reference library (the user calls it their \"RAG\"): " + string.Join(", ", names.ToArray()) +
+                   (ix.FileCount > 20 ? ", and more" : "") + ". It is separate from the project folder: you cannot open it with <read> or <list>, " +
+                   "and it is not part of the user's project. When a message asks for code, the matching reference sections are " +
+                   "added to that message automatically; use them to check that the code you write uses correct syntax and APIs. " +
+                   "Do not mention the library unless the user asks about it.";
         }
 
         // Weights: 1 = topic word of the message, 0.75 = common word (scores but does not count as a match),
@@ -314,11 +392,12 @@ namespace Phoenix
         // Plain and short: small models echo or misread elaborate wrappers.
         public static string WrapMessage(List<RagHit> hits, string message)
         {
-            StringBuilder sb = new StringBuilder("Sections from my docs library (my RAG) that match this message:\n\n");
+            StringBuilder sb = new StringBuilder("Reference sections from my syntax library (my RAG; not files in my project), for checking the code you write:\n\n");
             for (int i = 0; i < hits.Count; i++)
                 sb.Append("[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " > " + hits[i].Title : "")
                   .Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
-            sb.Append("---\nAnswer in your own words using these sections where they help, and cite them like [1].\n\n").Append(message);
+            sb.Append("---\nMake sure any code you write follows the syntax shown in these sections where they apply. " +
+                      "Don't quote or mention them unless I ask about them.\n\n").Append(message);
             return sb.ToString();
         }
 
@@ -632,8 +711,9 @@ namespace Phoenix
 
         // Hybrid search: BM25 candidates (gated as before) and vector candidates (cosine >= minCosine), merged by
         // reciprocal rank fusion: score = sum 1 / (k + rank). Without vectors this is plain BM25.
+        // allowed: per file, whether its chunks may be returned (null = all).
         public List<RagHit> Search(Dictionary<ulong, float> query, float[] qv, int topK, int budgetChars, float minRelative,
-            float minCoverage, float minLift, float maxDrop, float rrfK)
+            float minCoverage, float minLift, float maxDrop, float rrfK, bool[] allowed)
         {
             List<int> kw = query.Count > 0 ? Bm25(query, minRelative, minCoverage) : new List<int>();
             List<int> vec = new List<int>();
@@ -666,6 +746,7 @@ namespace Phoenix
             foreach (int c in order)
             {
                 if (hits.Count >= topK) break;
+                if (allowed != null && !allowed[*(int*)(ChunkRec(c) + 16)]) continue;
                 string text = ChunkText(c);
                 if (used + text.Length > budgetChars && hits.Count > 0) continue;   // a smaller one may still fit
                 used += text.Length;

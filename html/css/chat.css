@@ -75,12 +75,38 @@ body {
 pre .caret { height: 1.15em; width: 7px; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* Collapsed code-generation box: "Generating code…" / "Checking code…" / "Looks good!" */
+.work { margin: 6px 0 10px; border: 1px solid var(--line); border-radius: var(--r); font-size: 12.5px; color: var(--dim); }
+.work summary { display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; list-style: none; user-select: none; }
+.work summary::-webkit-details-marker { display: none; }
+.work summary::after { content: '›'; margin-left: auto; transition: transform .15s; }
+.work[open] summary::after { transform: rotate(90deg); }
+.work .spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); border-top-color: #d4a72c; flex: none; }
+.work.busy .spin { animation: spin .8s linear infinite; }
+.work.ok .spin { border-color: #4caf50; background: #4caf50; }
+.work.ok .lbl { color: #4caf50; }
+.work .worklog { margin: 0; padding: 8px 12px; max-height: 320px; overflow: auto; border-top: 1px solid var(--line);
+                 font: 12px/1.5 var(--mono); white-space: pre-wrap; color: #9a9aa6; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .code { margin: 10px 0; border: 1px solid var(--line); border-radius: var(--r); background: transparent; overflow: hidden; white-space: normal; }
-.code header { display: flex; align-items: center; gap: 10px; padding: 2px 10px; border-bottom: 1px solid var(--line);
+.code header { display: flex; align-items: center; gap: 10px; padding: 4px 8px 4px 6px; border-bottom: 1px solid var(--line);
                color: var(--dim); font-size: 11.5px; line-height: 18px; }
-.code header .copy { padding: 0 7px; font-size: 11px; line-height: 16px; border-color: var(--line); color: var(--dim); }
+.code header .grow { flex: 1; }
+/* Language badge: first in the row, as tall as the icons (18px). */
+.code header .badge { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+                      line-height: 1; letter-spacing: .02em; white-space: nowrap; }
+.code header .badge.plain { background: rgba(255,255,255,.08); color: var(--dim); }
+.code header .file { font-family: var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code header .copy { display: inline-flex; align-items: center; justify-content: center; height: 18px; width: 22px; padding: 0;
+                     border: none; background: none; color: var(--dim); cursor: pointer; }
 .code header .copy:hover { color: var(--text); }
-.code pre { margin: 0; padding: 12px; overflow-x: auto; font: 13.5px/1.55 var(--mono); color: #e7e6f0; white-space: pre; }
+.code header .copy.done { color: #4caf50; }
+/* VS Code Dark+ token colors */
+.hl-kw { color: #569cd6; } .hl-ctl { color: #c586c0; } .hl-str { color: #ce9178; } .hl-num { color: #b5cea8; }
+.hl-com { color: #6a9955; font-style: italic; } .hl-fn { color: #dcdcaa; } .hl-type { color: #4ec9b0; } .hl-var { color: #9cdcfe; }
+.hl-const { color: #4fc1ff; } .hl-pre { color: #c586c0; } .hl-attr { color: #4ec9b0; } .hl-prop { color: #9cdcfe; }
+.hl-tag { color: #569cd6; } .hl-punc { color: #808080; }
+.code pre { margin: 0; padding: 12px; overflow-x: auto; font: 13.5px/1.55 var(--mono); color: #d4d4d4; white-space: pre; }
 .tag { color: var(--accent-2); font-family: var(--mono); font-size: 13px; }
 
 button, .btn { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: var(--r);
@@ -131,6 +157,11 @@ button:disabled { opacity: .45; cursor: default; }
 #status .item svg { flex: none; opacity: .9; }
 #status .sep { margin: 0 14px; opacity: .55; }
 #status .lower { text-transform: lowercase; }
+#status .item.ok { color: #4caf50; }
+#status .item.warn { color: #e8912d; }
+#status .item.off { color: #8a8a8a; }
+#status .item.gold { color: #d4a72c; }
+#status .item.bad { color: #e5534b; }
 
 /* Windows: no dimming; the page behind blurs in (and out) while one is open, and the window fades with it. */
 .modal { position: fixed; inset: var(--banner) 0 0 0; display: flex; align-items: center; justify-content: center; z-index: 10;
