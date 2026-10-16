@@ -673,6 +673,7 @@ namespace Phoenix
                 SendJson(res, 200, "{\"started\":true}");
                 return;
             }
+            if (path == "/api/pretype" && post) { StartPretype(body); SendJson(res, 200, "{}"); return; }
             if (path == "/api/mode" && post)
             {
                 _acceptMode = Json.GetStr(body, "mode", "auto").ToLowerInvariant() == "accept";
@@ -940,6 +941,7 @@ namespace Phoenix
             }, null, 1000, 1000);
 
             if (_recallBusy != 0) _recallStop = true;   // a chat takes priority over the /recall pre-read
+            if (_pretypeBusy != 0) _pretypeStop = true; // ...and over a typing-pause draft
             lock (_engineLock)
             {
                 try
@@ -953,54 +955,8 @@ namespace Phoenix
                         if (pct / 5 != lastPct / 5) { lastPct = pct; write("{\"pf\":" + pct + "}"); }
                     };
                     Workspace ws = _folderAccess ? _workspace : null;
-                    List<KeyValuePair<string, string>> rulesFiles = RulesFiles();
-                    string rules = RulesPrompt(rulesFiles);
-                    if (rules != null)
-                    {
-                        int ri = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
-                        if (ri >= 0) msgs[ri] = new ChatMessage("system", rules + "\n" + msgs[ri].Text);
-                        else msgs.Insert(0, new ChatMessage("system", rules));
-                        List<string> names = new List<string>();
-                        foreach (KeyValuePair<string, string> f in rulesFiles) names.Add(f.Key + " " + f.Value);
-                        Log.Text("#" + rid + " RULES " + string.Join(" + ", names.ToArray()));
-                    }
-                    if (ws != null)
-                    {
-                        // Tool instructions go into the system message (added if the client sent none).
-                        int si = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
-                        string tools = ws.ToolInstructions();
-                        if (si >= 0) msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + tools);
-                        else msgs.Insert(0, new ChatMessage("system", tools));
-                    }
-
-                    // Retrieved docs go into the newest user message only (not the system prompt), so the cached
-                    // conversation prefix stays valid and old turns don't keep spending context on old references.
-                    string libraryNote = Rag.LibraryNote();
-                    if (libraryNote != null)
-                    {
-                        int si2 = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
-                        if (si2 >= 0) msgs[si2] = new ChatMessage("system", msgs[si2].Text + "\n\n" + libraryNote);
-                        else msgs.Insert(0, new ChatMessage("system", libraryNote));
-                    }
-                    if (Rag.Enabled)
-                    {
-                        int ui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
-                        if (ui >= 0)
-                        {
-                            int pi = ui > 0 ? msgs.FindLastIndex(ui - 1, delegate(ChatMessage m) { return m.Role == "user"; }) : -1;
-                            Stopwatch rsw = Stopwatch.StartNew();
-                            List<RagHit> hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
-                            if (hits.Count > 0)
-                            {
-                                msgs[ui] = new ChatMessage("user", Rag.WrapMessage(hits, msgs[ui].Text));
-                                write("{\"rag\":" + HitsJson(hits, false) + "}");
-                                List<string> srcs = new List<string>();
-                                foreach (RagHit h in hits) srcs.Add(h.File + (h.Title.Length > 0 ? " › " + h.Title : "") + " (" + h.Score.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + ")");
-                                Log.Text("#" + rid + " RAG " + hits.Count + " chunks in " + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + " ms: " + string.Join("; ", srcs.ToArray()));
-                                Log.Json("rag", "\"id\":" + rid + ",\"ms\":" + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + ",\"hits\":" + HitsJson(hits, false));
-                            }
-                        }
-                    }
+                    List<RagHit> hits = PrepareMessages(msgs, ws, rid, true);
+                    if (hits.Count > 0) write("{\"rag\":" + HitsJson(hits, false) + "}");
 
                     // Code requests: every step is generated out of sight ("w" events, a collapsed box in the UI), the code is
                     // then checked against the syntax reference, and only the checked (or corrected) reply is shown.
@@ -1019,7 +975,7 @@ namespace Phoenix
                         int toolEnd = -1;   // end of the first <read>/<list> tag: the model must wait for its result
                         st = _engine.Generate(msgs, s, maxTokens, delegate(string piece)
                         {
-                            if (ttft < 0) ttft = stepWatch.Elapsed.TotalSeconds;
+                            if (ttft < 0) { ttft = stepWatch.Elapsed.TotalSeconds; if (step == 0) Log.Text("#" + rid + " first token " + ChatLog.Ms(total.Elapsed.TotalSeconds) + " ms after the request arrived (prepare " + ChatLog.Ms(total.Elapsed.TotalSeconds - ttft) + " ms)"); }
                             if (toolEnd >= 0) return;
                             reply.Append(piece);
                             write("{\"t\":" + Json.Quote(piece) + "}");
@@ -1157,6 +1113,117 @@ namespace Phoenix
         {
             string tail = reply.Length > 400 ? reply.Substring(reply.Length - 400) : reply;   // the announcement ends the reply
             return AnnounceRe.IsMatch(tail) && !HasCode(reply);
+        }
+
+        // System additions (RULES.md, folder tools, docs-library note) and the docs excerpts for the newest user message,
+        // exactly as a chat request builds them, so a typing-pause draft fills the same prompt prefix the real request
+        // will reuse. Returns the docs sections added (log: write the RULES / RAG log lines).
+        List<RagHit> PrepareMessages(List<ChatMessage> msgs, Workspace ws, int rid, bool log)
+        {
+            List<RagHit> hits = new List<RagHit>();
+            List<KeyValuePair<string, string>> rulesFiles = RulesFiles();
+            string rules = RulesPrompt(rulesFiles);
+            if (rules != null)
+            {
+                int ri = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                if (ri >= 0) msgs[ri] = new ChatMessage("system", rules + "\n" + msgs[ri].Text);
+                else msgs.Insert(0, new ChatMessage("system", rules));
+                if (log)
+                {
+                    List<string> names = new List<string>();
+                    foreach (KeyValuePair<string, string> f in rulesFiles) names.Add(f.Key + " " + f.Value);
+                    Log.Text("#" + rid + " RULES " + string.Join(" + ", names.ToArray()));
+                }
+            }
+            if (ws != null)
+            {
+                // Tool instructions go into the system message (added if the client sent none).
+                int si = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                string tools = ws.ToolInstructions();
+                if (si >= 0) msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + tools);
+                else msgs.Insert(0, new ChatMessage("system", tools));
+            }
+            // Retrieved docs go into the newest user message only (not the system prompt), so the cached
+            // conversation prefix stays valid and old turns don't keep spending context on old references.
+            string libraryNote = Rag.LibraryNote();
+            if (libraryNote != null)
+            {
+                int si2 = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                if (si2 >= 0) msgs[si2] = new ChatMessage("system", msgs[si2].Text + "\n\n" + libraryNote);
+                else msgs.Insert(0, new ChatMessage("system", libraryNote));
+            }
+            if (Rag.Enabled)
+            {
+                int ui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
+                if (ui >= 0)
+                {
+                    int pi = ui > 0 ? msgs.FindLastIndex(ui - 1, delegate(ChatMessage m) { return m.Role == "user"; }) : -1;
+                    Stopwatch rsw = Stopwatch.StartNew();
+                    hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
+                    if (hits.Count > 0)
+                    {
+                        msgs[ui] = new ChatMessage("user", Rag.WrapMessage(hits, msgs[ui].Text));
+                        if (log)
+                        {
+                            List<string> srcs = new List<string>();
+                            foreach (RagHit h in hits) srcs.Add(h.File + (h.Title.Length > 0 ? " › " + h.Title : "") + " (" + h.Score.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + ")");
+                            Log.Text("#" + rid + " RAG " + hits.Count + " chunks in " + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + " ms: " + string.Join("; ", srcs.ToArray()));
+                            Log.Json("rag", "\"id\":" + rid + ",\"ms\":" + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + ",\"hits\":" + HitsJson(hits, false));
+                        }
+                    }
+                }
+            }
+            return hits;
+        }
+
+        // ---- answer while typing ----
+        // On a typing pause the page sends the half-written message (/api/pretype). If the engine is free, the prompt is
+        // prepared and read exactly as the real request would be, and a short greedy draft answer is generated. On Enter
+        // the real request reuses the read prompt (prefix cache) and the draft serves as a source of guesses for
+        // speculative decoding (only guesses the model itself would sample are kept). A real request stops a running
+        // draft at once (_pretypeStop, checked every token and prompt chunk).
+        public static bool AnswerWhileTyping = true;
+        int _pretypeBusy;
+        volatile bool _pretypeStop;
+        const int PretypeDraftTokens = 160;
+
+        void StartPretype(Dictionary<string, object> o)
+        {
+            if (!AnswerWhileTyping || _engine == null || o == null || !o.ContainsKey("messages")) return;
+            if (Interlocked.CompareExchange(ref _pretypeBusy, 1, 0) != 0) return;
+            List<ChatMessage> msgs = new List<ChatMessage>();
+            foreach (object m in (List<object>)o["messages"])
+            {
+                Dictionary<string, object> mm = m as Dictionary<string, object>;
+                string role = Json.GetStr(mm, "role", "user"), content = Json.GetStr(mm, "content", "");
+                if (role == "system" || role == "user" || role == "assistant") msgs.Add(new ChatMessage(role, content));
+            }
+            _pretypeStop = false;
+            Thread t = new Thread(delegate()
+            {
+                try
+                {
+                    if (!Monitor.TryEnter(_engineLock, 50)) return;   // a chat or load is running: no draft
+                    try
+                    {
+                        ChatEngine e = _engine;
+                        if (e == null || _pretypeStop) return;
+                        PrepareMessages(msgs, _folderAccess ? _workspace : null, 0, false);
+                        SamplerSettings s = new SamplerSettings(); s.Temperature = 0;
+                        e.PrefillProgress = null;
+                        Stopwatch sw = Stopwatch.StartNew();
+                        GenerationStats st = e.Generate(msgs, s, PretypeDraftTokens, null, delegate { return _pretypeStop; });
+                        if (!_pretypeStop) e.Hint = e.LastReplyIds;
+                        Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                            "pretype: read {0} new prompt tokens, drafted {1} tokens in {2} ms{3}", st.PromptTokens, st.GeneratedTokens,
+                            ChatLog.Ms(sw.Elapsed.TotalSeconds), _pretypeStop ? " (stopped by a send)" : ""));
+                    }
+                    finally { Monitor.Exit(_engineLock); }
+                }
+                catch (Exception ex) { Log.Text("pretype: " + ex.Message); }
+                finally { _pretypeBusy = 0; }
+            });
+            t.IsBackground = true; t.Priority = ThreadPriority.BelowNormal; t.Start();
         }
 
         static bool HasCode(string reply)

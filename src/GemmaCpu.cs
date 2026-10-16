@@ -288,7 +288,8 @@ namespace Phoenix
             return logits;
         }
 
-        public float[][] PrefillAll(IList<int> tokens, int start, int count) { return null; }
+        public bool PrefillRows(IList<int> tokens, int start, int count) { return false; }
+        public float[] RowLogits(int row) { throw new NotSupportedException(); }
 
         // Instant Recall is implemented for GemmaGpu (fp16 cache) only.
         public bool CanRecall { get { return false; } }
