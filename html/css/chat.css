@@ -85,10 +85,14 @@ pre .caret { height: 1.15em; width: 7px; }
 .work.busy .spin { animation: spin .8s linear infinite; }
 .work.ok .spin { border-color: #4caf50; background: #4caf50; }
 .work.ok .lbl { color: #4caf50; }
+.work.warn .spin { border-color: #d4a72c; background: #d4a72c; }
+.work.warn .lbl { color: #d4a72c; }
+.work.bad .spin { border-color: #e5534b; background: #e5534b; }
+.work.bad .lbl { color: #e5534b; }
 .work .worklog { margin: 0; padding: 8px 12px; max-height: 320px; overflow: auto; border-top: 1px solid var(--line);
                  font: 12px/1.5 var(--mono); white-space: pre-wrap; color: #9a9aa6; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.code { margin: 10px 0; border: 1px solid var(--line); border-radius: var(--r); background: transparent; overflow: hidden; white-space: normal; }
+.code { margin: 10px 0; border: 1px solid var(--line); border-radius: var(--r); background: rgba(255,255,255,.035); backdrop-filter: blur(1.5px); -webkit-backdrop-filter: blur(1.5px); overflow: hidden; white-space: normal; }
 .code header { display: flex; align-items: center; gap: 10px; padding: 4px 8px 4px 6px; border-bottom: 1px solid var(--line);
                color: var(--dim); font-size: 11.5px; line-height: 18px; }
 .code header .grow { flex: 1; }
@@ -130,7 +134,7 @@ button:disabled { opacity: .45; cursor: default; }
 #files .size { margin-left: auto; color: var(--dim); font-size: 11.5px; }
 
 /* You type straight into the conversation: a gold › and your text under the last reply. */
-.promptline { display: flex; gap: 12px; align-items: baseline; }
+.promptline { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: baseline; }
 /* Block cursor: the textarea is invisible (it only handles typing, selection and paste); a mirror underneath draws the
    text with a blinking block where the caret is. */
 .typebox { position: relative; flex: 1; min-height: 24px; }
@@ -153,15 +157,15 @@ button:disabled { opacity: .45; cursor: default; }
 /* Status line: plain dark-grey text at the very bottom. */
 #status { position: fixed; left: 0; right: 0; bottom: 0; height: var(--statusbar); display: flex; align-items: center; justify-content: center;
           padding: 0 16px; color: var(--status-text); font-size: 13.5px; white-space: nowrap; overflow: hidden; }
-#status .item { display: inline-flex; align-items: center; gap: 7px; }
-#status .item svg { flex: none; opacity: .9; }
-#status .sep { margin: 0 14px; opacity: .55; }
-#status .lower { text-transform: lowercase; }
-#status .item.ok { color: #4caf50; }
-#status .item.warn { color: #e8912d; }
-#status .item.off { color: #8a8a8a; }
-#status .item.gold { color: #d4a72c; }
-#status .item.bad { color: #e5534b; }
+.sbar .item { display: inline-flex; align-items: center; gap: 7px; }
+.sbar .item svg { flex: none; opacity: .9; }
+.sbar .sep { margin: 0 14px; opacity: .55; }
+.sbar .lower { text-transform: lowercase; }
+.sbar .item.ok { color: #4caf50; }
+.sbar .item.warn { color: #e8912d; }
+.sbar .item.off { color: #8a8a8a; }
+.sbar .item.gold { color: #d4a72c; }
+.sbar .item.bad { color: #e5534b; }
 
 /* Windows: no dimming; the page behind blurs in (and out) while one is open, and the window fades with it. */
 .modal { position: fixed; inset: var(--banner) 0 0 0; display: flex; align-items: center; justify-content: center; z-index: 10;
@@ -279,3 +283,24 @@ html { color-scheme: dark; }
 /* Banner switched off (settings > app): hidden and the layout gives its space back. */
 :root.no-banner { --banner: 0px; }
 :root.no-banner #banner { display: none; }
+
+/* Under the prompt: folder, speed, context, model of this chat (left-aligned with the typed text). */
+/* a full-width row of the prompt line, indented to start under the typed text (chevron width + gap) */
+#promptInfo { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; margin-top: 6px; padding-left: 0;
+              font-size: 12.5px; line-height: 1.4; color: var(--status-text); }
+#promptInfo:empty { display: none; }
+#promptInfo .sep { margin: 0 10px; }
+
+/* /mode accept: Accept / Deny bar above the prompt */
+.approve { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; padding: 7px 10px; border: 1px solid rgba(var(--accent-rgb),.45);
+           border-radius: var(--r); background: rgba(var(--accent-rgb),.06); font-size: 13px; color: var(--soft); }
+.approve .q { flex: 1; }
+.approve .q b { color: var(--text); font-weight: 500; font-family: var(--mono); }
+.approve button { height: 24px; padding: 0 14px; border-radius: 4px; font-size: 12.5px; font-weight: 600; cursor: pointer; border: 1px solid; background: transparent; }
+.approve .yes { color: #4caf50; border-color: #4caf50; }
+.approve .yes:hover { background: rgba(76,175,80,.15); }
+.approve .no { color: #e5534b; border-color: #e5534b; }
+.approve .no:hover { background: rgba(229,83,75,.15); }
+.approve button:disabled { display: none; }
+.approve.accepted { border-color: #4caf50; } .approve.accepted .q { color: #4caf50; }
+.approve.denied { border-color: #e5534b; } .approve.denied .q { color: #e5534b; }

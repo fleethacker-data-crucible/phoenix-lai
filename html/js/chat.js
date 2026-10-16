@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
-const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
+// promptInfo is kept as a reference: while a reply streams the prompt line is out of the page, so $() can't find it.
+const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine'), promptInfo = $('promptInfo');
 const mirror = $('mirror');
 let history = [], info = {}, models = [], controller = null, filesAt = '.';
 const DEFAULT_SYSTEM = 'You are a concise, expert assistant running locally.';
@@ -57,12 +58,14 @@ function statusItem(icon, text, lower, cls) {
          'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + SICON[icon] + '</svg>' + esc(text) + '</span>';
 }
 function drawStatus(offline) {
-  const items = [];
+  // Bottom bar: system state (git, rules, RAG, memory, GPU). Under the prompt: what this chat uses (folder, speed,
+  // context, model), so the bottom bar keeps room.
+  const items = [], near = [];
   if (offline) items.push(statusItem('model', 'server offline'));
   else {
     // Folder: green = connected, orange = access on but nothing connected, grey = folder access off.
-    if (info.folderAccess === false) items.push(statusItem('folder', 'folder access off', false, 'off'));
-    else items.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'warn'));
+    if (info.folderAccess === false) near.push(statusItem('folder', 'folder access off', false, 'off'));
+    else near.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'warn'));
     const g = info.git;
     if (g) {
       items.push(statusItem('branch', (g.branch || 'detached') + (g.commit ? ' @' + g.commit : '')));
@@ -81,11 +84,12 @@ function drawStatus(offline) {
       else if (!rg.vectors) items.push(statusItem('rag', 'rag: ' + docs + ' · keywords only', false, 'warn'));
       else items.push(statusItem('rag', 'rag: ' + docs + ' · hybrid', false, 'ok'));
     }
-    if (lastTps) items.push(statusItem('speed', lastTps + ' t/s avg', false, 'ok'));
+    if (info.mode === 'accept') near.push(statusItem('rules', 'mode: accept', false, 'gold'));
+    if (lastTps) near.push(statusItem('speed', lastTps + ' t/s avg', false, 'ok'));
     // Context: green < 70% used, gold < 90%, red beyond.
     if (info.file) {
       const f = info.context ? ctxUsed / info.context : 0;
-      items.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens', false, f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad'));
+      near.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens', false, f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad'));
     }
     // Memory the model lives in: VRAM in GPU mode, system RAM in CPU mode, as "this app uses / this app could have"
     // (both live: the right side drops when other programs take memory). Gold while a model loads, green when
@@ -99,10 +103,10 @@ function drawStatus(offline) {
     else items.push(statusItem(micon, mem + ': no model', false, 'off'));
     // Model: gold while loading, green when loaded in memory, red after a failed load, grey with none.
     const mname = f => f.replace(/\.gguf$/i, '');
-    if (info.loading) items.push(statusItem('model', 'loading ' + mname(info.loading) + '…', true, 'gold'));
-    else if (info.file) items.push(statusItem('model', mname(info.file), true, 'ok'));
-    else if (info.loadError) items.push(statusItem('model', 'model error', true, 'bad'));
-    else items.push(statusItem('model', 'no model', true, 'off'));
+    if (info.loading) near.push(statusItem('model', 'loading ' + mname(info.loading) + '…', true, 'gold'));
+    else if (info.file) near.push(statusItem('model', mname(info.file), true, 'ok'));
+    else if (info.loadError) near.push(statusItem('model', 'model error', true, 'bad'));
+    else near.push(statusItem('model', 'no model', true, 'off'));
     // Video card (GPU mode only): gold while detecting (model loading), green when the model runs on it, red on an
     // error or an unwanted CPU fallback, grey when idle.
     const onGpu = info.backend && /^GPU/.test(info.backend);
@@ -114,6 +118,7 @@ function drawStatus(offline) {
     else items.push(statusItem('gpu', 'gpu idle', true, 'off'));
   }
   $('status').innerHTML = items.join('<span class="sep">|</span>');
+  promptInfo.innerHTML = near.join('<span class="sep">|</span>');
 }
 // This window's id: the server counts open windows by it, so launching the app again reuses this window.
 const PAGE_ID = Math.random().toString(36).slice(2, 12);
@@ -256,6 +261,24 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ---------- approvals (/mode accept) ----------
+// One bar above the prompt per pending file action: what the model wants to do, Accept (green) or Deny (red).
+function askApproval(a) {
+  const what = a.op === 'write' ? 'write ' + a.path + ' (' + (a.bytes || 0).toLocaleString() + ' bytes)' : a.op === 'read' ? 'read ' + a.path : 'list ' + (a.path === '.' ? 'the project folder' : a.path);
+  const bar = document.createElement('div'); bar.className = 'approve';
+  bar.innerHTML = '<span class="q">The model wants to <b>' + esc(what) + '</b></span><button class="yes">Accept</button><button class="no">Deny</button>';
+  chatEl.insertBefore(bar, promptLine.isConnected ? promptLine : null); scrollDown();
+  const answer = async allow => {
+    bar.querySelectorAll('button').forEach(b => b.disabled = true);
+    bar.classList.add(allow ? 'accepted' : 'denied');
+    bar.querySelector('.q').innerHTML = (allow ? '✓ Accepted: ' : '✗ Denied: ') + esc(what);
+    try { await api('/api/approve', { id: a.id, allow }); } catch (e) {}
+    setTimeout(() => bar.remove(), 1500);
+  };
+  bar.querySelector('.yes').onclick = () => answer(true);
+  bar.querySelector('.no').onclick = () => answer(false);
+}
+
 // ---------- chat ----------
 // Notices keep the welcome screen (and the prompt's place under it); they sit just above the prompt.
 function systemLine(text) {
@@ -322,8 +345,16 @@ const COMMANDS = [
       const r = await api('/api/rag?q=' + encodeURIComponent(arg));
       systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
     } },
+  { name: '/mode', use: '/mode auto|accept', desc: 'accept = approve each file read / write the model wants to do; auto = no prompts', arg: true,
+    options: () => [{ value: 'auto', desc: 'no prompts' + (info.mode !== 'accept' ? ' (current)' : '') }, { value: 'accept', desc: 'Accept / Deny every file action' + (info.mode === 'accept' ? ' (current)' : '') }],
+    run: async arg => {
+      const m = (arg || '').trim().toLowerCase();
+      if (m !== 'auto' && m !== 'accept') { systemLine('Mode: ' + (info.mode || 'auto') + '. Use /mode auto or /mode accept.'); return; }
+      info = await api('/api/mode', { mode: m }); refresh();
+      systemLine(m === 'accept' ? 'Mode: accept. The model will ask before every file list, read or write (docs/RAG excluded).' : 'Mode: auto. File actions run without asking.');
+    } },
   { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
-    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'processor (slow, frees video memory)' + (info.device === 'cpu' ? ' (current)' : '') }],
+    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'turned off for now (GPU only)' }],
     run: async arg => {
       const d = (arg || '').trim().toLowerCase();
       if (d !== 'gpu' && d !== 'cpu') { systemLine('Running on ' + (info.device === 'cpu' ? 'CPU' : 'GPU') + (info.backend ? ' (' + info.backend + ')' : '') + '. Use /device gpu or /device cpu.'); return; }
@@ -494,12 +525,13 @@ async function send() {
   if (!info.file) { systemLine('No model loaded — use /model to pick one.'); return; }
   input.value = ''; autosize();
   const empty = $('empty'); if (empty) empty.remove();
-  promptLine.remove();   // the prompt comes back under the reply when it is done
+  // The prompt line (with its status row) stays in place at the bottom: the turn goes in above it.
 
   const turn = document.createElement('div'); turn.className = 'turn';
   turn.innerHTML = '<div class="user"></div>';
   turn.querySelector('.user').textContent = text;
-  chatEl.appendChild(turn);
+  chatEl.insertBefore(turn, promptLine.isConnected ? promptLine : null);
+  input.focus();
   let out = document.createElement('div'); out.className = 'reply'; turn.appendChild(out);
   // Typewriter: `reply` is everything received, `shown` how much is on screen. The cursor sits right after the last
   // shown character (also inside code boxes); it is solid while characters are appearing and blinks when paused.
@@ -524,27 +556,34 @@ async function send() {
   // A timer (not requestAnimationFrame) so the reveal keeps going when the window is hidden or minimized.
   raf = setInterval(tick, 16);
 
-  // Code requests: drafting and checking stream into a collapsed box (closed unless the user opens it); only the
-  // checked reply appears below it.
+  // Code requests: after the reply (shown normally) its code is checked against the syntax reference. A collapsed
+  // line under the reply shows it: "Checking against the C# syntax reference…" then "✓ Complete — …"; opening it shows
+  // what the check said.
   const work = {
-    box: null, log: null, label: null, text: '',
+    box: null, log: null, label: null, text: '', lang: 'code',
     ensure() {
       if (this.box) return;
       this.box = document.createElement('details'); this.box.className = 'work';
       this.box.innerHTML = '<summary><span class="spin"></span><span class="lbl"></span></summary><pre class="worklog"></pre>';
       this.label = this.box.querySelector('.lbl'); this.log = this.box.querySelector('.worklog');
-      turn.insertBefore(this.box, out);
+      out.after(this.box);
     },
     add(t) { this.ensure(); this.text += t; this.log.textContent = this.text; if (this.box.open) this.log.scrollTop = this.log.scrollHeight; },
-    phase(p) {
+    // green = looks good, gold = possible problems found (corrected) or no clear answer, red = definite syntax errors
+    // (corrected). The label says whether the language's syntax reference (RAG) was used.
+    phase(p, lang, usedRef) {
       this.ensure();
-      const labels = { generating: 'Generating code…', checking: 'Checking code…', good: 'Looks good!', fixed: 'Fixed and checked', kept: 'Checked' };
+      if (lang) this.lang = lang;
+      const sheet = this.lang === 'code' ? 'the syntax reference' : 'the ' + this.lang + ' syntax reference';
+      const via = usedRef ? ' (checked against ' + sheet + ')' : ' (no ' + (this.lang === 'code' ? '' : this.lang + ' ') + 'reference sheet; checked by the model)';
+      const labels = { checking: 'Checking against ' + sheet + '…', good: '✓ Looks good' + via, fixed: '⚠ Possible mistakes found and corrected' + via,
+                       unsure: '⚠ Could not confirm the code is correct' + via, wrong: '✗ Syntax errors found and corrected' + via };
       this.label.textContent = labels[p] || p;
-      const busy = p === 'generating' || p === 'checking';
-      this.box.classList.toggle('busy', busy);
-      this.box.classList.toggle('ok', p === 'good' || p === 'fixed' || p === 'kept');
-      if (p === 'generating' && this.text) this.add('\n\n— next step —\n\n');
-    }
+      this.box.classList.toggle('busy', p === 'checking');
+      this.box.classList.remove('ok', 'warn', 'bad');
+      if (p !== 'checking') this.box.classList.add(p === 'good' ? 'ok' : p === 'wrong' ? 'bad' : 'warn');
+    },
+    done() { if (this.box) this.box.classList.remove('busy'); }
   };
 
   history.push({ role: 'user', content: text });
@@ -574,8 +613,10 @@ async function send() {
           } else if (prog) { prog.remove(); prog = null; }
         }
         else if (ev.t !== undefined) { if (prog) { prog.remove(); prog = null; } if (!firstAt) firstAt = performance.now(); reply += ev.t; }
-        else if (ev.w !== undefined) { if (!firstAt) firstAt = performance.now(); work.add(ev.w); }
-        else if (ev.phase) work.phase(ev.phase);
+        else if (ev.w !== undefined) work.add(ev.w);
+        else if (ev.phase) { flush(); out.innerHTML = render(reply, false); work.phase(ev.phase, ev.lang, ev.ref); }
+        else if (ev.approve) askApproval(ev.approve);
+        else if (ev.replace !== undefined) { reply = ev.replace; shown = reply.length; out.innerHTML = render(reply, false); }
         else if (ev.rag) {
           const d = document.createElement('div'); d.className = 'sources';
           // One short line (files used); click it to see the exact sections that were added.
@@ -610,6 +651,7 @@ async function send() {
   // Let the typewriter finish revealing what arrived, then render the final text without a cursor.
   while (shown < reply.length && !document.hidden && !(controller && controller.signal.aborted)) await new Promise(r => setTimeout(r, 16));
   clearInterval(raf);
+  work.done();   // never leave a spinner running (stopped or failed requests included)
   out.innerHTML = render(reply, false);
   if (!appended) history.push({ role: 'assistant', content: reply });
   controller = null;
@@ -810,7 +852,7 @@ function drawBackground() {
 
 }
 
-// Watermark logo: its own canvas, painted once at a fixed 820px width (grayscale, brighter, 2px blur, 3.5% opacity) and
+// Watermark logo: its own canvas, painted once at a fixed 820px width (grayscale, slightly brightened, 6px blur, 3.5% opacity) and
 // pinned to the window centre by CSS, so it never scales and stays centred even mid-resize.
 function drawLogo() {
   if (!bgLogo.naturalWidth) return;
@@ -819,7 +861,7 @@ function drawLogo() {
   cv.style.width = (w + 2 * pad) + 'px'; cv.style.height = (h + 2 * pad) + 'px';
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.globalAlpha = 0.035; g.filter = 'grayscale(1) brightness(1.4) blur(2px)';
+  g.globalAlpha = 0.035; g.filter = 'grayscale(1) brightness(1.15) blur(6px)';
   g.drawImage(bgLogo, pad, pad, w, h);
 }
 var bgReady = true;

@@ -290,7 +290,9 @@ namespace Phoenix
 
         // Where models run (/device gpu|cpu), kept across restarts. GPU still falls back to the CPU if it fails.
         static string DeviceFile { get { return Path.Combine(AppDataDir, "device.txt"); } }
-        bool _useGpu = ReadUseGpu();
+        // CPU mode is switched off for now (GPU only): a saved "cpu" choice is ignored and /api/device refuses it.
+        public const bool CpuModeAllowed = false;
+        bool _useGpu = !CpuModeAllowed || ReadUseGpu();
 
         static bool ReadUseGpu()
         {
@@ -321,6 +323,13 @@ namespace Phoenix
                 return ok;
             }
         }
+
+        // /mode auto | accept, kept across restarts. Accept: the model's file actions wait for the user's Accept / Deny.
+        static string ModeFile { get { return Path.Combine(AppDataDir, "mode.txt"); } }
+        bool _acceptMode = ReadAcceptMode();
+        int _approvalId;
+        readonly Dictionary<int, KeyValuePair<ManualResetEvent, bool>> _approvals = new Dictionary<int, KeyValuePair<ManualResetEvent, bool>>();
+        static bool ReadAcceptMode() { try { return File.ReadAllText(ModeFile).Trim() == "accept"; } catch { return false; } }
 
         // KV cache format for GPU Llama models (/settings: f16, q8, q4), kept across restarts.
         static string KvFile { get { return Path.Combine(AppDataDir, "kv-cache.txt"); } }
@@ -608,10 +617,31 @@ namespace Phoenix
                 SendJson(res, 200, Info());
                 return;
             }
+            if (path == "/api/mode" && post)
+            {
+                _acceptMode = Json.GetStr(body, "mode", "auto").ToLowerInvariant() == "accept";
+                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(ModeFile, _acceptMode ? "accept" : "auto"); } catch { }
+                Log.Text("mode: " + (_acceptMode ? "accept (file actions need approval)" : "auto"));
+                SendJson(res, 200, Info());
+                return;
+            }
+            if (path == "/api/approve" && post)
+            {
+                int aid = (int)Json.GetNum(body, "id", -1);
+                bool allow = body.ContainsKey("allow") && body["allow"] is bool && (bool)body["allow"];
+                lock (_approvals)
+                {
+                    KeyValuePair<ManualResetEvent, bool> p;
+                    if (_approvals.TryGetValue(aid, out p)) { _approvals[aid] = new KeyValuePair<ManualResetEvent, bool>(p.Key, allow); p.Key.Set(); }
+                }
+                SendJson(res, 200, "{}");
+                return;
+            }
             if (path == "/api/device" && post)
             {
                 // Switches CPU/GPU and reloads the current model there (the chat history stays; its cache is rebuilt).
                 bool gpu = Json.GetStr(body, "device", "gpu").ToLowerInvariant() != "cpu";
+                if (!gpu && !CpuModeAllowed) throw new InvalidOperationException("CPU mode is turned off for now; models run on the GPU.");
                 _useGpu = gpu;
                 try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(DeviceFile, gpu ? "gpu" : "cpu"); } catch { }
                 Log.Text("device: " + (gpu ? "GPU" : "CPU"));
@@ -700,7 +730,7 @@ namespace Phoenix
         {
             ChatEngine e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
-            return "{\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
+            return "{\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
@@ -916,6 +946,7 @@ namespace Phoenix
                     // Code requests: every step is generated out of sight ("w" events, a collapsed box in the UI), the code is
                     // then checked against the syntax reference, and only the checked (or corrected) reply is shown.
                     bool codeMode = Rag.IsCodeRequest(lastUser);
+                    bool nudged = false;
                     StringBuilder append = new StringBuilder("[");
                     GenerationStats st = null;
                     int totalTokens = 0;
@@ -927,14 +958,12 @@ namespace Phoenix
                         Stopwatch stepWatch = Stopwatch.StartNew();
                         double ttft = -1;
                         int toolEnd = -1;   // end of the first <read>/<list> tag: the model must wait for its result
-                        if (codeMode) write("{\"phase\":\"generating\"}");
-                        string stream = codeMode ? "w" : "t";
                         st = _engine.Generate(msgs, s, maxTokens, delegate(string piece)
                         {
                             if (ttft < 0) ttft = stepWatch.Elapsed.TotalSeconds;
                             if (toolEnd >= 0) return;
                             reply.Append(piece);
-                            write("{\"" + stream + "\":" + Json.Quote(piece) + "}");
+                            write("{\"t\":" + Json.Quote(piece) + "}");
                             if (ws != null) toolEnd = Workspace.QueryTagEnd(reply.ToString());
                         }, delegate { return gone || toolEnd >= 0; });
                         // Anything after a read/list tag would be invented results; the real ones follow in the next step.
@@ -954,24 +983,57 @@ namespace Phoenix
                         totalTokens += st.GeneratedTokens;
                         genSeconds += st.GenerateSeconds;
                         string replyText = reply.ToString();
-                        if (codeMode && !gone)
+                        // Code requests: the reply streamed normally; its code is now checked against the syntax reference
+                        // (a collapsed "Checking…" line under it) before any file is written. A correction replaces the
+                        // reply on screen ("replace" event).
+                        if (!gone && HasCode(replyText))   // every reply with code is checked, whatever the request looked like
                         {
-                            if (HasCode(replyText))
-                            {
-                                GenerationStats cst;
-                                replyText = CheckCode(rid, msgs, replyText, s, maxTokens, write, delegate { return gone; }, out cst);
-                                totalTokens += cst.GeneratedTokens;
-                                genSeconds += cst.GenerateSeconds;
-                            }
-                            write("{\"t\":" + Json.Quote(replyText) + "}");   // the visible reply
+                            GenerationStats cst;
+                            string checkedText = CheckCode(rid, msgs, replyText, s, maxTokens, write, delegate { return gone; }, out cst);
+                            totalTokens += cst.GeneratedTokens;
+                            genSeconds += cst.GenerateSeconds;
+                            if (checkedText != replyText) { replyText = checkedText; write("{\"replace\":" + Json.Quote(replyText) + "}"); }
                         }
                         msgs.Add(new ChatMessage("assistant", replyText));
                         if (append.Length > 1) append.Append(',');
                         append.Append("{\"role\":\"assistant\",\"content\":").Append(Json.Quote(replyText)).Append('}');
                         if (ws == null || gone) break;
 
-                        List<Workspace.Action> actions = ws.Execute(replyText);
-                        if (actions.Count == 0) break;
+                        // Accept mode: every list / read / write waits for the user's Accept or Deny (an "approve" event; the
+                        // answer comes back on /api/approve). A closed window or Stop counts as Deny.
+                        Func<Workspace.Action, bool> approve = null;
+                        if (_acceptMode)
+                            approve = delegate(Workspace.Action a)
+                            {
+                                int aid = Interlocked.Increment(ref _approvalId);
+                                ManualResetEvent ev = new ManualResetEvent(false);
+                                lock (_approvals) _approvals[aid] = new KeyValuePair<ManualResetEvent, bool>(ev, false);
+                                write("{\"approve\":{\"id\":" + aid + ",\"op\":" + Json.Quote(a.Op) + ",\"path\":" + Json.Quote(a.Path) +
+                                      ",\"bytes\":" + (a.Content != null ? Encoding.UTF8.GetByteCount(a.Content) : 0) + "}}");
+                                Log.Text("#" + rid + " APPROVAL asked: " + a.Op + " " + a.Path);
+                                while (!ev.WaitOne(500)) if (gone) break;
+                                bool ok;
+                                lock (_approvals) { ok = _approvals[aid].Value && !gone; _approvals.Remove(aid); }
+                                ev.Dispose();
+                                Log.Text("#" + rid + " APPROVAL " + (ok ? "accepted" : "denied") + ": " + a.Op + " " + a.Path);
+                                return ok;
+                            };
+                        List<Workspace.Action> actions = ws.Execute(replyText, approve);
+                        if (actions.Count == 0)
+                        {
+                            // The model said it would look at / change files but used no tag ("First, let me check index.html.")
+                            // and the turn would just end: tell it once to go ahead.
+                            if (!nudged && AnnouncesAction(replyText))
+                            {
+                                nudged = true;
+                                string go = "Go ahead: do it now with the tags (<list>, <read>, <write>) in your reply.";
+                                Log.Text("#" + rid + " NUDGE: announced a file action without a tag");
+                                msgs.Add(new ChatMessage("user", go));
+                                append.Append(",{\"role\":\"user\",\"content\":").Append(Json.Quote(go)).Append('}');
+                                continue;
+                            }
+                            break;
+                        }
                         bool needsAnswer = false;
                         StringBuilder results = new StringBuilder("Tool results:\n");
                         foreach (Workspace.Action a in actions)
@@ -1026,6 +1088,16 @@ namespace Phoenix
             lock (writeLock) { try { outS.Close(); } catch { } }
         }
 
+        // "let me check index.html", "I will start by reading ...", "I'll now update ...": an announced file action.
+        static readonly System.Text.RegularExpressions.Regex AnnounceRe = new System.Text.RegularExpressions.Regex(
+            @"\b(let me|i will|i'll|i am going to|i'm going to|first,? i|now i will|next,? i)\b[^.\n]{0,60}\b(check|read|look at|open|list|see|inspect|create|write|update|modify|edit|add|change)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        static bool AnnouncesAction(string reply)
+        {
+            string tail = reply.Length > 400 ? reply.Substring(reply.Length - 400) : reply;   // the announcement ends the reply
+            return AnnounceRe.IsMatch(tail) && !HasCode(reply);
+        }
+
         static bool HasCode(string reply)
         {
             return reply.IndexOf("```", StringComparison.Ordinal) >= 0 || reply.IndexOf("<write", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -1036,19 +1108,31 @@ namespace Phoenix
         // Returns the reply to show: the draft when it passed (or the check went off the rails), else the correction.
         string CheckCode(int rid, List<ChatMessage> msgs, string draft, SamplerSettings s, int maxTokens, TextCallback write, CancelCheck cancel, out GenerationStats cst)
         {
-            write("{\"phase\":\"checking\"}");
+            write("{\"phase\":\"checking\",\"lang\":" + Json.Quote(Rag.LanguageName(draft)) + "}");
             Stopwatch sw = Stopwatch.StartNew();
             // Certain problems (missing usings) are fixed in code first; the model then judges the fixed version.
             List<string> lint = new List<string>();
             draft = CodeLint.FixUsings(draft, lint);
             if (lint.Count > 0) write("{\"w\":" + Json.Quote("\n\n— fixed: " + string.Join(", ", lint.ToArray()) + " —") + "}");
             string code = CodeOf(draft);
-            List<RagHit> hits = Rag.Enabled ? Rag.Search(code, null) : new List<RagHit>();
+            // Only sections that are not already in the conversation, at most two: the ones sent with the request are
+            // still in the model's cache, so re-sending them would cost seconds of prompt reading (and push Gemma's
+            // sliding-window cache past what the next step can reuse).
+            List<RagHit> hits = new List<RagHit>();
+            if (Rag.Enabled)
+            {
+                string sent = "";
+                foreach (ChatMessage m in msgs) if (m.Role == "user") sent += m.Text;
+                foreach (RagHit h in Rag.Search(code, null))
+                    if (hits.Count < 2 && sent.IndexOf(h.Text.Trim(), StringComparison.Ordinal) < 0) hits.Add(h);
+            }
+            bool hadSections = msgs.Exists(delegate(ChatMessage m) { return m.Role == "user" && m.Text.StartsWith("Reference sections from my syntax library"); });
             StringBuilder p = new StringBuilder("Check the code in your reply above for mistakes: syntax errors, wrong type or method names, " +
-                "wrong API usage, and logic errors. Do not change anything that is already correct, and do not use <read> or <list>.");
+                "wrong API usage, and logic errors" + (hadSections ? ", using the reference sections in my message where they apply" : "") +
+                ". Do not change anything that is already correct, and do not use <read> or <list>.");
             if (hits.Count > 0)
             {
-                p.Append(" Compare it with these sections from my syntax reference where they apply:\n\n");
+                p.Append(" These further reference sections may also apply:\n\n");
                 for (int i = 0; i < hits.Count; i++)
                     p.Append('[').Append(i + 1).Append("] ").Append(hits[i].Title).Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
             }
@@ -1058,7 +1142,8 @@ namespace Phoenix
             List<ChatMessage> check = new List<ChatMessage>(msgs);
             check.Add(new ChatMessage("assistant", draft));
             check.Add(new ChatMessage("user", p.ToString()));
-            write("{\"w\":" + Json.Quote("\n\n— checking against " + hits.Count + " reference section" + (hits.Count == 1 ? "" : "s") + " —\n\n") + "}");
+            write("{\"w\":" + Json.Quote("Checking against " + (hadSections ? "the reference sections sent with the request" : "the code alone") +
+                (hits.Count > 0 ? " and " + hits.Count + " more" : "") + (lint.Count > 0 ? "; fixed first: " + string.Join(", ", lint.ToArray()) : "") + ".\n\n") + "}");
             SamplerSettings cs = s.Clone();
             cs.Temperature = Math.Min(cs.Temperature, 0.2f);
             StringBuilder verdict = new StringBuilder();
@@ -1072,7 +1157,11 @@ namespace Phoenix
             // A correction must keep the reply's form: code, and no file queries (those would start another round).
             bool fixedIt = !good && HasCode(v) && Workspace.QueryTagEnd(v) < 0;
             if (fixedIt) v = CodeLint.FixUsings(v, new List<string>());   // the rewrite may drop usings again
-            write("{\"phase\":\"" + (good ? (lint.Count > 0 ? "fixed" : "good") : fixedIt ? "fixed" : "kept") + "\"}");
+            // Verdict for the status line: good (green) = passed; fixed (gold) = the check found and corrected possible
+            // mistakes; wrong (red) = definite syntax errors (found by CodeLint) that were corrected; unsure (gold) = the
+            // check gave no clear answer and the code was kept. ref: whether syntax-reference sections were used.
+            string outcome = lint.Count > 0 ? "wrong" : good ? "good" : fixedIt ? "fixed" : "unsure";
+            write("{\"phase\":\"" + outcome + "\",\"ref\":" + (hits.Count > 0 || hadSections ? "true" : "false") + "}");
             Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
                 "#{0} CHECK {1} in {2} ms ({3} reference sections, lint {4}; prompt {5} new + {6} cached tokens, {7} generated){8}",
                 rid, good ? "looks good" : fixedIt ? "corrected the code" : "unclear verdict, kept the draft", ChatLog.Ms(sw.Elapsed.TotalSeconds),

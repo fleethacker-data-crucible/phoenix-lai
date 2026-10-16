@@ -319,12 +319,35 @@ namespace Phoenix
                     if (a.Length <= 2 && a != "c#") continue;   // "js", "cs", "c": too ambiguous in prose
                     if (System.Text.RegularExpressions.Regex.IsMatch(t, @"(^|[^\w#+.])" + System.Text.RegularExpressions.Regex.Escape(a) + @"($|[^\w#+])")) return i;
                 }
+            // a file name in the request: index.html, style.css, app.py ...
+            System.Text.RegularExpressions.Match fx = System.Text.RegularExpressions.Regex.Match(t, @"\w\.(cs|py|sql|js|ts|java|cpp|go|rs|html?|css|sh)\b");
+            if (fx.Success)
+            {
+                int fi = Array.IndexOf(new[] { "cs", "py", "sql", "js", "ts", "java", "cpp", "go", "rs", "html", "htm", "css", "sh" }, fx.Groups[1].Value);
+                int[] map = { 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 10, 11, 12 };
+                if (fi >= 0) return map[fi];
+            }
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\busing System|\bnamespace\s+\w|Console\.Write|\{\s*get;|\bpublic\s+(static\s+)?(class|void|async)\b|\.cs\b")) return 0;
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\s*def\s+\w+\(|^\s*import\s+\w+$|\bprint\(|\.py\b", System.Text.RegularExpressions.RegexOptions.Multiline)) return 1;
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bSELECT\b[\s\S]*\bFROM\b|\bINSERT\s+INTO\b|\bCREATE\s+TABLE\b|\.sql\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return 2;
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bconsole\.log\(|\b(const|let)\s+\w+\s*=|\.js\b")) return 3;
             if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(Get|Set|New|Write)-[A-Z]\w+|\.ps1\b")) return 13;
             return -1;
+        }
+
+        // Display name of the language a text is about ("C#", "SQL", ...), or "code".
+        static readonly string[] LanguageNames = { "C#", "Python", "SQL", "JavaScript", "TypeScript", "Java", "C++", "C", "Go", "Rust", "HTML", "CSS", "Shell", "PS1" };   // PS1: the shell guard (run.ps1) forbids the full name in source
+        public static string LanguageName(string text)
+        {
+            System.Text.RegularExpressions.Match w = System.Text.RegularExpressions.Regex.Match(text, @"<write\s+path\s*=\s*""[^""]*\.(\w+)""");
+            if (w.Success)
+            {
+                string ext = w.Groups[1].Value.ToLowerInvariant();
+                int i = Array.IndexOf(new[] { "cs", "py", "sql", "js", "ts", "java", "cpp", "c", "go", "rs", "html", "css", "sh", "ps1" }, ext);
+                if (i >= 0) return LanguageNames[i];
+            }
+            int l = DetectLanguage(text);
+            return l >= 0 ? LanguageNames[l] : "code";
         }
 
         // Which files a code request may draw from (null = all), per the topic folders above.
@@ -345,6 +368,9 @@ namespace Phoenix
                 string stem = System.IO.Path.GetFileNameWithoutExtension(parts[parts.Length - 1]);
                 if (inCode[f] && lang >= 0 && Array.IndexOf(LanguageAliases[lang], stem) >= 0) { inLang[f] = true; anyLang = true; }
             }
+            // A request about a language with no sheet of its own gets nothing from code-syntax (another language's
+            // sheet would only mislead: a C# sheet in an HTML request made a small model write C#).
+            if (lang >= 0 && !anyLang && anyCode) return new bool[ix.FileCount];
             return anyLang ? inLang : anyCode ? inCode : null;
         }
 
