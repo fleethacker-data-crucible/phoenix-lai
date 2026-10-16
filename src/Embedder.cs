@@ -26,7 +26,7 @@ namespace Phoenix
             {
                 _tok = new Tokenizer(_g);
                 // GPU (per-layer submissions, GpuGate) with the CPU as fallback.
-                try { _gpuModel = new GemmaEmbedGpu(_g, null); Backend = "GPU"; }
+                try { _gpuModel = new GemmaEmbedGpu(_g, null); Backend = "GPU"; MemoryTrim.Trim(); }
                 catch { _gpuModel = null; }
                 if (_gpuModel == null) { _model = new GemmaCpu(_g, MaxTokens + 8); Backend = "CPU"; }
                 Dim = _gpuModel != null ? _gpuModel.C.NEmbdOut : _model.C.NEmbdOut;

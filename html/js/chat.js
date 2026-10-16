@@ -114,12 +114,25 @@ $('files').addEventListener('click', e => {
 });
 
 // ---------- folder ----------
-// /folder /<project>[/sub] connects a folder inside the fixed projects root (<home>\Phoenix_Projects); /folder off
-// disconnects; /folder alone shows the current one. Absolute paths are refused by the server with an explanation.
+// /folder /<project>[/sub] connects a folder inside the fixed projects root (<home>\Phoenix_Projects); /folder close
+// disconnects; /folder on|off is the master switch (off = no folder access at all); /folder alone shows the state.
+// Absolute paths are refused by the server with an explanation.
 async function setFolder(arg) {
-  if (!arg) { systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder off to disconnect)' : 'No folder connected. Use /folder /<project>, e.g. /folder /my-app/src (projects live in ' + (info.projectsRoot || 'Phoenix_Projects') + ')'); return; }
+  if (!arg) {
+    if (info.folderAccess === false) { systemLine('Folder access is OFF: the model has no file access. Use /folder on to allow it.'); return; }
+    systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder close to disconnect, /folder off to disable folder access)' : 'Folder access is on, no folder connected. Use /folder /<project>, e.g. /folder /my-app/src (projects live in ' + (info.projectsRoot || 'Phoenix_Projects') + ')'); return;
+  }
   const path = arg.trim().replace(/^["']|["']$/g, '');
-  const off = /^(off|none|disconnect)$/i.test(path);
+  if (/^(on|off)$/i.test(path)) {
+    const on = path.toLowerCase() === 'on';
+    try { info = await api('/api/folder-access', { on }); } catch (e) { systemLine('Could not change folder access: ' + e.message); return; }
+    await refresh();
+    if (!on) $('files').classList.remove('show');
+    systemLine(on ? 'Folder access ON. Connect a project with /folder /<project>.' : 'Folder access OFF: folder disconnected and all file access disabled.');
+    return;
+  }
+  if (info.folderAccess === false) { systemLine('Folder access is OFF. Use /folder on first.'); return; }
+  const off = /^(close|none|disconnect)$/i.test(path);
   try { info = await api('/api/folder', { path: off ? '' : path }); } catch (e) { systemLine('Could not connect: ' + e.message); return; }
   await refresh();
   if (off) { $('files').classList.remove('show'); systemLine('Folder disconnected.'); }
@@ -194,8 +207,9 @@ async function loadModel(name, ctx) {
 }
 const COMMANDS = [
   { name: '/files', use: '/files', desc: 'show or hide the connected folder\'s files', run: () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); } },
-  { name: '/folder', use: '/folder /<project>', desc: 'connect a project in Phoenix_Projects, e.g. /my-app/src (off = disconnect)', arg: true,
-    options: () => recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })),
+  { name: '/folder', use: '/folder /<project> | on | off', desc: 'connect a project in Phoenix_Projects (close = disconnect; on|off = allow or fully disable folder access)', arg: true,
+    options: () => [{ value: 'on', desc: 'allow folder access' + (info.folderAccess !== false ? ' (current)' : '') }, { value: 'off', desc: 'disable all folder access' + (info.folderAccess === false ? ' (current)' : '') }]
+      .concat(info.folderAccess === false ? [] : [{ value: 'close', desc: 'disconnect the current folder' }].concat(recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })))),
     run: arg => setFolder(arg) },
   { name: '/help', use: '/help', desc: 'list all commands with full syntax', run: () => systemLine('Commands:\n' + COMMANDS.map(c => '  ' + c.use + '  —  ' + c.desc).join('\n') + '\nKeys: Esc stops a reply · Ctrl+C copies selected text.') },
   { name: '/index', use: '/index', desc: 'reindex new and changed files in docs\\', run: () => reindex() },
@@ -218,6 +232,16 @@ const COMMANDS = [
       if (!arg) { const r = (await api('/api/info')).rag; systemLine('Docs: ' + r.files + ' files, ' + r.chunks + ' chunks, retrieval ' + (r.enabled ? 'on' : 'off') + '. Commands: /index, /rag on|off, /rag <words>.'); return; }
       const r = await api('/api/rag?q=' + encodeURIComponent(arg));
       systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
+    } },
+  { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
+    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'processor (slow, frees video memory)' + (info.device === 'cpu' ? ' (current)' : '') }],
+    run: async arg => {
+      const d = (arg || '').trim().toLowerCase();
+      if (d !== 'gpu' && d !== 'cpu') { systemLine('Running on ' + (info.device === 'cpu' ? 'CPU' : 'GPU') + (info.backend ? ' (' + info.backend + ')' : '') + '. Use /device gpu or /device cpu.'); return; }
+      if (info.model) systemLine('Switching to ' + d.toUpperCase() + ' and reloading ' + info.file + '…');
+      try { info = await api('/api/device', { device: d }); } catch (e) { systemLine('Could not switch: ' + e.message); return; }
+      ctxUsed = 0; await refresh();
+      systemLine('Now on ' + d.toUpperCase() + (info.backend ? ': ' + info.model + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
     } },
   { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
     run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
