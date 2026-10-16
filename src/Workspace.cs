@@ -279,7 +279,10 @@ namespace Phoenix
         }
 
         // Carries out every tag in a model reply, in order of appearance.
-        public List<Action> Execute(string reply)
+        public List<Action> Execute(string reply) { return Execute(reply, null); }
+
+        // approve: asked before each list / read / write (Accept mode); false = denied, the model is told so. null = all allowed.
+        public List<Action> Execute(string reply, Func<Action, bool> approve)
         {
             List<KeyValuePair<int, Action>> found = new List<KeyValuePair<int, Action>>();
             foreach (Match m in WriteTag.Matches(reply))
@@ -302,8 +305,10 @@ namespace Phoenix
                 Action a = new Action(); a.Op = "list"; a.Path = m.Groups[1].Success && m.Groups[1].Value.Length > 0 ? m.Groups[1].Value : ".";
                 found.Add(new KeyValuePair<int, Action>(m.Index, a));
             }
-            // Command-style tags (<run>, <exec>, ...) are never carried out; the model is told they were refused.
-            foreach (Match m in CommandTag.Matches(reply))
+            // Command-style tags (<run>, <exec>, ...) are never carried out; the model is told they were refused. File
+            // contents and code blocks are not looked at: an HTML file's <script> is content, not a request.
+            string outside = Regex.Replace(reply, "<write\\s[^>]*>[\\s\\S]*?(</write>|$)|```[\\s\\S]*?(```|$)", delegate(Match c) { return new string(' ', c.Length); }, RegexOptions.IgnoreCase);
+            foreach (Match m in CommandTag.Matches(outside))
             {
                 Action a = new Action(); a.Op = "refused"; a.Path = m.Groups[1].Value.ToLowerInvariant();
                 found.Add(new KeyValuePair<int, Action>(m.Index, a));
@@ -317,6 +322,10 @@ namespace Phoenix
                 try
                 {
                     if (a.Op == "refused") { a.Ok = false; a.Message = "<" + a.Path + "> " + ShellGuard.Refusal; a.Content = null; done.Add(a); continue; }
+                    if (approve != null && !approve(a))
+                    {
+                        a.Ok = false; a.Message = a.Op + " " + a.Path + " was denied by the user"; a.Content = null; done.Add(a); continue;
+                    }
                     if (a.Op == "write") { a.Message = Write(a.Path, a.Content); a.Content = null; }
                     else if (a.Op == "read") { a.Content = Read(a.Path); a.Message = "read " + a.Path + " (" + a.Content.Length + " chars)"; }
                     else { a.Content = List(a.Path); a.Message = "listed " + a.Path; }
@@ -337,6 +346,7 @@ namespace Phoenix
                    "<write path=\"relative/path\">\nfull file content\n</write>   create or replace a file (always write the complete file)\n" +
                    "Use paths relative to the project folder. After <read> or <list> you will receive the results and can continue. " +
                    "When the user asks you to create or change a file, do it with <write> instead of only showing the code. " +
+                   "Never say you will check, read or change a file without putting the tag in that same reply: act, don't announce. " +
                    "You cannot run commands, scripts or programs, and cannot create executable files; this is permanent. " +
                    "Keep explanations short.\n\nExample:\nUser: make hello.txt that says hi\nAssistant: <write path=\"hello.txt\">\nhi\n</write>\nCreated hello.txt.\n\n" +
                    "Project folder contents:\n" + List(".");

@@ -43,6 +43,7 @@ namespace Phoenix
     public sealed class ChatEngine : IDisposable
     {
         public readonly string ModelPath, ModelName, Backend;
+        readonly List<int> _banned = new List<int>();   // control tokens the model may not generate (see constructor)
         public readonly Tokenizer Tokenizer;
         public readonly int ContextLength;
 
@@ -72,6 +73,14 @@ namespace Phoenix
             _turnEnd = TokenId("<turn|>");
             _channel = TokenId("<|channel>");
             _channelEnd = TokenId("<channel|>");
+            // Gemma's native tool-call / thinking control tokens are never sampled: with the file-tool instructions in the
+            // prompt it would otherwise open a native tool call as its first token and the reply ended empty (2026-10-16).
+            // The app's own tools are plain-text tags (<read>, <write>, <list>), which it then uses instead.
+            foreach (string name in new string[] { "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|think|>", "<|channel>", "<channel|>" })
+            {
+                int id = TokenId(name);
+                if (id >= 0) _banned.Add(id);
+            }
             _gemma = _turn >= 0 && _turnEnd >= 0;
             if (_gemma) _eot = _turnEnd;
             _mistral = !_gemma && _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
@@ -320,9 +329,10 @@ namespace Phoenix
             sw.Restart();
             while (true)
             {
+                foreach (int b in _banned) if (b < logits.Length) logits[b] = float.NegativeInfinity;
                 int next = sampler.Sample(logits, history);
                 if (next == _eot || next == Tokenizer.EosId) { st.StopReason = "end of turn"; break; }
-                if (Tokenizer.IsSpecial(next)) { st.StopReason = "special token"; break; }
+                if (Tokenizer.IsSpecial(next)) { st.StopReason = "special token " + Encoding.UTF8.GetString(Tokenizer.TokenBytes(next, true)); break; }
 
                 byte[] bytes = Tokenizer.TokenBytes(next, false);
                 int nc = utf8.GetChars(bytes, 0, bytes.Length, chars, 0, false);
