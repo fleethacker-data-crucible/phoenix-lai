@@ -22,7 +22,8 @@ namespace Phoenix.Tests
             List<string> fail = new List<string>();
             string path = Path.Combine(modelsDir, Model);
             string refs = Path.Combine(refsDir, Path.GetFileNameWithoutExtension(Model));
-            if (!File.Exists(path)) { fail.Add(Model + " missing"); return fail; }
+            // Devstral was removed from models\ (2026-10-15); the gate is skipped, not failed, when it is absent
+            if (!File.Exists(path)) { output.WriteLine(Model + " not in models\\, phase 9 skipped"); return fail; }
 
             // 1. Tokenizer (tekken) vs llama-tokenize.
             fail.AddRange(Phase3Gate.Run(path, samplesPath, Path.Combine(refs, "tokens.tsv"), output));

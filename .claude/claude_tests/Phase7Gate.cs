@@ -32,7 +32,10 @@ namespace Phoenix.Tests
                 {
                     string path = Path.Combine(modelsDir, name);
                     string refs = Path.Combine(refsDir, Path.GetFileNameWithoutExtension(name));
-                    if (!File.Exists(path)) { fail.Add(name + ": model file missing, not run"); continue; }
+                    // the 8B file is now named without the "Meta-" prefix; references keep the original name
+                    if (!File.Exists(path) && name.StartsWith("Meta-")) path = Path.Combine(modelsDir, name.Substring(5));
+                    // optional models (the re-quantized 1B test files are made on demand): skipped, not failed
+                    if (!File.Exists(path)) { output.WriteLine(name + ": not in models\\, skipped"); continue; }
                     if (!File.Exists(Path.Combine(refs, "logprobs.tsv"))) { fail.Add(name + ": no llama.cpp reference in " + refs + " (run dev\\ref\\make-refs.ps1)"); continue; }
                     output.WriteLine(name);
                     RunModel(gpu, path, refs, name.Contains("-1B-"), fail, output);
