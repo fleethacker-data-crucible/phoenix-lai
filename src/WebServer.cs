@@ -197,6 +197,25 @@ namespace Phoenix
 
         // The last 10 connected folders, newest first (offered by /folder). Folders that no longer exist are skipped.
         const int MaxRecentFolders = 10;
+        // Folder access master switch (/folder on|off), kept across restarts. Off: no folder can be connected, the
+        // connected one is dropped, and the model gets no file tools at all.
+        static string FolderAccessFile { get { return Path.Combine(AppDataDir, "folder-access.txt"); } }
+        bool _folderAccess = ReadFolderAccess();
+
+        static bool ReadFolderAccess()
+        {
+            try { return !File.Exists(FolderAccessFile) || File.ReadAllText(FolderAccessFile).Trim() != "off"; } catch { return false; }
+        }
+
+        // Where models run (/device gpu|cpu), kept across restarts. GPU still falls back to the CPU if it fails.
+        static string DeviceFile { get { return Path.Combine(AppDataDir, "device.txt"); } }
+        bool _useGpu = ReadUseGpu();
+
+        static bool ReadUseGpu()
+        {
+            try { return !File.Exists(DeviceFile) || File.ReadAllText(DeviceFile).Trim() != "cpu"; } catch { return true; }
+        }
+
         static string RecentFile { get { return Path.Combine(AppDataDir, "recent-folders.txt"); } }
 
         static List<string> RecentFolders()
@@ -245,8 +264,10 @@ namespace Phoenix
                 try
                 {
                     if (_engine != null) { _engine.Dispose(); _engine = null; }
-                    _engine = ChatEngine.Load(path, ContextLength, true, delegate(string m) { Log.Text("  " + m); });
+                    _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
+                    // The weights now live in VRAM: give the RAM the file upload used back to Windows.
+                    if (_engine.Backend.StartsWith("GPU")) Log.Text("  released " + MemoryTrim.Trim() + " MB of RAM after the upload");
                     // Remember it so the next start opens the same model (only for models inside models\).
                     if (string.Equals(Path.GetDirectoryName(path), _modelsDir, StringComparison.OrdinalIgnoreCase))
                         try { File.WriteAllText(Path.Combine(_modelsDir, "last-model.txt"), Path.GetFileName(path)); } catch { }
@@ -406,9 +427,20 @@ namespace Phoenix
                 SendJson(res, 200, sb.Append("]}").ToString());
                 return;
             }
+            if (path == "/api/folder-access" && post)
+            {
+                bool on = body.ContainsKey("on") && body["on"] is bool && (bool)body["on"];
+                _folderAccess = on;
+                if (!on) _workspace = null;
+                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(FolderAccessFile, on ? "on" : "off"); } catch { }
+                Log.Text("folder access " + (on ? "ON" : "OFF (folder disconnected, file tools disabled)"));
+                SendJson(res, 200, Info());
+                return;
+            }
             if (path == "/api/folder" && post)
             {
                 string folder = Json.GetStr(body, "path", "");
+                if (folder.Length > 0 && !_folderAccess) throw new InvalidOperationException("Folder access is off. Turn it on with /folder on.");
                 _workspace = folder.Length == 0 ? null : new Workspace(folder);
                 if (_workspace != null) RememberFolder(_workspace.Display);
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
@@ -434,10 +466,22 @@ namespace Phoenix
                 return;
             }
             if (path == "/api/vram") { SendJson(res, 200, VramProcessesJson()); return; }
+            if (path == "/api/device" && post)
+            {
+                // Switches CPU/GPU and reloads the current model there (the chat history stays; its cache is rebuilt).
+                bool gpu = Json.GetStr(body, "device", "gpu").ToLowerInvariant() != "cpu";
+                _useGpu = gpu;
+                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(DeviceFile, gpu ? "gpu" : "cpu"); } catch { }
+                Log.Text("device: " + (gpu ? "GPU" : "CPU"));
+                ChatEngine cur = _engine;
+                if (cur != null) LoadModel(cur.ModelPath);
+                SendJson(res, 200, Info());
+                return;
+            }
             if (path == "/api/unload" && post)
             {
                 // Frees the model's VRAM (weights + context cache); /model loads one again.
-                lock (_engineLock) { if (_engine != null) { Log.Text("unloaded " + Path.GetFileName(_engine.ModelPath)); _engine.Dispose(); _engine = null; } }
+                lock (_engineLock) { if (_engine != null) { Log.Text("unloaded " + Path.GetFileName(_engine.ModelPath)); _engine.Dispose(); _engine = null; MemoryTrim.Trim(); } }
                 GC.Collect();
                 SendJson(res, 200, Info());
                 return;
@@ -497,6 +541,7 @@ namespace Phoenix
 
         Workspace RequireWorkspace()
         {
+            if (!_folderAccess) throw new InvalidOperationException("Folder access is off. Turn it on with /folder on.");
             if (_workspace == null) throw new InvalidOperationException("No folder connected. Use /folder /<project>.");
             return _workspace;
         }
@@ -512,8 +557,8 @@ namespace Phoenix
         string Info()
         {
             ChatEngine e = _engine;
-            Workspace w = _workspace;
-            return "{\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
+            Workspace w = _folderAccess ? _workspace : null;
+            return "{\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + ContextLength +
@@ -650,7 +695,7 @@ namespace Phoenix
                 try
                 {
                     if (_engine == null) throw new InvalidOperationException("No model loaded. Use /models and /model <n>.");
-                    Workspace ws = _workspace;
+                    Workspace ws = _folderAccess ? _workspace : null;
                     List<KeyValuePair<string, string>> rulesFiles = RulesFiles();
                     string rules = RulesPrompt(rulesFiles);
                     if (rules != null)
