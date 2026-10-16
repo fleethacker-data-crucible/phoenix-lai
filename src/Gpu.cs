@@ -88,6 +88,27 @@ namespace Phoenix
         public ulong FallbackBytes;
         public uint SubgroupSize;          // threads per subgroup (wave) in compute shaders
         public bool SubgroupArithmetic;    // subgroupAdd etc. supported in compute shaders
+        public uint MaxSharedMemory;       // bytes of workgroup (shared) memory a compute shader may use
+        int _deviceHeap;
+
+        // VRAM of the device-local heap (VK_EXT_memory_budget): used = this process, budget = what this process can use
+        // now (the heap minus other programs' use). False when the driver does not report a budget.
+        public bool MemoryBudget(out ulong used, out ulong budget)
+        {
+            used = 0; budget = 0;
+            if (_deviceHeap < 0 || ApiVersion < VkConst.MakeApiVersion(1, 1, 0)) return false;
+            byte* bud = stackalloc byte[16 + 256];
+            byte* p2 = stackalloc byte[16 + 520 + 8];
+            for (int i = 0; i < 16 + 256; i++) bud[i] = 0;
+            for (int i = 0; i < 16 + 520 + 8; i++) p2[i] = 0;
+            *(int*)bud = 1000237000;            // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
+            *(int*)p2 = 1000059006;             // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2
+            *(IntPtr*)(p2 + 8) = (IntPtr)bud;
+            Vk.vkGetPhysicalDeviceMemoryProperties2(Physical, p2);
+            budget = *(ulong*)(bud + 16 + 8 * _deviceHeap);
+            used = *(ulong*)(bud + 16 + 128 + 8 * _deviceHeap);
+            return budget > 0;
+        }
         public bool IntegerDot;            // packed 4x8-bit integer dot product (shaderIntegerDotProduct) enabled
         public bool IntegerDotAccelerated; // ...and the hardware has native instructions for it   // "device-local" buffers that had to live in system memory
         const int VkErrorOutOfDeviceMemory = -2;
@@ -171,6 +192,7 @@ namespace Phoenix
             while (len < 256 && p[20 + len] != 0) len++;
             DeviceName = Encoding.UTF8.GetString(p + 20, len);
             TimestampPeriodNs = *(float*)(p + 720); // VkPhysicalDeviceLimits.timestampPeriod
+            MaxSharedMemory = *(uint*)(p + 512);   // VkPhysicalDeviceLimits.maxComputeSharedMemorySize (limits start at 296)
 
             // Subgroup properties (Vulkan 1.1): VkPhysicalDeviceProperties2 { sType, pNext, properties[824] } -> chained
             // VkPhysicalDeviceSubgroupProperties { sType, pNext, subgroupSize, supportedStages, supportedOperations, quad }.
@@ -191,6 +213,7 @@ namespace Phoenix
 
             byte* mp = stackalloc byte[1024];
             Vk.vkGetPhysicalDeviceMemoryProperties(Physical, mp);
+            _deviceHeap = -1;
             _memTypeCount = *(uint*)mp;
             for (int i = 0; i < _memTypeCount; i++) _memFlags[i] = *(uint*)(mp + 4 + i * 8);
             uint heapCount = *(uint*)(mp + 260);
@@ -198,7 +221,7 @@ namespace Phoenix
             {
                 ulong size = *(ulong*)(mp + 264 + i * 16);
                 uint flags = *(uint*)(mp + 264 + i * 16 + 8);
-                if ((flags & 1) != 0 && size > DeviceLocalBytes) DeviceLocalBytes = size; // VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+                if ((flags & 1) != 0 && size > DeviceLocalBytes) { DeviceLocalBytes = size; _deviceHeap = i; } // VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
             }
 
             // Integer dot product (Vulkan 1.3 core): VkPhysicalDeviceShaderIntegerDotProductFeatures { sType, pNext, VkBool32 }.

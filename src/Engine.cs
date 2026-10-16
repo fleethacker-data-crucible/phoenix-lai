@@ -17,6 +17,8 @@ namespace Phoenix
         void Reset();
         int ContextLength { get; }
         int VocabSize { get; }
+        // Earliest cached position that can be kept after `fed` tokens (0 = any; ring caches return more).
+        int MinReuse(int fed);
     }
 
     public sealed class ChatMessage
@@ -49,7 +51,8 @@ namespace Phoenix
         readonly ILanguageModel _model;
         readonly List<int> _fed = new List<int>();   // tokens whose K/V are in the cache, by position
         // Chat template family, detected from the vocabulary.
-        readonly bool _mistral;
+        readonly bool _mistral, _gemma;
+        readonly int _turn, _turnEnd, _channel, _channelEnd;   // Gemma 4 (<|turn>role ... <turn|>)
         readonly int _eot, _startHeader, _endHeader;           // Llama 3
         readonly int _inst, _instEnd, _sys, _sysEnd;            // Mistral ([INST] ... [/INST])
 
@@ -65,9 +68,15 @@ namespace Phoenix
             _instEnd = TokenId("[/INST]");
             _sys = TokenId("[SYSTEM_PROMPT]");
             _sysEnd = TokenId("[/SYSTEM_PROMPT]");
-            _mistral = _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
-            if (!_mistral && (_startHeader < 0 || _endHeader < 0))
-                throw new NotSupportedException("Model has neither Llama 3 nor Mistral chat-template tokens.");
+            _turn = TokenId("<|turn>");
+            _turnEnd = TokenId("<turn|>");
+            _channel = TokenId("<|channel>");
+            _channelEnd = TokenId("<channel|>");
+            _gemma = _turn >= 0 && _turnEnd >= 0;
+            if (_gemma) _eot = _turnEnd;
+            _mistral = !_gemma && _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
+            if (!_gemma && !_mistral && (_startHeader < 0 || _endHeader < 0))
+                throw new NotSupportedException("Model has no supported chat template (Llama 3, Mistral or Gemma 4).");
         }
 
         int TokenId(string text)
@@ -76,10 +85,37 @@ namespace Phoenix
             return -1;
         }
 
+        // Gemma 4 template (thinking off): <bos><|turn>system\nsys<turn|>\n<|turn>user\nmsg<turn|>\n<|turn>model\n
+        // <|channel>thought\n<channel|> -- the empty thought channel tells the model to answer directly.
+        List<int> GemmaTemplate(IList<ChatMessage> messages)
+        {
+            List<int> ids = new List<int>();
+            ids.Add(Tokenizer.BosId);
+            foreach (ChatMessage m in messages)
+            {
+                string role = m.Role == "assistant" ? "model" : m.Role;
+                ids.Add(_turn);
+                ids.AddRange(Tokenizer.Encode(role + "\n" + m.Text.Trim(), false, false));
+                ids.Add(_turnEnd);
+                ids.AddRange(Tokenizer.Encode("\n", false, false));
+            }
+            ids.Add(_turn);
+            ids.AddRange(Tokenizer.Encode("model\n", false, false));
+            ids.Add(_channel);
+            ids.AddRange(Tokenizer.Encode("thought\n", false, false));
+            ids.Add(_channelEnd);
+            return ids;
+        }
+
         // Loads a local .gguf file. Uses the GPU when Vulkan works, otherwise the CPU reference path.
         public static ChatEngine Load(string path, int contextLength, bool allowGpu, TextCallback log)
         {
             if (!File.Exists(path)) throw new FileNotFoundException("Model file not found.", path);
+            lock (GpuGate.Lock) return LoadLocked(path, contextLength, allowGpu, log);
+        }
+
+        static ChatEngine LoadLocked(string path, int contextLength, bool allowGpu, TextCallback log)
+        {
             GgufFile g = GgufFile.Open(path);
             GpuDevice gpu = null;
             ILanguageModel model = null;
@@ -90,8 +126,10 @@ namespace Phoenix
                 {
                     try
                     {
+                        string garch = g.GetString("general.architecture");
+                        if (garch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
                         gpu = GpuDevice.Create();
-                        model = new LlamaGpu(gpu, g, contextLength);
+                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, contextLength) : new LlamaGpu(gpu, g, contextLength);
                     }
                     catch (Exception ex)
                     {
@@ -107,7 +145,9 @@ namespace Phoenix
                 }
                 else
                 {
-                    model = new LlamaCpu(g, contextLength);
+                    string arch = g.GetString("general.architecture");
+                    if (arch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
+                    model = GemmaConfig.IsGemma(arch) ? (ILanguageModel)new GemmaCpu(g, contextLength) : new LlamaCpu(g, contextLength);
                     backend = "CPU";
                 }
                 return new ChatEngine(path, g, gpu, model, backend, contextLength);
@@ -124,6 +164,7 @@ namespace Phoenix
         // Llama 3 instruct template; ends with an open assistant header.
         public List<int> Template(IList<ChatMessage> messages)
         {
+            if (_gemma) return GemmaTemplate(messages);
             if (_mistral) return MistralTemplate(messages);
             List<int> ids = new List<int>();
             ids.Add(Tokenizer.BosId);
@@ -170,12 +211,24 @@ namespace Phoenix
 
         public void ClearCache() { _fed.Clear(); _model.Reset(); }
 
+        // VRAM of the GPU this model runs on (this process's use and its current budget); false on the CPU.
+        public bool Vram(out ulong used, out ulong budget)
+        {
+            used = 0; budget = 0;
+            return _gpu != null && _gpu.MemoryBudget(out used, out budget);
+        }
+
         // Tokens currently held in the context (KV cache) for the conversation.
         public int UsedTokens { get { return _fed.Count; } }
 
         // Generates a reply to the conversation. Streams text through onText; returns stats.
         // Oldest non-system messages are dropped when the prompt would not leave room for maxTokens.
         public GenerationStats Generate(List<ChatMessage> messages, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
+        {
+            lock (GpuGate.Lock) return GenerateLocked(messages, settings, maxTokens, onText, cancel);
+        }
+
+        GenerationStats GenerateLocked(List<ChatMessage> messages, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
         {
             GenerationStats st = new GenerationStats();
             List<ChatMessage> msgs = new List<ChatMessage>(messages);
@@ -193,13 +246,14 @@ namespace Phoenix
             // Reuse the cached prefix.
             int reuse = 0;
             while (reuse < _fed.Count && reuse < prompt.Count - 1 && _fed[reuse] == prompt[reuse]) reuse++;
+            if (reuse > 0 && reuse < _model.MinReuse(_fed.Count)) reuse = 0;   // ring cache no longer holds what that would need
             _fed.RemoveRange(reuse, _fed.Count - reuse);
             st.ReusedTokens = reuse;
             st.PromptTokens = prompt.Count - reuse;
 
             Stopwatch sw = Stopwatch.StartNew();
             float[] logits = null;
-            const int Chunk = 256; // prompt is fed in chunks so Stop stays responsive
+            const int Chunk = 512; // prompt is fed in chunks so Stop stays responsive (~1-2 s each with batched prefill)
             for (int i = reuse; i < prompt.Count; i += Chunk)
             {
                 if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }

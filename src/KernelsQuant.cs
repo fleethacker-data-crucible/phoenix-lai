@@ -3,13 +3,14 @@
 //   Mode.Plain:   quantize x
 //   Mode.SiluMul: quantize silu(x) * u        (feed-forward gate · up, for the down projection)
 //   Mode.RmsNorm: quantize x / rms(x) * w     (layer norm feeding the next matvecs); every workgroup computes rms(x)
+//   Mode.GeluMul: quantize gelu(x) * u        (Gemma feed-forward; GELU like ggml's CPU: fp16(gelu(fp16(x))), CpuRef.Gelu)
 using System;
 
 namespace Phoenix
 {
     public static class KernelsQuant
     {
-        public enum Mode { Plain = 0, SiluMul = 1, RmsNorm = 2 }
+        public enum Mode { Plain = 0, SiluMul = 1, RmsNorm = 2, GeluMul = 3 }
 
         public static int Bindings(Mode m) { return m == Mode.Plain ? 3 : 4; }
         public const int PushWords = 3; // nBlocks, n, eps(bits)
@@ -24,7 +25,18 @@ namespace Phoenix
                 return k.FMul(silu, k.Ld(aux, idx));
             }
             if (mode == Mode.RmsNorm) return k.FMul(k.FMul(v, scale), k.Ld(aux, idx));
+            if (mode == Mode.GeluMul) return k.FMul(Gelu(k, v), k.Ld(aux, idx));
             return v;
+        }
+
+        // ggml CPU GELU: 0 below -10, x above 10, else fp16(0.5 h (1 + tanh(sqrt(2/pi) h (1 + 0.044715 h^2)))) with h = fp16(x).
+        public static uint Gelu(KB k, uint v)
+        {
+            uint h = k.F16(v);
+            uint inner = k.FMul(k.FMul(k.CF(0.79788456080286535587989211986876f), h), k.FAdd(k.CF(1f), k.FMul(k.CF(0.044715f), k.FMul(h, h))));
+            uint g = k.F16(k.FMul(k.FMul(k.CF(0.5f), h), k.FAdd(k.CF(1f), k.S.Glsl(k.F32, Spv.GlslTanh, inner))));
+            uint low = k.S.Value(Op.FOrdLessThanEqual, k.Bool, v, k.CF(-10f)), high = k.S.Value(Op.FOrdGreaterThanEqual, k.Bool, v, k.CF(10f));
+            return k.Select(k.F32, low, k.CF(0f), k.Select(k.F32, high, v, g));
         }
 
         // 1 / sqrt(mean(x^2) + eps) over the whole vector, computed by this workgroup (64 threads).

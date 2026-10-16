@@ -1,5 +1,6 @@
-// Local retrieval (RAG) over the docs\ folder: markdown-aware chunking, BM25 keyword search, and a memory-mapped
-// binary index (docs\.index\rag.bin) that is rebuilt incrementally by Rag.Reindex and swapped in when complete.
+// Local retrieval (RAG) over the docs\ folder: markdown-aware chunking, hybrid search (BM25 keywords + EmbeddingGemma
+// vectors, fused by reciprocal rank), and a memory-mapped binary index (docs\.index\rag.bin) that is rebuilt
+// incrementally by Rag.Reindex and swapped in when complete.
 // C# 5 only.
 using System;
 using System.Collections.Generic;
@@ -27,35 +28,72 @@ namespace Phoenix
         // A chunk must match >= 2 of the message's terms (or >= MinCoverage of them for short messages) and score
         // >= MinRelative of the best hit, so chit-chat and off-topic questions retrieve nothing.
         public float MinRelative = 0.35f, MinCoverage = 0.3f;
+        // Vector side. Absolute cosines are useless as a gate (sections of one document all score ~0.6 against anything,
+        // they share title and topic), so a section counts as a meaning match when it stands out from the library:
+        // cosine >= mean + MinLift over all sections, and within MaxDrop of the best one. Calibrated on the C# reference:
+        // real questions lift the best section 0.15-0.25 above the mean, chit-chat ~0.03.
+        public float MinLift = 0.1f, MaxDrop = 0.1f;
+        const float RrfK = 60f;
         public bool Enabled = true;
 
         static readonly string[] TextExtensions = { ".md", ".markdown", ".txt", ".rst", ".sql", ".cs", ".py", ".js", ".ts", ".tsx", ".jsx",
             ".java", ".c", ".h", ".cpp", ".hpp", ".go", ".rs", ".ps1", ".psm1", ".sh", ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".ini", ".toml" };
         const long MaxFileBytes = 32L << 20;
 
-        public readonly string DocsDir, IndexPath;
-        readonly object _swapLock = new object();
+        public readonly string DocsDir, IndexPath, ModelsDir;
+        readonly object _swapLock = new object(), _embedLock = new object();
         RagIndex _index;
+        Embedder _embedder;
+        bool _embedderTried;
         int _busy;
         string _progress, _lastResult, _lastError;
 
-        public Rag(string docsDir)
+        public Rag(string docsDir, string modelsDir)
         {
             DocsDir = Path.GetFullPath(docsDir);
+            ModelsDir = modelsDir != null ? Path.GetFullPath(modelsDir) : null;
             IndexPath = Path.Combine(DocsDir, ".index", "rag.bin");
             Directory.CreateDirectory(DocsDir);
             string fresh = IndexPath + ".new";
             if (!File.Exists(IndexPath) && File.Exists(fresh)) File.Move(fresh, IndexPath);   // finish an interrupted swap
-            try { if (File.Exists(IndexPath)) _index = new RagIndex(IndexPath); } catch (Exception ex) { _lastError = "index unreadable: " + ex.Message; }
+            try { if (File.Exists(IndexPath)) _index = new RagIndex(IndexPath); }
+            catch (Exception) { NeedsRebuild = true; }   // older format: rebuilt automatically at startup
         }
 
+        // True when the index on disk is from an older version; WebServer then starts a rebuild.
+        public bool NeedsRebuild;
+
+        // Loads the embedding model in the background (so the first message does not wait for it).
+        public void WarmUp()
+        {
+            ThreadPool.QueueUserWorkItem(delegate { try { GetEmbedder(); } catch { } });
+        }
+
+        public string EmbedBackend { get { Embedder e = _embedder; return e != null ? e.Backend : null; } }
+
         public bool Indexing { get { return _busy != 0; } }
+
+        // EmbeddingGemma from models\, loaded on first use and kept (it is small); null if there is none.
+        Embedder GetEmbedder()
+        {
+            lock (_embedLock)
+            {
+                if (!_embedderTried && ModelsDir != null)
+                {
+                    _embedderTried = true;
+                    try { _embedder = Embedder.Find(ModelsDir); } catch (Exception ex) { _lastError = "embedding model: " + ex.Message; }
+                }
+                return _embedder;
+            }
+        }
 
         public string StatusJson()
         {
             RagIndex ix = _index;
             return "{\"enabled\":" + (Enabled ? "true" : "false") +
                    ",\"files\":" + (ix != null ? ix.FileCount : 0) + ",\"chunks\":" + (ix != null ? ix.ChunkCount : 0) +
+                   ",\"vectors\":" + (ix != null && ix.Dim > 0 ? "true" : "false") +
+                   ",\"embedder\":" + (EmbedBackend != null ? Json.Quote(EmbedBackend) : "null") +
                    ",\"indexing\":" + (_busy != 0 ? Json.Quote(_progress ?? "starting") : "null") +
                    ",\"last\":" + (_lastResult != null ? Json.Quote(_lastResult) : "null") +
                    ",\"error\":" + (_lastError != null ? Json.Quote(_lastError) : "null") + "}";
@@ -84,6 +122,7 @@ namespace Phoenix
             public long Size, Mtime;
             public byte[] Hash;
             public List<string[]> Chunks;   // {title, text}
+            public List<float[]> Vecs;      // one per chunk, or null (no embedding model)
             public bool Reused;
         }
 
@@ -118,22 +157,44 @@ namespace Phoenix
                 int oi;
                 if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && old.FileSize(oi) == e.Size && old.FileMtime(oi) == e.Mtime)
                 {
-                    e.Hash = old.FileHash(oi); e.Chunks = old.FileChunks(oi); e.Reused = true;
+                    e.Hash = old.FileHash(oi); e.Chunks = old.FileChunks(oi); e.Vecs = old.FileVectors(oi); e.Reused = true;
                 }
                 else
                 {
                     byte[] bytes = File.ReadAllBytes(e.Full);
                     using (SHA256 sha = SHA256.Create()) e.Hash = sha.ComputeHash(bytes);
-                    if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && SameHash(old.FileHash(oi), e.Hash)) { e.Chunks = old.FileChunks(oi); e.Reused = true; }
+                    if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && SameHash(old.FileHash(oi), e.Hash)) { e.Chunks = old.FileChunks(oi); e.Vecs = old.FileVectors(oi); e.Reused = true; }
                     else { e.Chunks = Chunker.Split(e.Rel, DecodeText(bytes)); Interlocked.Increment(ref changed); }
                 }
                 _progress = "chunking " + Interlocked.Increment(ref done) + "/" + files.Count;
             });
 
+            // Embed every chunk that has no vector yet (new or changed files, or an index built without the model).
+            Embedder emb = GetEmbedder();
+            int embedded = 0;
+            if (emb != null)
+            {
+                int todo = 0, doneE = 0;
+                foreach (FileEntry e in files) if (e.Vecs == null || e.Vecs.Count != e.Chunks.Count || (e.Vecs.Count > 0 && e.Vecs[0].Length != emb.Dim)) todo += e.Chunks.Count;
+                foreach (FileEntry e in files)
+                {
+                    if (e.Vecs != null && e.Vecs.Count == e.Chunks.Count && (e.Vecs.Count == 0 || e.Vecs[0].Length == emb.Dim)) continue;
+                    e.Vecs = new List<float[]>(e.Chunks.Count);
+                    foreach (string[] ch in e.Chunks)
+                    {
+                        _progress = "embedding " + (++doneE) + "/" + todo;
+                        e.Vecs.Add(emb.Document(e.Rel + (ch[0].Length > 0 ? " > " + ch[0] : ""), ch[1]));
+                        embedded++;
+                    }
+                }
+            }
+            else foreach (FileEntry e in files) e.Vecs = null;
+
             _progress = "building index";
             string tmp = IndexPath + ".tmp", fresh = IndexPath + ".new";
             Directory.CreateDirectory(Path.GetDirectoryName(IndexPath));
-            int chunkCount = RagIndex.Write(tmp, files.ConvertAll(delegate(FileEntry e) { return new RagIndex.Source(e.Rel, e.Size, e.Mtime, e.Hash, e.Chunks); }));
+            int chunkCount = RagIndex.Write(tmp, files.ConvertAll(delegate(FileEntry e) { return new RagIndex.Source(e.Rel, e.Size, e.Mtime, e.Hash, e.Chunks, e.Vecs); }),
+                emb != null ? emb.Dim : 0);
             if (File.Exists(fresh)) File.Delete(fresh);
             File.Move(tmp, fresh);
 
@@ -145,8 +206,9 @@ namespace Phoenix
                 File.Move(fresh, IndexPath);
                 _index = new RagIndex(IndexPath);
             }
-            return string.Format("{0} files, {1} chunks ({2} new/changed, {3} removed) in {4:F1} s",
-                files.Count, chunkCount, changed, removed, sw.Elapsed.TotalSeconds);
+            return string.Format("{0} files, {1} chunks ({2} new/changed, {3} removed{5}) in {4:F1} s",
+                files.Count, chunkCount, changed, removed, sw.Elapsed.TotalSeconds,
+                emb != null ? ", " + embedded + " embedded" : ", keyword search only: no EmbeddingGemma in models\\");
         }
 
         static bool SameHash(byte[] a, byte[] b)
@@ -168,15 +230,41 @@ namespace Phoenix
         {
             List<RagHit> hits = new List<RagHit>();
             if (string.IsNullOrEmpty(query)) return hits;
+            // Asking for the docs by name ("via rag", "in my docs") means the user wants something from them: any single
+            // matching word is enough, and if nothing matches at all (e.g. "a random function"), a few random sections.
+            bool explicitDocs = ExplicitRe.IsMatch(query);
             Dictionary<ulong, float> q = new Dictionary<ulong, float>();
             AddQueryTerms(q, query, 1f);
             if (!string.IsNullOrEmpty(context)) AddQueryTerms(q, context, 0.5f);
-            if (q.Count == 0) return hits;
+            RagIndex ix = _index;
+            if (ix == null) return hits;
+            // The query vector is computed outside the swap lock (it takes a few hundred ms on the CPU).
+            float[] qv = null;
+            Embedder emb = ix.Dim > 0 ? GetEmbedder() : null;
+            if (emb != null && emb.Dim == ix.Dim) qv = emb.Query(query);
             lock (_swapLock)
             {
                 if (_index == null) return hits;
-                return _index.Search(q, TopK, BudgetChars, MinRelative, MinCoverage);
+                hits = _index.Search(q, qv, TopK, BudgetChars, MinRelative, explicitDocs ? 0f : MinCoverage, explicitDocs ? 0.05f : MinLift, MaxDrop, RrfK);
+                if (hits.Count == 0 && explicitDocs) hits = _index.RandomHits(3, BudgetChars);
+                return hits;
             }
+        }
+
+        static readonly System.Text.RegularExpressions.Regex ExplicitRe = new System.Text.RegularExpressions.Regex(
+            @"\b(rag|docs|documents|documentation|docs? library|knowledge ?base|reference material)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // One line for the system prompt so the model always knows the library exists, even when nothing was retrieved.
+        // Changes only when the index does, so the cached prompt prefix stays valid.
+        public string LibraryNote()
+        {
+            RagIndex ix = _index;
+            if (!Enabled || ix == null || ix.FileCount == 0) return null;
+            List<string> names = new List<string>();
+            for (int i = 0; i < ix.FileCount && i < 20; i++) names.Add(ix.FilePath(i));
+            return "The user has a local docs library they call their \"RAG\": " + string.Join(", ", names.ToArray()) +
+                   (ix.FileCount > 20 ? ", and more" : "") + ". Sections that match a message are pasted into that message for you. Only bring up the docs when the user asks about them or they help.";
         }
 
         // Weights: 1 = topic word of the message, 0.75 = common word (scores but does not count as a match),
@@ -193,22 +281,22 @@ namespace Phoenix
         }
 
         // Prompt block placed before the user's question.
-        public static string PromptBlock(List<RagHit> hits)
+        // The user's message with the matching sections in front, worded as the user speaking (it is their message).
+        // Plain and short: small models echo or misread elaborate wrappers.
+        public static string WrapMessage(List<RagHit> hits, string message)
         {
-            StringBuilder sb = new StringBuilder("[Docs library search results (RAG)]\n" +
-                "The app searched the user's local docs library (the \"RAG\", \"docs\" or \"documents\" the user may mention) for this " +
-                "message and found the excerpts below. They ARE the user's RAG documents: when asked what is in the RAG or docs, " +
-                "describe these excerpts. Use them when relevant, prefer them over memory, and cite them as [n]. " +
-                "Only these best-matching excerpts are shown, not the whole library.\n");
+            StringBuilder sb = new StringBuilder("Sections from my docs library (my RAG) that match this message:\n\n");
             for (int i = 0; i < hits.Count; i++)
-                sb.Append("\n[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " › " + hits[i].Title : "")
-                  .Append('\n').Append(hits[i].Text.Trim()).Append('\n');
+                sb.Append("[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " > " + hits[i].Title : "")
+                  .Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
+            sb.Append("---\nAnswer in your own words using these sections where they help, and cite them like [1].\n\n").Append(message);
             return sb.ToString();
         }
 
         public void Dispose()
         {
             lock (_swapLock) { if (_index != null) _index.Dispose(); _index = null; }
+            lock (_embedLock) { if (_embedder != null) _embedder.Dispose(); _embedder = null; }
         }
     }
 
@@ -224,7 +312,8 @@ namespace Phoenix
         static readonly HashSet<ulong> Common = Hashes("is in on at for with as by and or not from into all any get set use make want need " +
             "today now new one will just like good great nice thanks thank work hello hi hey yes no ok okay also then than so if when which " +
             "who why where have has had were been being am but more most very really much many way thing time help know think tell show give " +
-            "write explain let try see look sure right wrong fine well again still other same each every");
+            "write explain let try see look sure right wrong fine well again still other same each every " +
+            "rag doc docs document documents documentation library lookup via random find search");
 
         static HashSet<ulong> Hashes(string words)
         {
@@ -405,24 +494,28 @@ namespace Phoenix
     //   table    open addressing on FNV-1a term hash: {u64 hash, u32 postingOff, u32 df}                       (16 B)
     //   postings {u32 chunk, u32 tf}, grouped by term
     //   blob     UTF-8 strings
+    //   vectors  (v2) fp16 [chunks x dim], unit length; dim = 0 when built without an embedding model
+    //   header v2 adds: u32 dim at 20 (was reserved), u64 vectors offset at 72
     unsafe sealed class RagIndex : IDisposable
     {
         public sealed class Source
         {
-            public string Rel; public long Size, Mtime; public byte[] Hash; public List<string[]> Chunks;
-            public Source(string rel, long size, long mtime, byte[] hash, List<string[]> chunks) { Rel = rel; Size = size; Mtime = mtime; Hash = hash; Chunks = chunks; }
+            public string Rel; public long Size, Mtime; public byte[] Hash; public List<string[]> Chunks; public List<float[]> Vecs;
+            public Source(string rel, long size, long mtime, byte[] hash, List<string[]> chunks, List<float[]> vecs)
+            { Rel = rel; Size = size; Mtime = mtime; Hash = hash; Chunks = chunks; Vecs = vecs; }
         }
 
-        const int HeaderBytes = 72, FileBytes = 72, ChunkBytes = 24, SlotBytes = 16;
-        static readonly byte[] Magic = Encoding.ASCII.GetBytes("PHXRAG01");
+        const int HeaderBytes = 80, FileBytes = 72, ChunkBytes = 24, SlotBytes = 16;
+        static readonly byte[] Magic = Encoding.ASCII.GetBytes("PHXRAG02");
 
         MemoryMappedFile _mmf;
         MemoryMappedViewAccessor _view;
         byte* _base;
-        public readonly int FileCount, ChunkCount;
+        public readonly int FileCount, ChunkCount, Dim;
         readonly int _tableSize;
         readonly float _avgLen;
         readonly byte* _files, _chunks, _table, _postings, _blob;
+        readonly ushort* _vecs;
 
         public RagIndex(string path)
         {
@@ -432,11 +525,30 @@ namespace Phoenix
             _view = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
             _view.SafeMemoryMappedViewHandle.AcquirePointer(ref _base);
             _base += _view.PointerOffset;
-            for (int i = 0; i < 8; i++) if (_base[i] != Magic[i]) throw new InvalidDataException("Not a PhoenixAI RAG index.");
+            for (int i = 0; i < 8; i++) if (_base[i] != Magic[i]) { Dispose(); throw new InvalidDataException("Old or unknown index format (run /index to rebuild)."); }
             FileCount = *(int*)(_base + 8); ChunkCount = *(int*)(_base + 12); _tableSize = *(int*)(_base + 16);
             _avgLen = *(float*)(_base + 24);
             _files = _base + *(long*)(_base + 32); _chunks = _base + *(long*)(_base + 40); _table = _base + *(long*)(_base + 48);
             _postings = _base + *(long*)(_base + 56); _blob = _base + *(long*)(_base + 64);
+            Dim = *(int*)(_base + 20);
+            _vecs = Dim > 0 ? (ushort*)(_base + *(long*)(_base + 72)) : null;
+        }
+
+        // Vectors of a file's chunks (for reuse when the file did not change), or null.
+        public List<float[]> FileVectors(int i)
+        {
+            if (Dim == 0) return null;
+            byte* r = FileRec(i);
+            int first = *(int*)(r + 12), count = *(int*)(r + 16);
+            List<float[]> list = new List<float[]>(count);
+            for (int c = first; c < first + count; c++)
+            {
+                float[] v = new float[Dim];
+                ushort* src = _vecs + (long)c * Dim;
+                for (int k = 0; k < Dim; k++) v[k] = Half.ToFloat(src[k]);
+                list.Add(v);
+            }
+            return list;
         }
 
         string Str(long off, int len) { return len == 0 ? "" : new string((sbyte*)(_blob + off), 0, len, Encoding.UTF8); }
@@ -467,7 +579,77 @@ namespace Phoenix
         string ChunkTitle(int c) { byte* r = ChunkRec(c); return Str(*(long*)r, *(int*)(r + 8)); }
         string ChunkText(int c) { byte* r = ChunkRec(c); return Str(*(long*)r + *(int*)(r + 8), *(int*)(r + 12)); }
 
-        public List<RagHit> Search(Dictionary<ulong, float> query, int topK, int budgetChars, float minRelative, float minCoverage)
+        // n random sections (different files first) within the budget: for "show me something from the docs" requests.
+        public List<RagHit> RandomHits(int n, int budgetChars)
+        {
+            List<RagHit> hits = new List<RagHit>();
+            if (ChunkCount == 0) return hits;
+            Random rnd = new Random();
+            HashSet<int> tried = new HashSet<int>();
+            int used = 0;
+            while (hits.Count < n && tried.Count < Math.Min(ChunkCount, 50))
+            {
+                int c = rnd.Next(ChunkCount);
+                if (!tried.Add(c)) continue;
+                string text = ChunkText(c);
+                if (text.Length < 200 || (used + text.Length > budgetChars && hits.Count > 0)) continue;   // skip stubs like a lone heading
+                used += text.Length;
+                RagHit h = new RagHit();
+                h.File = FilePath(*(int*)(ChunkRec(c) + 16)); h.Title = ChunkTitle(c); h.Text = text; h.Score = 0;
+                hits.Add(h);
+            }
+            return hits;
+        }
+
+        // Hybrid search: BM25 candidates (gated as before) and vector candidates (cosine >= minCosine), merged by
+        // reciprocal rank fusion: score = sum 1 / (k + rank). Without vectors this is plain BM25.
+        public List<RagHit> Search(Dictionary<ulong, float> query, float[] qv, int topK, int budgetChars, float minRelative,
+            float minCoverage, float minLift, float maxDrop, float rrfK)
+        {
+            List<int> kw = query.Count > 0 ? Bm25(query, minRelative, minCoverage) : new List<int>();
+            List<int> vec = new List<int>();
+            float[] cos = null;
+            if (qv != null && Dim == qv.Length)
+            {
+                cos = new float[ChunkCount];
+                double mean = 0;
+                float best = float.NegativeInfinity;
+                for (int c = 0; c < ChunkCount; c++)
+                {
+                    ushort* v = _vecs + (long)c * Dim;
+                    float d = 0;
+                    for (int k = 0; k < Dim; k++) d += Half.ToFloat(v[k]) * qv[k];
+                    cos[c] = d; mean += d;
+                    if (d > best) best = d;
+                }
+                mean /= Math.Max(1, ChunkCount);
+                float floor = (float)Math.Max(mean + minLift, best - maxDrop);
+                for (int c = 0; c < ChunkCount; c++) if (cos[c] >= floor) vec.Add(c);
+                vec.Sort(delegate(int a, int b) { return cos[b].CompareTo(cos[a]); });
+            }
+            Dictionary<int, float> fused = new Dictionary<int, float>();
+            for (int i = 0; i < kw.Count; i++) { float f; fused.TryGetValue(kw[i], out f); fused[kw[i]] = f + 1f / (rrfK + i + 1); }
+            for (int i = 0; i < vec.Count; i++) { float f; fused.TryGetValue(vec[i], out f); fused[vec[i]] = f + 1f / (rrfK + i + 1); }
+            List<int> order = new List<int>(fused.Keys);
+            order.Sort(delegate(int a, int b) { return fused[b].CompareTo(fused[a]); });
+            List<RagHit> hits = new List<RagHit>();
+            int used = 0;
+            foreach (int c in order)
+            {
+                if (hits.Count >= topK) break;
+                string text = ChunkText(c);
+                if (used + text.Length > budgetChars && hits.Count > 0) continue;   // a smaller one may still fit
+                used += text.Length;
+                RagHit h = new RagHit();
+                h.File = FilePath(*(int*)(ChunkRec(c) + 16)); h.Title = ChunkTitle(c); h.Text = text;
+                h.Score = cos != null ? cos[c] : fused[c];
+                hits.Add(h);
+            }
+            return hits;
+        }
+
+        // BM25 ranking of the chunks that pass the keyword gate, best first.
+        List<int> Bm25(Dictionary<ulong, float> query, float minRelative, float minCoverage)
         {
             float[] scores = new float[ChunkCount];
             byte[] matched = new byte[ChunkCount];
@@ -497,25 +679,14 @@ namespace Phoenix
             }
             touched.RemoveAll(delegate(int c) { return matched[c] == 0 || (matched[c] < 2 && matched[c] < minCoverage * primaryTerms); });
             touched.Sort(delegate(int a, int b) { return scores[b].CompareTo(scores[a]); });
-            List<RagHit> hits = new List<RagHit>();
-            if (touched.Count == 0) return hits;
+            if (touched.Count == 0) return touched;
             float floor = scores[touched[0]] * minRelative;
-            int used = 0;
-            foreach (int c in touched)
-            {
-                if (hits.Count >= topK || scores[c] < floor) break;
-                string text = ChunkText(c);
-                if (used + text.Length > budgetChars && hits.Count > 0) continue;   // a smaller one may still fit
-                used += text.Length;
-                RagHit h = new RagHit();
-                h.File = FilePath(*(int*)(ChunkRec(c) + 16)); h.Title = ChunkTitle(c); h.Text = text; h.Score = scores[c];
-                hits.Add(h);
-            }
-            return hits;
+            touched.RemoveAll(delegate(int c) { return scores[c] < floor; });
+            return touched;
         }
 
         // Writes a complete index file; returns the number of chunks.
-        public static int Write(string path, List<Source> files)
+        public static int Write(string path, List<Source> files, int dim)
         {
             int nChunks = 0;
             foreach (Source f in files) nChunks += f.Chunks.Count;
@@ -570,10 +741,13 @@ namespace Phoenix
                 long filesOff = HeaderBytes, chunksOff = filesOff + (long)files.Count * FileBytes;
                 long tableOff = Align(chunksOff + (long)nChunks * ChunkBytes), postOff = tableOff + (long)tableSize * SlotBytes;
                 long blobOff = postOff + nPost * 8;
+                foreach (Source f in files) if (f.Vecs == null || f.Vecs.Count != f.Chunks.Count) dim = 0;   // all or nothing
 
-                w.Write(Magic); w.Write(files.Count); w.Write(nChunks); w.Write(tableSize); w.Write(0);
+                w.Write(Magic); w.Write(files.Count); w.Write(nChunks); w.Write(tableSize); w.Write(dim);
                 w.Write(nChunks > 0 ? (float)totalLen / nChunks : 1f); w.Write(0);
                 w.Write(filesOff); w.Write(chunksOff); w.Write(tableOff); w.Write(postOff); w.Write(blobOff);
+                long vecOffPos = fs.Position;
+                w.Write(0L);   // vectors offset, patched below
 
                 int first = 0;
                 for (int i = 0; i < files.Count; i++)
@@ -605,6 +779,18 @@ namespace Phoenix
                 for (long k = 0; k < nPost; k++) { w.Write((uint)(ordered[k] >> 32)); w.Write((uint)(ordered[k] & 0xFFFFFFFF)); }
                 w.Flush();
                 blob.WriteTo(fs);
+                if (dim > 0)
+                {
+                    while (fs.Position % 16 != 0) fs.WriteByte(0);
+                    long vecOff = fs.Position;
+                    foreach (Source f in files)
+                        foreach (float[] v in f.Vecs)
+                            for (int k = 0; k < dim; k++) w.Write(Half.FromFloat(v[k]));
+                    w.Flush();
+                    fs.Position = vecOffPos;
+                    w.Write(vecOff);
+                    w.Flush();
+                }
             }
             return nChunks;
         }

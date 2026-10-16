@@ -24,7 +24,7 @@ namespace Phoenix
             ShiftRightLogical = 194, ShiftRightArithmetic = 195, ShiftLeftLogical = 196, BitwiseOr = 197, BitwiseXor = 198,
             BitwiseAnd = 199, Not = 200, BitFieldUExtract = 203, ControlBarrier = 224, MemoryBarrier = 225,
             GroupNonUniformIAdd = 349, GroupNonUniformFAdd = 350, GroupNonUniformFMax = 361,
-            Extension = 10, SDot = 4450, UDot = 4451, SUDot = 4452,
+            Extension = 10, SDot = 4450, UDot = 4451, SUDot = 4452, SDotAccSat = 4453,
             Phi = 245, LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Return = 253;
     }
 
@@ -48,7 +48,7 @@ namespace Phoenix
         public const uint FunctionControlNone = 0, SelectionControlNone = 0, LoopControlNone = 0;
         // GLSL.std.450 extended instructions
         public const uint GlslRoundEven = 2, GlslFAbs = 4, GlslFSign = 6, GlslFloor = 8, GlslSin = 13, GlslCos = 14, GlslTanh = 21,
-            GlslExp = 27, GlslLog = 28, GlslSMin = 39, GlslUnpackHalf2x16 = 62, GlslSqrt = 31, GlslInverseSqrt = 32, GlslFMin = 37, GlslUMin = 38, GlslFMax = 40,
+            GlslExp = 27, GlslLog = 28, GlslSMin = 39, GlslUnpackHalf2x16 = 62, GlslPackHalf2x16 = 58, GlslSqrt = 31, GlslInverseSqrt = 32, GlslFMin = 37, GlslUMin = 38, GlslFMax = 40,
             GlslUMax = 41, GlslFma = 50;
     }
 

@@ -1,12 +1,14 @@
 @font-face { font-family: "Exo 2"; src: url("../fonts/Exo2-Variable.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("../fonts/Inter.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Syne Mono"; src: url("../fonts/SyneMono-Regular.ttf") format("truetype"); font-display: swap; }
 
 :root {
   --bg: #09090c; --grid: rgba(255,255,255,.045); --grid-strong: rgba(255,255,255,.075);
   --panel: rgba(22,22,28,.82); --panel-solid: #16161c; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.14);
-  --text: #ecebf2; --soft: #b9b8c6; --dim: #74737f; --accent: #e8c15a; --accent-2: #f5dc8c; --ok: #8fe3b0; --err: #ff8a8a;
-  --code-bg: #0e0e13; --r: 5px; --you: #e8c15a; --statusbar: 36px; --status-text: #55555f;
-  --sans: "Exo 2", "Segoe UI", system-ui, sans-serif; --mono: "Syne Mono", Consolas, monospace; --chat: var(--mono);
+  --text: #ecebf2; --soft: #b9b8c6; --dim: #74737f; --accent: #e8c15a; --accent-rgb: 232,193,90; --accent-2: #f5dc8c; --ok: #8fe3b0; --err: #ff8a8a;
+  --code-bg: #0e0e13; --r: 5px; --you: var(--accent); --statusbar: 36px; --banner: 25px; --settings-bg: #1f2024; --status-text: #55555f;
+  --sans: "Exo 2", "Segoe UI", system-ui, sans-serif; --mono: "Syne Mono", Consolas, monospace; --chat: var(--mono); --chat-size: 14px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -14,34 +16,18 @@ body {
   background: var(--bg); color: var(--text); font: 15px/1.6 var(--sans); overflow: hidden;
   display: flex; flex-direction: column; align-items: center;
 }
-/* Digital grid with a soft glow behind the content. */
-body::before {
-  content: ""; position: fixed; inset: 0; z-index: -2;
-  background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-    linear-gradient(var(--grid-strong) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-strong) 1px, transparent 1px);
-  background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px;
-  mask-image: radial-gradient(ellipse 85% 75% at 50% 35%, #000 40%, transparent 100%);
-}
-body::after {
-  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background: radial-gradient(600px 300px at 50% 0%, rgba(232,193,90,.08), transparent 70%),
-              radial-gradient(500px 260px at 50% 100%, rgba(232,193,90,.06), transparent 70%);
-}
-
-/* Faint monochrome logo watermark behind everything. */
-#bgLogo { position: fixed; inset: 0; z-index: -1; pointer-events: none;
-          background: url("../assets/phoenix_logo.png") center 42% / min(820px, 85vw) auto no-repeat;
-          filter: grayscale(1) brightness(1.4) blur(2px); opacity: .035; }
-.wrap { width: min(880px, calc(100% - 32px)); display: flex; flex-direction: column; height: calc(100% - var(--statusbar)); }
+/* Background (grid, glows, faint blurred logo) is drawn once into this canvas by drawBackground() in chat.js:
+   during a window resize the browser only stretches the finished image, so the page keeps up with the frame. */
+#bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+/* Watermark logo: fixed size, always centred in the window. */
+#bgLogo { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: -1; pointer-events: none; }
+.wrap { width: min(880px, calc(100% - 32px)); display: flex; flex-direction: column; margin-top: var(--banner); height: calc(100% - var(--statusbar) - var(--banner)); }
 
 /* Conversation: newest at the bottom, text grows upward, no bubbles. */
-#chat { font-family: var(--chat); font-size: 14px; flex: 1; overflow-y: auto; padding: 28px 4px 50px; cursor: text; display: flex; flex-direction: column; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+#chat { font-family: var(--chat); font-size: var(--chat-size); flex: 1; overflow-y: auto; padding: 28px 4px 50px; cursor: text; display: flex; flex-direction: column; }
 #chat > :first-child { margin-top: auto; }
 .empty { text-align: center; color: var(--dim); margin: auto 0; }
-.empty .logo { width: min(300px, 60vw); height: auto; display: block; margin: 0 auto 4px; filter: drop-shadow(0 6px 24px rgba(232,193,90,.18)); }
+.empty .logo { width: min(300px, 60vw); height: auto; display: block; margin: 0 auto 4px; filter: drop-shadow(0 6px 24px rgba(var(--accent-rgb),.18)); will-change: transform; /* own layer: shadow rendered once, not on every resize frame */ }
 .empty .sub { font-size: 17px; color: var(--soft); margin: -2px 0 12px; font-weight: 300; }
 .empty .hint { position: relative; }
 .empty .ver { position: absolute; left: 0; right: 0; top: 100%; margin-top: 12px; font-size: 17px; font-weight: 300; color: var(--soft); }
@@ -65,7 +51,7 @@ body::after {
 .reply strong { color: var(--text); font-weight: 700; }
 .reply em { font-style: italic; }
 .reply del { opacity: .6; }
-.reply code.inline { font-family: var(--mono); font-size: .92em; color: var(--accent); background: rgba(232,193,90,.08); border: 1px solid rgba(232,193,90,.15);
+.reply code.inline { font-family: var(--mono); font-size: .92em; color: var(--accent); background: rgba(var(--accent-rgb),.08); border: 1px solid rgba(var(--accent-rgb),.15);
                      border-radius: 3px; padding: 0 4px; }
 .reply blockquote { margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--accent); color: var(--soft); }
 .reply hr { border: 0; border-top: 1px solid var(--line-strong); margin: 14px 0; }
@@ -122,7 +108,7 @@ button:disabled { opacity: .45; cursor: default; }
 /* Block cursor: the textarea is invisible (it only handles typing, selection and paste); a mirror underneath draws the
    text with a blinking block where the caret is. */
 .typebox { position: relative; flex: 1; min-height: 24px; }
-#mirror { color: var(--you); font: 14px/1.6 var(--chat); white-space: pre-wrap; word-wrap: break-word; min-height: 24px; pointer-events: none; }
+#mirror { color: var(--you); font: var(--chat-size)/1.6 var(--chat); white-space: pre-wrap; word-wrap: break-word; min-height: 24px; pointer-events: none; }
 #mirror .ph { color: var(--dim); opacity: .6; }
 /* Command list: opens above the prompt while you type a /command. */
 #cmds { display: none; position: absolute; left: -4px; bottom: calc(100% + 8px); min-width: 380px; z-index: 6; padding: 4px 0;
@@ -130,11 +116,13 @@ button:disabled { opacity: .45; cursor: default; }
 #cmds.show { display: block; }
 #cmds .c { display: flex; gap: 14px; padding: 3px 12px; cursor: pointer; color: var(--soft); }
 #cmds .c b { color: var(--you); font-weight: 500; min-width: 72px; }
-#cmds .c.sel, #cmds .c:hover { background: rgba(232,193,90,.08); color: var(--text); }
+#cmds .c.sel, #cmds .c:hover { background: rgba(var(--accent-rgb),.08); color: var(--text); }
 #cmds .foot { border-top: 1px solid var(--line); margin-top: 4px; padding: 5px 12px 2px; color: var(--dim); font-size: 12px; }
 #input { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: 0; outline: 0; background: transparent; padding: 0;
-         font: 14px/1.6 var(--chat); color: transparent; caret-color: transparent; overflow: hidden; }
-#input::selection { background: rgba(169,184,255,.25); color: transparent; }
+         font: var(--chat-size)/1.6 var(--chat); color: transparent; caret-color: transparent; overflow: hidden; }
+/* Gold text selection everywhere (the prompt's own text is invisible, so only its highlight shows). */
+::selection { background: rgba(var(--accent-rgb),.38); color: #fff; }
+#input::selection { background: rgba(var(--accent-rgb),.38); color: transparent; }
 
 /* Status line: plain dark-grey text at the very bottom. */
 #status { position: fixed; left: 0; right: 0; bottom: 0; height: var(--statusbar); display: flex; align-items: center; justify-content: center;
@@ -144,19 +132,12 @@ button:disabled { opacity: .45; cursor: default; }
 #status .sep { margin: 0 14px; opacity: .55; }
 #status .lower { text-transform: lowercase; }
 
-/* Right-click menu. */
-#ctxmenu { position: fixed; display: none; z-index: 20; min-width: 170px; padding: 4px; background: var(--panel-solid);
-           border: 1px solid var(--line-strong); border-radius: var(--r); box-shadow: 0 12px 36px rgba(0,0,0,.55); font-size: 13.5px; }
-#ctxmenu.show { display: block; }
-#ctxmenu div { padding: 6px 12px; border-radius: 4px; cursor: pointer; color: var(--soft); display: flex; justify-content: space-between; gap: 18px; }
-#ctxmenu div:hover { background: rgba(232,193,90,.12); color: var(--text); }
-#ctxmenu div.off { opacity: .4; pointer-events: none; }
-#ctxmenu .key { color: var(--dim); font-size: 12px; }
-#ctxmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
-
-/* Pop-up windows. */
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; }
-.modal.show { display: flex; }
+/* Windows: no dimming; the page behind blurs in (and out) while one is open, and the window fades with it. */
+.modal { position: fixed; inset: var(--banner) 0 0 0; display: flex; align-items: center; justify-content: center; z-index: 10;
+         background: transparent; backdrop-filter: blur(0); visibility: hidden; transition: backdrop-filter .25s ease, visibility 0s linear .25s; }
+.modal.show { backdrop-filter: blur(6px); visibility: visible; transition: backdrop-filter .25s ease, visibility 0s; }
+.modal > .window { opacity: 0; transform: translateY(6px); transition: opacity .2s ease, transform .2s ease; }
+.modal.show > .window { opacity: 1; transform: none; }
 .window { width: min(560px, calc(100% - 32px)); max-height: 86vh; overflow-y: auto; background: var(--panel-solid); border: 1px solid var(--line-strong);
           border-radius: var(--r); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
 .window header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line);
@@ -180,17 +161,89 @@ button:disabled { opacity: .45; cursor: default; }
 .field input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .field input[type=number]::-webkit-inner-spin-button,
 .field input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-/* Dark scrollbars everywhere (windows, lists, text areas). */
+/* No scrollbars anywhere: wheel scrolls smoothly (Ctrl = 2x, Shift = sideways; see chat.js); keys and touch still work. */
 html { color-scheme: dark; }
-* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 5px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.24); }
-::-webkit-scrollbar-corner { background: transparent; }
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; }
 .section { color: var(--soft); font-size: 13px; margin: 6px 0 8px; }
 #browsePath { font-family: var(--mono); font-size: 13px; color: var(--soft); word-break: break-all; margin-bottom: 8px; }
 .dirs { border: 1px solid var(--line); border-radius: var(--r); max-height: 320px; overflow-y: auto; }
 .dirs div { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; font-size: 13.5px; color: var(--soft); }
 .dirs div:hover { background: rgba(255,255,255,.05); color: var(--text); }
 .note { color: var(--dim); font-size: 12px; margin-top: 8px; }
+
+/* Settings window: same look as the chat (Syne Mono, gold accents, thin lines, no boxes). */
+.window.settings { width: min(640px, calc(100% - 32px)); font-family: var(--chat); background: var(--settings-bg); border-color: rgba(var(--accent-rgb),.28);
+                   box-shadow: 0 24px 70px rgba(0,0,0,.7), 0 0 0 1px rgba(var(--accent-rgb),.06) inset; }
+.settings header { background: var(--settings-bg); border-bottom-color: rgba(var(--accent-rgb),.18); }
+.settings header h2 { font: 15px var(--chat); color: var(--accent); letter-spacing: .5px; display: flex; align-items: baseline; gap: 10px; }
+.settings header h2 .chev { top: var(--chev-shift, 0px); }
+.settings .x { border: 0; color: var(--dim); padding: 2px 6px; }
+.settings .x:hover { color: var(--accent); background: transparent; }
+.settings .body { padding: 6px 18px 14px; }
+.settings .section { color: var(--accent); font-size: 12px; letter-spacing: 1.5px; margin: 16px 0 8px; display: flex; align-items: center; gap: 10px; opacity: .9; }
+.settings .section::before { content: "//"; color: var(--dim); }
+.settings .section::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.settings .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 22px; }
+.settings .field { font-family: var(--chat); font-size: 12px; color: var(--soft); gap: 2px; }
+.settings .field input, .settings .field textarea { font: 14px var(--chat); color: var(--you); background: transparent; border: 0; border-bottom: 1px solid var(--line-strong);
+                                                    border-radius: 0; padding: 4px 0; caret-color: var(--accent); }
+.settings .field textarea { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 10px; min-height: 64px; line-height: 1.5; }
+.settings .field input:focus, .settings .field textarea:focus { border-color: var(--accent); outline: 0; }
+.settings .hint { color: var(--dim); font-size: 11px; min-height: 14px; }
+.settings .models { gap: 2px; margin: 0; }
+.settings .models label { border: 0; border-radius: 0; padding: 4px 4px 4px 22px; position: relative; font-size: 13.5px; color: var(--soft); }
+.settings .models label input { position: absolute; opacity: 0; pointer-events: none; }
+.settings .models label:hover { color: var(--text); background: rgba(var(--accent-rgb),.05); }
+.settings .models label:has(input:checked) { color: var(--accent); }
+.settings .models label:has(input:checked)::before { content: "›"; position: absolute; left: 6px; color: var(--accent); font: 600 17px/1 var(--sans); top: 50%; transform: translateY(-55%); }
+.settings .models label.current .name::after { content: "  · loaded"; color: var(--dim); font-size: 11.5px; }
+.settings .models .mb { font-size: 12px; }
+.settings .toggle { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--soft); cursor: pointer; align-self: end; padding-bottom: 6px; }
+.settings .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.settings .toggle .sw { width: 30px; height: 16px; border-radius: 8px; border: 1px solid var(--line-strong); position: relative; transition: border-color .15s, background .15s; flex: none; }
+.settings .toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); transition: left .15s, background .15s; }
+.settings .toggle input:checked + .sw { border-color: var(--accent); background: rgba(var(--accent-rgb),.12); }
+.settings .toggle input:checked + .sw::after { left: 16px; background: var(--accent); }
+.settings .note { color: #e8875a; min-height: 0; }
+.settings footer { background: var(--settings-bg); border-top-color: rgba(var(--accent-rgb),.18); align-items: center; }
+.settings footer .keys { margin-right: auto; color: var(--dim); font-size: 11.5px; }
+.settings footer button { font: 13px var(--chat); }
+
+/* Settings: category bar and radio rows. */
+.settings { display: flex; flex-direction: column; overflow: hidden; }
+.settings .body { overflow-y: auto; flex: 1; min-height: 0; }
+.settings .cats { display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 8px 14px; border-bottom: 1px solid rgba(var(--accent-rgb),.12); }
+.settings .cats button { font: 12px var(--chat); border: 0; padding: 3px 9px; color: var(--dim); border-radius: var(--r); }
+.settings .cats button:hover { color: var(--text); background: rgba(var(--accent-rgb),.06); }
+.settings .cats button.on { color: var(--accent); background: rgba(var(--accent-rgb),.1); }
+.settings section:last-of-type { min-height: 40%; }
+.settings .radios { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.settings .radios label { display: flex; align-items: center; cursor: pointer; }
+.settings .radios input { position: absolute; opacity: 0; pointer-events: none; }
+.settings .radios span { padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--soft); font-size: 13px; transition: border-color .12s, color .12s; }
+.settings .radios label:hover span { border-color: rgba(var(--accent-rgb),.5); color: var(--text); }
+.settings .radios input:checked + span { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb),.1); }
+.settings .radios input:focus-visible + span { outline: 1px solid var(--accent); outline-offset: 2px; }
+.settings .toggle .hint { margin-left: 4px; }
+
+/* Classification banner: always on top, full width, text centred both ways. */
+#banner { position: fixed; top: 0; left: 0; right: 0; height: var(--banner); z-index: 1000; background: #007a33; color: #fff;
+          display: flex; align-items: center; justify-content: center; font: 700 15px/1 "Exo 2", sans-serif; letter-spacing: 1px;
+          text-transform: uppercase; user-select: none; pointer-events: none; }
+#banner span { position: relative; top: var(--banner-shift, 0px); }
+
+/* Accent colour swatches (settings > appearance). */
+.settings .swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; align-items: center; }
+.settings .swatches button { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 2px solid transparent; background: var(--c); cursor: pointer;
+                             box-shadow: 0 0 0 1px rgba(255,255,255,.12) inset; transition: transform .12s, border-color .12s; }
+.settings .swatches button:hover { transform: scale(1.12); background: var(--c); }
+.settings .swatches button.on { border-color: #fff; }
+.settings .swatches .custom { position: relative; width: 24px; height: 24px; border-radius: 50%; overflow: hidden; cursor: pointer;
+                              background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); border: 2px solid transparent; }
+.settings .swatches .custom.on { border-color: #fff; }
+.settings .swatches .custom input { position: absolute; inset: -6px; width: 36px; height: 36px; opacity: 0; cursor: pointer; }
+.settings .swatches .hex { font-size: 12px; color: var(--soft); margin-left: 4px; min-width: 64px; }
+/* Banner switched off (settings > app): hidden and the layout gives its space back. */
+:root.no-banner { --banner: 0px; }
+:root.no-banner #banner { display: none; }
