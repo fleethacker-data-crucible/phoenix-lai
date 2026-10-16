@@ -180,6 +180,8 @@ namespace Phoenix
             return logits;
         }
 
+        public float[][] PrefillAll(IList<int> tokens, int start, int count) { return null; }
+
         // Instant Recall is implemented for GemmaGpu (fp16 cache) only.
         public bool CanRecall { get { return false; } }
         public KvSnapshot CaptureKv(int pos0, int count) { throw new NotSupportedException(); }

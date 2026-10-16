@@ -21,6 +21,9 @@ namespace Phoenix
         int MinReuse(int fed);
         // Instant Recall: save the KV cache of positions pos0.. and put it back at another position (re-rotated).
         bool CanRecall { get; }
+        // Feeds tokens[start .. start+count) (count <= 16) and returns the logits after each of them, or null when the
+        // model has no batched path (speculative verification).
+        float[][] PrefillAll(IList<int> tokens, int start, int count);
         KvSnapshot CaptureKv(int pos0, int count);
         void SpliceKv(KvSnapshot s, int dst0);
     }
@@ -34,7 +37,8 @@ namespace Phoenix
 
     public sealed class GenerationStats
     {
-        public int PromptTokens, ReusedTokens, GeneratedTokens, RecalledTokens;   // RecalledTokens: part of PromptTokens spliced, not read
+        public int PromptTokens, ReusedTokens, GeneratedTokens, RecalledTokens;
+        public int DraftedTokens, AcceptedTokens;   // speculation: guessed tokens checked / kept   // RecalledTokens: part of PromptTokens spliced, not read
         public double PromptSeconds, GenerateSeconds;
         public string StopReason = "";
         public double PromptTokensPerSecond { get { return PromptSeconds > 0 ? PromptTokens / PromptSeconds : 0; } }
@@ -356,6 +360,32 @@ namespace Phoenix
             }
         }
 
+        // ---- prompt-lookup speculation ----
+        public static bool Speculate = true;
+        const int DraftMax = 8, NgramMax = 4, NgramMin = 3;
+
+        // The tokens that followed the most recent earlier occurrence of the context's last n tokens (n = 4 .. 2).
+        static List<int> Draft(List<int> h, int room)
+        {
+            int n0 = h.Count;
+            if (room < 2 || n0 < NgramMin + 1) return null;
+            for (int n = NgramMax; n >= NgramMin; n--)
+            {
+                if (n0 <= n) continue;
+                int stop = Math.Max(0, n0 - 32768);
+                for (int i = n0 - n - 1; i >= stop; i--)
+                {
+                    bool same = true;
+                    for (int j = 0; j < n && same; j++) same = h[i + j] == h[n0 - n + j];
+                    if (!same) continue;
+                    int from = i + n, take = Math.Min(Math.Min(DraftMax, room - 1), n0 - from);
+                    if (take <= 0) continue;
+                    return h.GetRange(from, take);
+                }
+            }
+            return null;
+        }
+
         // Token ids of recent replies exactly as sampled, by their text. Re-encoding a reply's text usually gives other
         // tokens than the model produced (BPE merges differ), which broke the prompt-cache match at that reply and made
         // every follow-up (the code check, the next message) re-read it: 1,264 tokens = 4-5 s on Gemma 12B.
@@ -558,10 +588,12 @@ namespace Phoenix
             Decoder utf8 = Encoding.UTF8.GetDecoder();
             char[] chars = new char[64];
             sw.Restart();
+            int pending = -1;   // a token already sampled while checking a guess (speculation)
             while (true)
             {
                 foreach (int b in _banned) if (b < logits.Length) logits[b] = float.NegativeInfinity;
-                int next = sampler.Sample(logits, history);
+                int next = pending >= 0 ? pending : sampler.Sample(logits, history);
+                pending = -1;
                 if (next == _eot || next == Tokenizer.EosId) { st.StopReason = "end of turn"; break; }
                 if (Tokenizer.IsSpecial(next)) { st.StopReason = "special token " + Encoding.UTF8.GetString(Tokenizer.TokenBytes(next, true)); break; }
 
@@ -575,6 +607,56 @@ namespace Phoenix
                 if (st.GeneratedTokens >= maxTokens) { st.StopReason = "max tokens"; break; }
                 if (_fed.Count >= ContextLength) { st.StopReason = "context full"; break; }
                 if (cancel != null && cancel()) { st.StopReason = "stopped"; break; }
+                // Prompt-lookup speculation: when the last few tokens appeared earlier in the context (a file being
+                // rewritten, code being quoted), the tokens that followed them there are a free guess for what comes next.
+                // next + the guesses are fed in one batched pass; each guess is kept only if sampling the model at that
+                // position gives that very token, so the output distribution is exactly that of plain decoding.
+                // adaptive: after a few guesses, keep guessing only while at least 70% of them are kept (a wasted batched
+                // check costs more than the decode steps it was meant to save; measured on Gemma 12B at 41% kept)
+                bool guessing = Speculate && (st.DraftedTokens < 24 || st.AcceptedTokens * 10 >= st.DraftedTokens * 7);
+                List<int> draft = guessing ? Draft(history, maxTokens - st.GeneratedTokens) : null;
+                float[][] all = null;
+                if (draft != null && draft.Count > 0)
+                {
+                    List<int> run = new List<int>(); run.Add(next); run.AddRange(draft);
+                    List<int> seq = new List<int>(_fed); seq.AddRange(run);
+                    if (_fed.Count + run.Count < ContextLength) all = _model.PrefillAll(seq, _fed.Count, run.Count);
+                    if (all != null)
+                    {
+                        _fed.Add(next);
+                        st.DraftedTokens += draft.Count;
+                        int accepted = 0;
+                        logits = all[0];
+                        bool stop = false;
+                        for (int di = 0; di < draft.Count; di++)
+                        {
+                            foreach (int b in _banned) if (b < logits.Length) logits[b] = float.NegativeInfinity;
+                            int tok = sampler.Sample(logits, history);
+                            if (tok != draft[di])
+                            {
+                                // the model wants something else here: keep its own token, drop the rest of the guess
+                                pending = tok;
+                                break;
+                            }
+                            accepted++;
+                            if (tok == _eot || tok == Tokenizer.EosId) { st.StopReason = "end of turn"; stop = true; break; }
+                            if (Tokenizer.IsSpecial(tok)) { st.StopReason = "special token"; stop = true; break; }
+                            byte[] tb = Tokenizer.TokenBytes(tok, false);
+                            int tn = utf8.GetChars(tb, 0, tb.Length, chars, 0, false);
+                            if (tn > 0) { string piece = new string(chars, 0, tn); emitted.Append(piece); if (onText != null) onText(piece); }
+                            sampledIds.Add(tok);
+                            st.GeneratedTokens++;
+                            history.Add(tok);
+                            _fed.Add(tok);
+                            logits = all[di + 1];
+                            if (st.GeneratedTokens >= maxTokens) { st.StopReason = "max tokens"; stop = true; break; }
+                            if (cancel != null && cancel()) { st.StopReason = "stopped"; stop = true; break; }
+                        }
+                        st.AcceptedTokens += accepted;
+                        if (stop) break;
+                        continue;
+                    }
+                }
                 logits = _model.Forward(next, _fed.Count);
                 _fed.Add(next);
             }

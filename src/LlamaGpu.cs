@@ -631,13 +631,35 @@ namespace Phoenix
 
                 if ((il + 1) % LayersPerSubmit == 0 && il + 1 < NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
-            // The last token's hidden state goes to the decode buffer for the output head.
-            _gpu.Record(_kCopyRange, new GpuBuffer[] { _pX, _x }, new uint[] { (uint)d, (uint)((T - 1) * d), 0 }, Groups(d, Kernels.Wg), 1, 1);
-            Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, NEmbd, _output);
-            MatVec(_output, _logits);
+            // The last token's hidden state goes to the decode buffer for the output head (every row's for PrefillAll).
+            int first = _allRows ? 0 : T - 1;
+            for (int r = first; r < T; r++)
+            {
+                _gpu.Record(_kCopyRange, new GpuBuffer[] { _pX, _x }, new uint[] { (uint)d, (uint)(r * d), 0 }, Groups(d, Kernels.Wg), 1, 1);
+                Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, NEmbd, _output);
+                MatVec(_output, _allRows ? _lgAll[r] : _logits);
+            }
             _gpu.SubmitAndWait();
+            if (_allRows) return null;
             _logits.Download(_logitsHost, 0);
             return _logitsHost;
+        }
+
+        // ---- speculative verification ----
+        bool _allRows;
+        GpuBuffer[] _lgAll;
+
+        public float[][] PrefillAll(IList<int> tokens, int start, int count)
+        {
+            if (!UsePrefill || !PrefillSupported() || count < 1 || count > 16 || start + count > MaxCtx) return null;
+            try { EnsurePrefill(); } catch (Exception) { _prefillState = -1; return null; }
+            if (_lgAll == null) { _lgAll = new GpuBuffer[16]; for (int i = 0; i < 16; i++) _lgAll[i] = Buf((ulong)NVocab * 4, true); }
+            _allRows = true;
+            try { PrefillChunkRun(tokens, start, count); }
+            finally { _allRows = false; }
+            float[][] r = new float[count][];
+            for (int i = 0; i < count; i++) { r[i] = new float[NVocab]; _lgAll[i].Download(r[i], 0); }
+            return r;
         }
 
         // Instant Recall is implemented for GemmaGpu (fp16 cache) only.
