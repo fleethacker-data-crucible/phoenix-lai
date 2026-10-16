@@ -324,6 +324,10 @@ namespace Phoenix
             }
         }
 
+        int _recallBusy;
+        volatile bool _recallStop;
+        volatile string _recallProgress;
+
         // /mode auto | accept, kept across restarts. Accept: the model's file actions wait for the user's Accept / Deny.
         static string ModeFile { get { return Path.Combine(AppDataDir, "mode.txt"); } }
         bool _acceptMode = ReadAcceptMode();
@@ -389,6 +393,7 @@ namespace Phoenix
                     if (_engine != null) { _engine.Dispose(); _engine = null; }
                     _loadError = null;
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
+                    if (_workspace != null) _engine.RecallDir = Path.Combine(_workspace.Root, ".phoenix", "recall");
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
                     // Warm up before reporting ready (the UI shows "loading" until then): first prompt runs at full speed.
@@ -581,6 +586,8 @@ namespace Phoenix
                 if (folder.Length > 0 && !_folderAccess) throw new InvalidOperationException("Folder access is off. Turn it on with /folder on.");
                 _workspace = folder.Length == 0 ? null : new Workspace(folder);
                 if (_workspace != null) RememberFolder(_workspace.Display);
+                ChatEngine eRec = _engine;
+                if (eRec != null) eRec.RecallDir = _workspace != null ? Path.Combine(_workspace.Root, ".phoenix", "recall") : null;
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
                 SendJson(res, 200, Info());
@@ -615,6 +622,47 @@ namespace Phoenix
                 ChatEngine cur = _engine;
                 if (changed && cur != null) LoadModel(cur.ModelPath);   // the cache is allocated at load
                 SendJson(res, 200, Info());
+                return;
+            }
+            if (path == "/api/recall" && post)
+            {
+                // /recall: pre-read every text file of the connected project (Instant Recall), newest first. Runs in the
+                // background; a chat message stops it (it holds the engine only one file at a time).
+                if (_workspace == null) throw new InvalidOperationException("Connect a project first: /folder <project_folder>.");
+                if (_engine == null) throw new InvalidOperationException("No model loaded.");
+                if (Interlocked.CompareExchange(ref _recallBusy, 1, 0) != 0) { SendJson(res, 200, "{\"busy\":true}"); return; }
+                Workspace wsR = _workspace;
+                Thread t = new Thread(delegate()
+                {
+                    int done = 0, saved = 0; Stopwatch rsw = Stopwatch.StartNew();
+                    try
+                    {
+                        List<string> files = new List<string>(Directory.GetFiles(wsR.Root, "*", SearchOption.AllDirectories));
+                        files.RemoveAll(delegate(string f) { string r = wsR.Relative(f); return r.StartsWith(".") || r.Contains("/.") || new FileInfo(f).Length > 256 * 1024; });
+                        files.Sort(delegate(string a, string b) { return File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)); });
+                        foreach (string f in files)
+                        {
+                            if (_recallStop) break;
+                            string text;
+                            try { text = wsR.Read(wsR.Relative(f)); } catch { continue; }
+                            if (text.IndexOf('\0') >= 0) continue;
+                            _recallProgress = (done + 1) + "/" + files.Count + " " + wsR.Relative(f);
+                            lock (_engineLock)
+                            {
+                                ChatEngine e = _engine;
+                                if (e == null || _recallStop) break;
+                                if (e.PreRead(text, delegate { return _recallStop; })) saved++;
+                            }
+                            done++;
+                        }
+                        Log.Text("recall: pre-read " + saved + " new file(s) of " + done + " in " + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + " ms" + (_recallStop ? " (stopped by a chat)" : ""));
+                    }
+                    catch (Exception ex) { Log.Text("recall: FAILED " + ex.Message); }
+                    finally { _recallProgress = null; _recallStop = false; _recallBusy = 0; }
+                });
+                t.IsBackground = true; t.Priority = ThreadPriority.BelowNormal; t.Start();
+                Log.Text("recall: pre-reading " + wsR.Display);
+                SendJson(res, 200, "{\"started\":true}");
                 return;
             }
             if (path == "/api/mode" && post)
@@ -730,7 +778,9 @@ namespace Phoenix
         {
             ChatEngine e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
-            return "{\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
+            ChatEngine er = _engine;
+            return "{\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
+                   ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
@@ -881,6 +931,7 @@ namespace Phoenix
                 }
             }, null, 1000, 1000);
 
+            if (_recallBusy != 0) _recallStop = true;   // a chat takes priority over the /recall pre-read
             lock (_engineLock)
             {
                 try
