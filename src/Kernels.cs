@@ -289,47 +289,6 @@ namespace Phoenix
         public const uint Wg = 64;       // default workgroup size
         public const uint NormWg = 256;
 
-        // Q8_0 activation quantization (CpuRef.QuantizeQ8_0). One thread per 32-element block.
-        // bindings: 0 x f32, 1 xq u32 (8 words per block), 2 xd f32 (fp16-rounded scale). push: nBlocks
-        public static uint[] QuantizeQ8()
-        {
-            KB k = new KB(Wg);
-            KB.Buf x = k.Buffer(0, k.F32, true), xq = k.Buffer(1, k.U32, false), xd = k.Buffer(2, k.F32, false);
-            k.Push(1);
-            k.Begin();
-            uint j = k.Local(k.U32), amax = k.Local(k.F32), word = k.Local(k.U32), w = k.Local(k.U32);
-            uint b = k.GlobalId();
-            uint nb = k.PushU(0);
-            k.If(k.ULt(b, nb), delegate
-            {
-                uint o = k.IMul(b, k.C(32));
-                k.Set(amax, k.CF(0));
-                k.For(j, k.C(0), k.C(32), k.C(1), delegate
-                {
-                    uint v = k.Ld(x, k.IAdd(o, k.Get(j, k.U32)));
-                    uint a = k.Abs(v);
-                    k.Set(amax, k.Select(k.F32, k.S.Value(Op.FOrdGreaterThan, k.Bool, a, k.Get(amax, k.F32)), a, k.Get(amax, k.F32)));
-                });
-                uint d = k.FDiv(k.Get(amax, k.F32), k.CF(127f));
-                uint id = k.Select(k.F32, k.FNe(d, k.CF(0)), k.FDiv(k.CF(1f), d), k.CF(0));
-                k.For(w, k.C(0), k.C(8), k.C(1), delegate
-                {
-                    k.Set(word, k.C(0));
-                    uint baseIdx = k.IAdd(o, k.IMul(k.Get(w, k.U32), k.C(4)));
-                    for (int kk = 0; kk < 4; kk++)
-                    {
-                        uint t = k.FMul(k.Ld(x, k.IAdd(baseIdx, k.C((uint)kk))), id);
-                        uint r = k.FMul(k.Sign(t), k.Floor(k.FAdd(k.Abs(t), k.CF(0.5f)))); // roundf: half away from zero
-                        uint q = k.And(k.AsU(k.FToS(r)), k.C(0xFF));
-                        k.Set(word, k.Or(k.Get(word, k.U32), kk == 0 ? q : k.Shl(q, k.C((uint)(8 * kk)))));
-                    }
-                    k.St(xq, k.IAdd(k.IMul(b, k.C(8)), k.Get(w, k.U32)), k.Get(word, k.U32));
-                });
-                k.St(xd, b, k.F16(d));
-            });
-            return k.Finish();
-        }
-
         // y[r] = sum_b isum(b) * (wd * xd)  — Q8_0 weights repacked as (qs words, f32 scales). One workgroup per row.
         // bindings: 0 wq u32, 1 wd f32, 2 xq u32, 3 xd f32, 4 y f32. push: rows, nb, groupsX
         public static uint[] MatVecQ8()

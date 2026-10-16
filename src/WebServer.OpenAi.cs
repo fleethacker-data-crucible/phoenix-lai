@@ -51,7 +51,9 @@ namespace Phoenix
         // Browsers may only call from loopback pages or VS Code webviews; tools without an Origin (Node, curl) are fine.
         static bool ApiOriginOk(string origin)
         {
-            if (origin == null || origin == "null") return true;
+            // No Origin: a program (VS Code extension host, curl). "null" is refused: that is what a downloaded HTML file
+            // or a sandboxed frame sends, and such a page could otherwise drive the model.
+            if (origin == null) return true;
             if (origin.StartsWith("vscode-webview://") || origin.StartsWith("vscode-file://")) return true;
             string o = origin.ToLowerInvariant();
             return o == "http://127.0.0.1:" + ApiPort || o == "http://localhost:" + ApiPort;
