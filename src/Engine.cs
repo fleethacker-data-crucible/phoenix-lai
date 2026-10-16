@@ -230,6 +230,83 @@ namespace Phoenix
         sealed class Span { public int Start, Len; public string Key; }
         List<Span> _spans = new List<Span>();
 
+        // Where snapshots are kept on disk (the connected project's .phoenix\recall folder; null = RAM only).
+        // Files are named by a hash of the model and the text, so a changed file simply gets a new snapshot.
+        public string RecallDir;
+        public static long RecallDiskBudget = 8L << 30;
+
+        string RecallPath(string text)
+        {
+            if (RecallDir == null) return null;
+            using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFileName(ModelPath) + "\n" + text));
+                return Path.Combine(RecallDir, BitConverter.ToString(h, 0, 16).Replace("-", "").ToLowerInvariant() + ".kv");
+            }
+        }
+
+        KvSnapshot FindRecall(string key)
+        {
+            KvSnapshot s;
+            if (_recall.TryGetValue(key, out s)) return s;
+            string p = RecallPath(key);
+            if (p == null || !File.Exists(p)) return null;
+            try { s = KvSnapshot.Load(p); } catch { return null; }
+            if (s != null) { StoreRecall(key, s); File.SetLastAccessTimeUtc(p, DateTime.UtcNow); }
+            return s;
+        }
+
+        void SaveRecall(string key, KvSnapshot s)
+        {
+            string p = RecallPath(key);
+            if (p == null) return;
+            try
+            {
+                s.Save(p);
+                // disk budget: drop the least recently used snapshots
+                DirectoryInfo dir = new DirectoryInfo(RecallDir);
+                List<FileInfo> files = new List<FileInfo>(dir.GetFiles("*.kv"));
+                long total = 0; foreach (FileInfo f in files) total += f.Length;
+                files.Sort(delegate(FileInfo a, FileInfo b) { return a.LastAccessTimeUtc.CompareTo(b.LastAccessTimeUtc); });
+                for (int i = 0; total > RecallDiskBudget && i < files.Count - 1; i++) { total -= files[i].Length; files[i].Delete(); }
+            }
+            catch { }
+        }
+
+        // Reads a file on its own and saves its snapshot (the /recall pre-read). Clears the conversation cache.
+        // Returns false when the text is too short, already saved, or the model cannot recall.
+        public bool PreRead(string text, CancelCheck cancel)
+        {
+            lock (GpuGate.Lock)
+            {
+                if (text == null || text.Length < 300 || !_model.CanRecall || !_gemma) return false;
+                RegisterRecall(text);
+                List<int> ids;
+                if (!_segIds.TryGetValue(text, out ids) || ids.Count < RecallMinTokens || ids.Count + 16 > ContextLength) return false;
+                if (FindRecall(text) != null) return false;
+                KvSnapshot s = ReadAlone(text, ids, cancel);
+                return s != null;
+            }
+        }
+
+        KvSnapshot ReadAlone(string key, List<int> segIds, CancelCheck cancel)
+        {
+            List<int> alone = new List<int>();
+            alone.Add(Tokenizer.BosId); alone.Add(_turn); alone.AddRange(Tokenizer.Encode("user\n", false, false));
+            int at = alone.Count;
+            alone.AddRange(segIds);
+            _model.Reset(); _fed.Clear();
+            for (int i = 0; i < alone.Count; i += 512)
+            {
+                if (cancel != null && cancel()) return null;
+                _model.Prefill(alone, i, Math.Min(512, alone.Count - i));
+            }
+            KvSnapshot s = _model.CaptureKv(at, segIds.Count);
+            StoreRecall(key, s);
+            SaveRecall(key, s);
+            return s;
+        }
+
         public void RegisterRecall(string text)
         {
             if (text == null || text.Length < 300 || _segIds.ContainsKey(text) || !_model.CanRecall) return;
@@ -432,8 +509,8 @@ namespace Phoenix
                 }
                 if (sp == null) break;
                 si++;
-                KvSnapshot snap;
-                if (_recall.TryGetValue(sp.Key, out snap) && snap.Count == sp.Len)
+                KvSnapshot snap = FindRecall(sp.Key);
+                if (snap != null && snap.Count == sp.Len)
                 {
                     // seen before: splice its cache instead of reading it
                     _model.SpliceKv(snap, sp.Start);
@@ -447,19 +524,8 @@ namespace Phoenix
                     // rebuild the conversation up to here and splice the file in. A snapshot taken inside the conversation
                     // would carry the question asked then (measured: a later chat about Write() got an answer about
                     // Resolve()); read alone, it is neutral and reusable by any later chat.
-                    List<int> alone = new List<int>();
-                    alone.Add(Tokenizer.BosId); alone.Add(_turn); alone.AddRange(Tokenizer.Encode("user\n", false, false));
-                    int at = alone.Count;
-                    alone.AddRange(_segIds[sp.Key]);
-                    _model.Reset();
-                    for (int i = 0; i < alone.Count; i += chunk)
-                    {
-                        if (cancel != null && cancel()) { _fed.Clear(); st.StopReason = "stopped"; return st; }
-                        _model.Prefill(alone, i, Math.Min(chunk, alone.Count - i));
-                    }
-                    KvSnapshot fresh = _model.CaptureKv(at, sp.Len);
-                    StoreRecall(sp.Key, fresh);
-                    _fed.Clear();
+                    KvSnapshot fresh = ReadAlone(sp.Key, _segIds[sp.Key], cancel);
+                    if (fresh == null) { st.StopReason = "stopped"; return st; }
                     for (int i = 0; i < sp.Start; i += chunk)
                     {
                         if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }

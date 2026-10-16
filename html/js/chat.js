@@ -84,6 +84,7 @@ function drawStatus(offline) {
       else if (!rg.vectors) items.push(statusItem('rag', 'rag: ' + docs + ' · keywords only', false, 'warn'));
       else items.push(statusItem('rag', 'rag: ' + docs + ' · hybrid', false, 'ok'));
     }
+    if (info.recall && (info.recall.busy || info.recall.files)) near.push(statusItem('rag', info.recall.busy ? 'recall: ' + info.recall.busy : 'recall: ' + info.recall.files + ' files', false, info.recall.busy ? 'gold' : 'ok'));
     if (info.mode === 'accept') near.push(statusItem('rules', 'mode: accept', false, 'gold'));
     if (lastTps) near.push(statusItem('speed', lastTps + ' t/s avg', false, 'ok'));
     // Context: green < 70% used, gold < 90%, red beyond.
@@ -345,6 +346,8 @@ const COMMANDS = [
       const r = await api('/api/rag?q=' + encodeURIComponent(arg));
       systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
     } },
+  { name: '/recall', use: '/recall', desc: 'Instant Recall: pre-read every file of the project once, so the model can open them instantly later',
+    run: async () => { await api('/api/recall', {}); systemLine('Instant Recall: pre-reading the project in the background (a chat message pauses it). Files read once open instantly afterwards, in any chat.'); refresh(); } },
   { name: '/mode', use: '/mode auto|accept', desc: 'accept = approve each file read / write the model wants to do; auto = no prompts', arg: true,
     options: () => [{ value: 'auto', desc: 'no prompts' + (info.mode !== 'accept' ? ' (current)' : '') }, { value: 'accept', desc: 'Accept / Deny every file action' + (info.mode === 'accept' ? ' (current)' : '') }],
     run: async arg => {

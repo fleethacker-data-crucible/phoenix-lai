@@ -47,9 +47,9 @@ namespace Phoenix
             // VS Code runs .vscode/tasks.json "runOn: folderOpen" tasks, the shell runs desktop.ini handlers), so a model
             // write there would be a command run later. Refused.
             string p = path.Replace('\\', '/').ToLowerInvariant();
-            if (p.Contains("/.git/") || p.EndsWith("/.git") || p.Contains("/.vscode/") || p.Contains("/.idea/") || name == "desktop.ini" ||
+            if (p.Contains("/.git/") || p.EndsWith("/.git") || p.Contains("/.vscode/") || p.Contains("/.idea/") || p.Contains("/.phoenix/") || name == "desktop.ini" ||
                 name == ".gitattributes" || name == ".gitmodules")
-                throw new UnauthorizedAccessException("Refused: the model may not write into .git, .vscode or .idea, or tool configuration files that run commands.");
+                throw new UnauthorizedAccessException("Refused: the model may not write into .git, .vscode, .idea or .phoenix, or tool configuration files that run commands.");
         }
     }
 }
