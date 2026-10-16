@@ -21,6 +21,8 @@ async function api(path, body) {
 }
 
 chatEl.addEventListener('click', e => {
+  const src = e.target.closest('.sources');
+  if (src) { src.classList.toggle('open'); return; }
   const btn = e.target.closest('.copy');
   if (!btn) return;
   const pre = btn.closest('.code').querySelector('pre');
@@ -31,6 +33,7 @@ function scrollDown() { if (glide) glide.delete(chatEl); chatEl.scrollTop = chat
 
 // Status line: one centered row of icon + value items separated by "|". Empty items are left out.
 const SICON = {
+  ram: '<rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 7v10M11 7v10M15 7v10M6 17v3M10 17v3M14 17v3M18 17v3"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11 7"/>',
   changes: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
@@ -84,26 +87,31 @@ function drawStatus(offline) {
       const f = info.context ? ctxUsed / info.context : 0;
       items.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens', false, f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad'));
     }
-    // VRAM: gold while a model loads, green when loaded, red after a failed load, grey with no model.
+    // Memory the model lives in: VRAM in GPU mode, system RAM in CPU mode, as "this app uses / this app could have"
+    // (both live: the right side drops when other programs take memory). Gold while a model loads, green when
+    // loaded, red after a failed load, grey with no model.
     const gb = b => (b / 1073741824).toFixed(1);
-    if (info.loading) items.push(statusItem('gpu', 'vram: loading…', false, 'gold'));
-    else if (info.loadError) items.push(statusItem('gpu', 'vram: load failed', false, 'bad'));
-    else if (info.vram) items.push(statusItem('gpu', 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB', false, 'ok'));
-    else items.push(statusItem('gpu', 'vram: no model', false, 'off'));
+    const cpu = info.device === 'cpu', mem = cpu ? 'ram' : 'vram', micon = cpu ? 'ram' : 'gpu';
+    if (info.loading) items.push(statusItem(micon, mem + ': loading…', false, 'gold'));
+    else if (info.loadError) items.push(statusItem(micon, mem + ': load failed', false, 'bad'));
+    else if (cpu && info.ram && info.file) items.push(statusItem(micon, 'ram ' + gb(info.ram.used) + '/' + gb(info.ram.avail) + ' GB', false, 'ok'));
+    else if (!cpu && info.vram) items.push(statusItem(micon, 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB', false, 'ok'));
+    else items.push(statusItem(micon, mem + ': no model', false, 'off'));
     // Model: gold while loading, green when loaded in memory, red after a failed load, grey with none.
     const mname = f => f.replace(/\.gguf$/i, '');
     if (info.loading) items.push(statusItem('model', 'loading ' + mname(info.loading) + '…', true, 'gold'));
     else if (info.file) items.push(statusItem('model', mname(info.file), true, 'ok'));
     else if (info.loadError) items.push(statusItem('model', 'model error', true, 'bad'));
     else items.push(statusItem('model', 'no model', true, 'off'));
-    // Video card: gold while detecting (model loading), green when the model runs on it, red on an error or an
-    // unwanted CPU fallback, grey when idle or in CPU mode.
+    // Video card (GPU mode only): gold while detecting (model loading), green when the model runs on it, red on an
+    // error or an unwanted CPU fallback, grey when idle.
     const onGpu = info.backend && /^GPU/.test(info.backend);
-    if (info.loading && info.device !== 'cpu') items.push(statusItem('gpu', 'detecting gpu…', true, 'gold'));
-    else if (info.loadError && info.device !== 'cpu') items.push(statusItem('gpu', 'gpu error', true, 'bad'));
+    if (cpu) { /* nothing: the RAM item says it all */ }
+    else if (info.loading) items.push(statusItem('gpu', 'detecting gpu…', true, 'gold'));
+    else if (info.loadError) items.push(statusItem('gpu', 'gpu error', true, 'bad'));
     else if (onGpu) items.push(statusItem('gpu', info.backend.replace(/^GPU: /, ''), true, 'ok'));
-    else if (info.backend && info.device !== 'cpu') items.push(statusItem('gpu', 'gpu unavailable: on cpu', true, 'bad'));
-    else items.push(statusItem('gpu', info.device === 'cpu' ? 'cpu mode' : 'gpu idle', true, 'off'));
+    else if (info.backend) items.push(statusItem('gpu', 'gpu unavailable: on cpu', true, 'bad'));
+    else items.push(statusItem('gpu', 'gpu idle', true, 'off'));
   }
   $('status').innerHTML = items.join('<span class="sep">|</span>');
 }
@@ -160,20 +168,32 @@ $('files').addEventListener('click', e => {
 async function setFolder(arg) {
   if (!arg) {
     if (info.folderAccess === false) { systemLine('Folder access is OFF: the model has no file access. Use /folder on to allow it.'); return; }
-    systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder close to disconnect, /folder off to disable folder access)' : 'Folder access is on, no folder connected. Use /folder /<project>, e.g. /folder /my-app/src (projects live in ' + (info.projectsRoot || 'Phoenix_Projects') + ')'); return;
+    systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder close to disconnect, /folder off to disable folder access)' : 'Folder access is on, no folder connected. Use /folder <project_folder>, e.g. /folder my-app or /folder my-app/src (projects live in ' + (info.projectsRoot || 'Phoenix_Projects') + ')'); return;
   }
-  const path = arg.trim().replace(/^["']|["']$/g, '');
+  let path = arg.trim().replace(/^["']|["']$/g, '');
+  // "on my-app" / "my-app on": switch access on and connect in one go (the project may be written with or without a /)
+  const both = /^on\s+(.+)$/i.exec(path) || /^(.+?)\s+on$/i.exec(path);
+  if (both && info.folderAccess === false) {
+    try { info = await api('/api/folder-access', { on: true }); } catch (e) { systemLine('Could not change folder access: ' + e.message); return; }
+  }
+  if (both) path = both[1].trim().replace(/^["']|["']$/g, '');
   if (/^(on|off)$/i.test(path)) {
     const on = path.toLowerCase() === 'on';
     try { info = await api('/api/folder-access', { on }); } catch (e) { systemLine('Could not change folder access: ' + e.message); return; }
     await refresh();
     if (!on) $('files').classList.remove('show');
-    systemLine(on ? 'Folder access ON. Connect a project with /folder /<project>.' : 'Folder access OFF: folder disconnected and all file access disabled.');
+    systemLine(on ? 'Folder access ON. Connect a project with /folder <project_folder>.' : 'Folder access OFF: folder disconnected and all file access disabled.');
     return;
   }
   if (info.folderAccess === false) { systemLine('Folder access is OFF. Use /folder on first.'); return; }
   const off = /^(close|none|disconnect)$/i.test(path);
-  try { info = await api('/api/folder', { path: off ? '' : path }); } catch (e) { systemLine('Could not connect: ' + e.message); return; }
+  try { info = await api('/api/folder', { path: off ? '' : path }); }
+  catch (e) {
+    const name = path.replace(/^[\\/]+/, '');
+    systemLine(/^No folder/.test(e.message) ? 'There is no project folder "' + name + '" in ' + (info.projectsRoot || 'Phoenix_Projects') + '. Create it there first, then run /folder ' + name + ' again.'
+                                            : 'Could not connect: ' + e.message);
+    return;
+  }
   await refresh();
   if (off) { $('files').classList.remove('show'); systemLine('Folder disconnected.'); }
   else { systemLine('Connected ' + info.folder + ' — the model can now list, read and write files there.'); loadRecentFolders(); }
@@ -182,7 +202,7 @@ async function setFolder(arg) {
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/phoenix_logo.png" alt="PhoenixAI">' +
+  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/phoenix_logo2.png" alt="PhoenixAI">' +
     // The empty .sub line keeps the hint where it always was; the version hangs below it without moving anything.
     '<div class="sub">&nbsp;</div>' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.' +
@@ -191,8 +211,35 @@ function welcome() {
 }
 // The prompt always sits at the end of the conversation.
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); scrollDown(); }
-function newChat() { if (controller) controller.abort(); history = []; ctxUsed = 0; if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
-welcome();
+function newChat() { if (controller) controller.abort(); history = []; ctxUsed = 0; forgetChat(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
+
+// The conversation survives a reload (F5) of this window: what is on screen, the history sent to the model and the
+// speed/context numbers are kept in sessionStorage (per window, gone when it closes). Only /new starts over.
+const SAVE_KEY = 'phx.chat';
+function saveChat() {
+  try {
+    const keep = promptLine.isConnected; if (keep) promptLine.remove();
+    sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html: chatEl.innerHTML, history, ctxUsed, tps: tpsHistory }));
+    if (keep) chatEl.appendChild(promptLine);
+  } catch (e) {}
+}
+function forgetChat() { try { sessionStorage.removeItem(SAVE_KEY); } catch (e) {} }
+function restoreChat() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SAVE_KEY) || 'null');
+    if (!s || !s.html) return false;
+    promptLine.remove();
+    chatEl.innerHTML = s.html;
+    chatEl.querySelectorAll('.caret').forEach(c => c.remove());
+    chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
+    history = s.history || []; ctxUsed = s.ctxUsed || 0;
+    (s.tps || []).forEach(t => recordTps(t));
+    placePrompt();
+    return true;
+  } catch (e) { return false; }
+}
+window.addEventListener('pagehide', saveChat);
+if (!restoreChat()) welcome();
 
 // No context menus at all (custom or the browser's): everything is a /command. Copy with Ctrl+C, stop with Esc.
 document.addEventListener('contextmenu', e => e.preventDefault());
@@ -212,8 +259,9 @@ document.addEventListener('keydown', e => {
 // ---------- chat ----------
 // Notices keep the welcome screen (and the prompt's place under it); they sit just above the prompt.
 function systemLine(text) {
-  const d = document.createElement('div'); d.className = 'meta'; d.style.margin = '0 0 18px'; d.style.whiteSpace = 'pre-wrap'; d.textContent = text;
+  const d = document.createElement('div'); d.className = 'meta'; d.style.marginBottom = '18px'; d.style.whiteSpace = 'pre-wrap'; d.textContent = text;
   chatEl.insertBefore(d, promptLine.isConnected ? promptLine : null); scrollDown();
+  saveChat();
 }
 
 // Docs library: /index rebuilds what changed; /rag on|off; /rag <words> previews what a message would retrieve.
@@ -239,15 +287,16 @@ async function loadModel(name, ctx) {
   systemLine('Loading ' + name + (ctx ? ', context ' + ctx : '') + '…');
   setTimeout(refresh, 300);
   const t0 = performance.now();
-  try { info = await api('/api/load', { name, context: ctx || info.context }); }
+  try { info = await api('/api/load', { name, context: ctx === undefined ? (info.contextAuto ? 0 : info.context) : ctx }); }
   catch (e) { systemLine('Could not load: ' + e.message); return false; }
-  systemLine('Loaded ' + info.model + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + info.context + '.');
+  systemLine('Loaded ' + info.model + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + Number(info.context).toLocaleString() + (info.contextAuto ? ' (auto)' : '') + '.');
+  if (info.memWarning) systemLine('⚠ ' + info.memWarning);
   history = []; ctxUsed = 0; refresh();
   return true;
 }
 const COMMANDS = [
   { name: '/files', use: '/files', desc: 'show or hide the connected folder\'s files', run: () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); } },
-  { name: '/folder', use: '/folder /<project> | on | off', desc: 'connect a project in Phoenix_Projects (close = disconnect; on|off = allow or fully disable folder access)', arg: true,
+  { name: '/folder', use: '/folder <project_folder>  on|off', desc: 'connect a project in Phoenix_Projects (close = disconnect; on|off = allow or fully disable folder access)', arg: true,
     options: () => [{ value: 'on', desc: 'allow folder access' + (info.folderAccess !== false ? ' (current)' : '') }, { value: 'off', desc: 'disable all folder access' + (info.folderAccess === false ? ' (current)' : '') }]
       .concat(info.folderAccess === false ? [] : [{ value: 'close', desc: 'disconnect the current folder' }].concat(recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })))),
     run: arg => setFolder(arg) },
@@ -349,7 +398,8 @@ $('sAccent').addEventListener('click', e => { const b = e.target.closest('button
 const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
 let openedBrowser = 'edge', lookBefore = null;
 async function openSettings() {
-  $('sContext').value = info.context || 4096; $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
+  $('sContext').value = info.contextAuto ? '' : (info.context || '');
+  $('sContext').placeholder = 'auto' + (info.contextAuto && info.context ? ' (now ' + info.context.toLocaleString() + ')' : ''); $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
   $('sTopK').value = settings.top_k; $('sTopP').value = settings.top_p; $('sRepeat').value = settings.repeat_penalty; $('sSystem').value = settings.system;
   const rg = info.rag || {};
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
@@ -396,7 +446,9 @@ $('settingsNew').addEventListener('click', () => { closeSettings(true); save(); 
 $('applySettings').addEventListener('click', async () => {
   const num = (id, min, max, isInt) => { const v = Number($(id).value); return isFinite(v) && v >= min && v <= max && (!isInt || v === Math.floor(v)) ? v : null; };
   const vals = { max_tokens: num('sMax', 1, 32768, true), temperature: num('sTemp', 0, 2), top_k: num('sTopK', 0, 1000, true), top_p: num('sTopP', 0, 1), repeat_penalty: num('sRepeat', 1, 2) };
-  const ctx = num('sContext', 256, 131072, true);
+  // empty or "auto" = automatic context (largest that fits the free VRAM / RAM); 0 is sent for it
+  const ctxText = $('sContext').value.trim().toLowerCase();
+  const ctx = ctxText === '' || ctxText === 'auto' || ctxText === '0' ? 0 : num('sContext', 256, 131072, true);
   const bad = Object.keys(vals).filter(k => vals[k] === null).concat(ctx === null ? ['context'] : []);
   if (bad.length) { $('loadNote').textContent = 'Check: ' + bad.join(', ').replace(/_/g, ' ') + '.'; return; }
   Object.assign(settings, vals); settings.system = $('sSystem').value; save();
@@ -407,7 +459,8 @@ $('applySettings').addEventListener('click', async () => {
   } catch (e) {}
   const sel = document.querySelector('input[name=model]:checked');
   closeSettings(true);
-  if (sel && (sel.value !== info.file || ctx !== info.context)) await loadModel(sel.value, ctx);
+  const ctxChanged = ctx === 0 ? !info.contextAuto : (info.contextAuto || ctx !== info.context);
+  if (sel && (sel.value !== info.file || ctxChanged)) await loadModel(sel.value, ctx);
   refresh();
 });
 $('settingsModal').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('applySettings').click(); } });
@@ -481,7 +534,7 @@ async function send() {
   history.push({ role: 'user', content: text });
   const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history] : [...history];
   controller = new AbortController();
-  let appended = false, t0 = performance.now(), firstAt = 0, wrote = false;
+  let appended = false, t0 = performance.now(), firstAt = 0, wrote = false, prog = null;
   try {
     const body = { messages, temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p,
                    repeat_penalty: settings.repeat_penalty, max_tokens: settings.max_tokens };
@@ -497,7 +550,14 @@ async function send() {
         const line = buf.slice(0, i); buf = buf.slice(i + 2);
         if (!line.startsWith('data: ')) continue;
         const ev = JSON.parse(line.slice(6));
-        if (ev.t !== undefined) { if (!firstAt) firstAt = performance.now(); reply += ev.t; }
+        if (ev.pf !== undefined) {
+          // reading the prompt (slow on the CPU): a dim progress line until the first token arrives
+          if (!firstAt && ev.pf < 100) {
+            if (!prog) { prog = document.createElement('div'); prog.className = 'meta'; turn.insertBefore(prog, out); }
+            prog.textContent = 'reading prompt… ' + ev.pf + '%';
+          } else if (prog) { prog.remove(); prog = null; }
+        }
+        else if (ev.t !== undefined) { if (prog) { prog.remove(); prog = null; } if (!firstAt) firstAt = performance.now(); reply += ev.t; }
         else if (ev.w !== undefined) { if (!firstAt) firstAt = performance.now(); work.add(ev.w); }
         else if (ev.phase) work.phase(ev.phase);
         else if (ev.rag) {
@@ -507,7 +567,6 @@ async function send() {
           d.innerHTML = '<b>docs</b> ' + ev.rag.length + ' section' + (ev.rag.length > 1 ? 's' : '') + ' from ' + files.map(esc).join(', ') +
             '<div class="detail">' + ev.rag.map(h => '[' + h.n + '] ' + esc(h.file) + (h.title ? ' › ' + esc(h.title) : '')).join('<br>') + '</div>';
           d.title = 'Click to show which sections';
-          d.addEventListener('click', () => d.classList.toggle('open'));
           turn.insertBefore(d, out);
         } else if (ev.tool) {
           flush(); out.innerHTML = render(reply, false);
@@ -539,6 +598,7 @@ async function send() {
   if (!appended) history.push({ role: 'assistant', content: reply });
   controller = null;
   placePrompt(); input.focus();
+  saveChat();
   if (wrote) { refresh(); if ($('files').classList.contains('show')) showFiles(filesAt); }
 }
 

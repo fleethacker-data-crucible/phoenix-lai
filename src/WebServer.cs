@@ -22,8 +22,9 @@ namespace Phoenix
         ChatEngine _engine;
         Workspace _workspace;
         string _loading;
-        string _loadError;   // last model load / GPU failure, shown red in the status bar; cleared by the next good load
-        public int ContextLength = 4096;
+        string _loadError;
+        string _memWarning;  // set after a load that left Windows almost out of commit memory   // last model load / GPU failure, shown red in the status bar; cleared by the next good load
+        public int ContextLength = 0;   // 0 = auto (ContextPlanner picks it at load); the loaded model's is _engine.ContextLength
         public readonly int Port;
         public readonly ChatLog Log;
         public readonly Rag Rag;
@@ -340,7 +341,7 @@ namespace Phoenix
             {
                 _loading = Path.GetFileName(path);
                 Stopwatch sw = Stopwatch.StartNew();
-                Log.Text("loading model " + _loading + " (context " + ContextLength + ")");
+                Log.Text("loading model " + _loading + " (context " + (ContextLength > 0 ? ContextLength.ToString() : "auto") + ")");
                 try
                 {
                     if (_engine != null) { _engine.Dispose(); _engine = null; }
@@ -354,11 +355,17 @@ namespace Phoenix
                     try { Rag.WarmUpNow(); } catch (Exception ex) { Log.Text("  docs search warm-up failed: " + ex.Message); }
                     Log.Text("  warmed up in " + ChatLog.Ms(wsw.Elapsed.TotalSeconds) + " ms (docs search on " + (Rag.EmbedBackend ?? "none") + ")");
                     if (_engine.Backend.StartsWith("GPU")) Log.Text("  released " + MemoryTrim.Trim() + " MB of RAM after the upload");
+                    long commit = MemoryTrim.AvailableCommit();
+                    _memWarning = commit < (1536L << 20) ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                        "Windows has only {0:F1} GB of memory left to give other programs (its page file is very small), so opening more programs may fail. " +
+                        "Use a smaller model, or let Windows manage the page file size (System > About > Advanced system settings > Performance > Advanced > Virtual memory).",
+                        commit / 1073741824.0) : null;
+                    if (_memWarning != null) Log.Text("  WARNING: " + _memWarning);
                     // Remember it so the next start opens the same model (only for models inside models\).
                     if (string.Equals(Path.GetDirectoryName(path), _modelsDir, StringComparison.OrdinalIgnoreCase))
                         try { File.WriteAllText(Path.Combine(_modelsDir, "last-model.txt"), Path.GetFileName(path)); } catch { }
                     Log.Json("model_load", "\"file\":" + Json.Quote(_loading) + ",\"model\":" + Json.Quote(_engine.ModelName) + ",\"backend\":" +
-                        Json.Quote(_engine.Backend) + ",\"context\":" + ContextLength + ",\"ms\":" + ChatLog.Ms(sw.Elapsed.TotalSeconds));
+                        Json.Quote(_engine.Backend) + ",\"context\":" + _engine.ContextLength + ",\"ms\":" + ChatLog.Ms(sw.Elapsed.TotalSeconds));
                 }
                 catch (Exception ex)
                 {
@@ -490,8 +497,9 @@ namespace Phoenix
             {
                 string name = Json.GetStr(body, "name", null);
                 if (name == null || name.IndexOfAny(new char[] { '/', '\\', ':' }) >= 0) throw new ArgumentException("Give a model file name from the models folder.");
+                // context: tokens, or 0 / missing = auto
                 int ctx = (int)Json.GetNum(body, "context", ContextLength);
-                if (ctx >= 256) ContextLength = ctx;
+                ContextLength = ctx >= 256 ? ctx : 0;
                 LoadModel(name);
                 SendJson(res, 200, Info());
                 return;
@@ -629,7 +637,7 @@ namespace Phoenix
         Workspace RequireWorkspace()
         {
             if (!_folderAccess) throw new InvalidOperationException("Folder access is off. Turn it on with /folder on.");
-            if (_workspace == null) throw new InvalidOperationException("No folder connected. Use /folder /<project>.");
+            if (_workspace == null) throw new InvalidOperationException("No folder connected. Use /folder <project_folder>.");
             return _workspace;
         }
 
@@ -648,16 +656,17 @@ namespace Phoenix
             return "{\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
-                   ",\"context\":" + ContextLength +
+                   ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
                    ",\"loading\":" + (_loading != null ? Json.Quote(_loading) : "null") +
                    ",\"loadError\":" + (_loadError != null ? Json.Quote(_loadError) : "null") +
+                   ",\"memWarning\":" + (_memWarning != null ? Json.Quote(_memWarning) : "null") +
                    ",\"folder\":" + (w != null ? Json.Quote(w.Display) : "null") +
                    ",\"projectsRoot\":" + Json.Quote(Workspace.ProjectsRoot) +
                    ",\"folderName\":" + (w != null ? Json.Quote(Path.GetFileName(w.Root)) : "null") +
                    ",\"git\":" + (w != null ? w.GitJson() : "null") +
                    ",\"rules\":" + RulesJson() +
                    ",\"rag\":" + Rag.StatusJson() +
-                   ",\"vram\":" + VramJson(e) +
+                   ",\"vram\":" + VramJson(e) + ",\"ram\":" + MemoryTrim.RamJson() +
                    ",\"version\":" + Json.Quote(Version()) + "}";
         }
 
@@ -668,6 +677,8 @@ namespace Phoenix
             catch { return ""; }
         }
 
+        // "used" = this process on the GPU (model, cache and docs-search embedder: the driver reports usage per process),
+        // "budget" = what the GPU can give this process right now, its own use included (drops when others take VRAM).
         static string VramJson(ChatEngine e)
         {
             ulong used, budget;
@@ -766,23 +777,45 @@ namespace Phoenix
             res.SendChunked = true;
             Stream outS = res.OutputStream;
             bool gone = false;
+            object writeLock = new object();
             TextCallback write = delegate(string line)
             {
-                if (gone) return;
-                try
+                lock (writeLock)
                 {
-                    byte[] b = Encoding.UTF8.GetBytes("data: " + line + "\n\n");
-                    outS.Write(b, 0, b.Length);
-                    outS.Flush();
+                    if (gone) return;
+                    try
+                    {
+                        byte[] b = Encoding.UTF8.GetBytes("data: " + line + "\n\n");
+                        outS.Write(b, 0, b.Length);
+                        outS.Flush();
+                    }
+                    catch { gone = true; } // browser closed or pressed Stop
                 }
-                catch { gone = true; } // browser closed or pressed Stop
             };
+            // A Stop is only noticed when a write fails, and nothing is written while a long prompt is read: a comment
+            // line every second keeps checking (SSE clients ignore lines starting with ':').
+            System.Threading.Timer heartbeat = new System.Threading.Timer(delegate
+            {
+                lock (writeLock)
+                {
+                    if (gone) return;
+                    try { byte[] b = Encoding.UTF8.GetBytes(": ping\n\n"); outS.Write(b, 0, b.Length); outS.Flush(); }
+                    catch { gone = true; }
+                }
+            }, null, 1000, 1000);
 
             lock (_engineLock)
             {
                 try
                 {
                     if (_engine == null) throw new InvalidOperationException("No model loaded. Use /models and /model <n>.");
+                    // Progress while the prompt is read (shown until the first token; matters on the CPU).
+                    int lastPct = -1;
+                    _engine.PrefillProgress = delegate(int done, int todo)
+                    {
+                        int pct = todo > 0 ? done * 100 / todo : 100;
+                        if (pct / 5 != lastPct / 5) { lastPct = pct; write("{\"pf\":" + pct + "}"); }
+                    };
                     Workspace ws = _folderAccess ? _workspace : null;
                     List<KeyValuePair<string, string>> rulesFiles = RulesFiles();
                     string rules = RulesPrompt(rulesFiles);
@@ -942,7 +975,8 @@ namespace Phoenix
                     }
                 }
             }
-            try { outS.Close(); } catch { }
+            heartbeat.Dispose();
+            lock (writeLock) { try { outS.Close(); } catch { } }
         }
 
         static bool HasCode(string reply)

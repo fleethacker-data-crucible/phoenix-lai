@@ -225,6 +225,7 @@ namespace Phoenix
             {
                 EnsureModel(Json.GetStr(o, "model", null));
                 ChatEngine eng = _engine;
+                eng.PrefillProgress = null;
                 string modelId = Path.GetFileNameWithoutExtension(eng.ModelPath);
                 Stream outS = null;
                 bool gone = false, stopped = false;

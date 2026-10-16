@@ -141,7 +141,7 @@ button:disabled { opacity: .45; cursor: default; }
         border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--panel-solid); box-shadow: 0 12px 40px rgba(0,0,0,.5); font-size: 13px; }
 #cmds.show { display: block; }
 #cmds .c { display: flex; gap: 14px; padding: 3px 12px; cursor: pointer; color: var(--soft); }
-#cmds .c b { color: var(--you); font-weight: 500; min-width: 72px; }
+#cmds .c b { color: var(--you); font-weight: 500; min-width: 72px; white-space: nowrap; flex: none; }   /* the command never wraps; only the description does */
 #cmds .c.sel, #cmds .c:hover { background: rgba(var(--accent-rgb),.08); color: var(--text); }
 #cmds .foot { border-top: 1px solid var(--line); margin-top: 4px; padding: 5px 12px 2px; color: var(--dim); font-size: 12px; }
 #input { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: 0; outline: 0; background: transparent; padding: 0;

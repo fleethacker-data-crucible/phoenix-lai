@@ -6,7 +6,7 @@ param(
     [switch]$CheckOnly,
     [switch]$Web,               # accepted for older shortcuts; the web chat is the only UI
     [string]$Model,
-    [int]$Context = 4096,
+    [int]$Context = 0,   # 0 = auto: the largest context that fits the free VRAM / RAM
     [string]$Root
 )
 
