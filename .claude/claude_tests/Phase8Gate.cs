@@ -15,6 +15,7 @@ namespace Phoenix.Tests
             SamplerTests(fail, output);
 
             string big = Path.Combine(modelsDir, "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf");
+            if (!File.Exists(big)) big = Path.Combine(modelsDir, "Llama-3.1-8B-Instruct-Q4_K_M.gguf");
             if (File.Exists(big)) EngineTests(big, fail, output); else fail.Add("8B model missing: " + big);
             return fail;
         }
