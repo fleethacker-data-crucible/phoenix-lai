@@ -399,8 +399,16 @@ namespace Phoenix
                     // Warm up before reporting ready (the UI shows "loading" until then): first prompt runs at full speed.
                     Stopwatch wsw = Stopwatch.StartNew();
                     if (_engine.Backend.StartsWith("GPU")) try { _engine.WarmUp(); } catch (Exception ex) { Log.Text("  warm-up failed: " + ex.Message); }
-                    try { Rag.WarmUpNow(); } catch (Exception ex) { Log.Text("  docs search warm-up failed: " + ex.Message); }
-                    Log.Text("  warmed up in " + ChatLog.Ms(wsw.Elapsed.TotalSeconds) + " ms (docs search on " + (Rag.EmbedBackend ?? "none") + ")");
+                    Log.Text("  warmed up in " + ChatLog.Ms(wsw.Elapsed.TotalSeconds) + " ms");
+                    // The docs-search model (~2.8 s to load) comes up in the background after "ready": the chat model is usable
+                    // at once. It holds the GPU lock while loading, so it never overlaps a chat's GPU work (a chat sent in those
+                    // seconds waits for it, as before).
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        Stopwatch esw = Stopwatch.StartNew();
+                        try { lock (GpuGate.Lock) Rag.WarmUpNow(); Log.Text("docs search ready on " + (Rag.EmbedBackend ?? "none") + " in " + ChatLog.Ms(esw.Elapsed.TotalSeconds) + " ms"); }
+                        catch (Exception ex) { Log.Text("docs search warm-up failed: " + ex.Message); }
+                    });
                     if (_engine.Backend.StartsWith("GPU")) Log.Text("  released " + MemoryTrim.Trim() + " MB of RAM after the upload");
                     long commit = MemoryTrim.AvailableCommit();
                     _memWarning = commit < (1536L << 20) ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
