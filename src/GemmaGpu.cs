@@ -622,6 +622,88 @@ namespace Phoenix
             return _logitsHost;
         }
 
+        // ---- Instant Recall: save the KV cache of a token range and put it back elsewhere (KernelsRecall) ----
+        GpuKernel _kGather, _kScatter;
+        GpuBuffer _recallUp, _recallDown;
+        ulong _recallBytes;
+
+        void EnsureRecall(ulong bytes)
+        {
+            if (_kGather == null)
+            {
+                _kGather = Kernel(KernelsRecall.Gather(), 3, 5, "recall gather");
+                _kScatter = Kernel(KernelsRecall.Scatter(), 4, 8, "recall scatter");
+            }
+            if (bytes <= _recallBytes) return;
+            if (_recallUp != null) { _owned.Remove(_recallUp); _recallUp.Dispose(); _owned.Remove(_recallDown); _recallDown.Dispose(); }
+            _recallUp = Buf(bytes, BufferKind.Upload);
+            _recallDown = Buf(bytes, BufferKind.Readback);
+            _recallBytes = bytes;
+        }
+
+        static ulong SnapBytes(int kvDim, int m) { int mPad = (m + 1) & ~1; return (ulong)kvDim * (ulong)mPad * 2 + (ulong)m * (ulong)kvDim * 2; }
+
+        public bool CanRecall { get { return Kv == KvType.F16; } }
+
+        // The cache of positions pos0 .. pos0+count-1 (they must still be in every layer's ring). Sliding-window
+        // layers keep only their last Ring positions, which is all a later token can attend to.
+        public KvSnapshot CaptureKv(int pos0, int count)
+        {
+            KvSnapshot s = new KvSnapshot();
+            s.Pos0 = pos0; s.Count = count;
+            s.Layers = new KvSnapshot.Layer[_layers.Length];
+            ulong max = 0;
+            foreach (Layer l in _layers) max = Math.Max(max, SnapBytes(l.KvDim, Math.Min(count, l.Ring)));
+            EnsureRecall(max);
+            for (int il = 0; il < _layers.Length; il++)
+            {
+                Layer l = _layers[il];
+                int m = Math.Min(count, l.Ring), src0 = pos0 + count - m, mPad = (m + 1) & ~1;
+                ulong bytes = SnapBytes(l.KvDim, m);
+                _gpu.Begin();
+                _gpu.Record(_kGather, new GpuBuffer[] { l.KCache, l.VCache, _recallDown }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)src0, (uint)m, (uint)mPad },
+                    Groups((int)(bytes / 4), Kernels.Wg), 1, 1);
+                _gpu.SubmitAndWait();
+                KvSnapshot.Layer sl = new KvSnapshot.Layer();
+                sl.Src0 = src0; sl.M = m; sl.Words = new uint[bytes / 4];
+                fixed (uint* p = sl.Words) Buffer.MemoryCopy((void*)_recallDown.Mapped, p, bytes, bytes);
+                s.Layers[il] = sl;
+            }
+            return s;
+        }
+
+        // Writes a snapshot at positions dst0 .. dst0+Count-1 of this sequence, re-rotating K by dst0 - Pos0.
+        public void SpliceKv(KvSnapshot s, int dst0)
+        {
+            if (dst0 + s.Count > MaxCtx) throw new InvalidOperationException("Context full.");
+            ulong max = 0;
+            foreach (KvSnapshot.Layer sl in s.Layers) max = Math.Max(max, (ulong)sl.Words.Length * 4);
+            EnsureRecall(max);
+            int delta = dst0 - s.Pos0;
+            float[] csSwa = _swa != null ? new float[_swa.NRot] : null, csGlobal = _global != null ? new float[_global.NRot] : null;
+            if (_swa != null) CpuRef.RopeTable(delta, _swa.NRot, _swa.RopeBase, _swa.RopeFreqs, csSwa);
+            if (_global != null) CpuRef.RopeTable(delta, _global.NRot, _global.RopeBase, _global.RopeFreqs, csGlobal);
+            if (_recallCsSwa == null) { _recallCsSwa = Buf(4096, BufferKind.Upload); _recallCsGlobal = Buf(4096, BufferKind.Upload); }
+            if (csSwa != null) _recallCsSwa.Upload(csSwa, 0);
+            if (csGlobal != null) _recallCsGlobal.Upload(csGlobal, 0);
+            for (int il = 0; il < _layers.Length; il++)
+            {
+                Layer l = _layers[il];
+                KvSnapshot.Layer sl = s.Layers[il];
+                ulong bytes = (ulong)sl.Words.Length * 4;
+                fixed (uint* p = sl.Words) Buffer.MemoryCopy(p, (void*)_recallUp.Mapped, bytes, bytes);
+                int mPad = (sl.M + 1) & ~1, at = dst0 + (sl.Src0 - s.Pos0);
+                int half = l.NRot / 2, perHead = l.HeadDim / 2;
+                uint threads = (uint)(l.NHeadKv * perHead * sl.M + sl.M * l.KvDim / 2);
+                _gpu.Begin();
+                for (uint par = 0; par < 2; par++)
+                    _gpu.Record(_kScatter, new GpuBuffer[] { _recallUp, l.Swa ? _recallCsSwa : _recallCsGlobal, l.KCache, l.VCache },
+                        new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)at, (uint)sl.M, (uint)mPad, (uint)l.HeadDim, (uint)half, par }, Groups((int)threads, Kernels.Wg), 1, 1);
+                _gpu.SubmitAndWait();
+            }
+        }
+        GpuBuffer _recallCsSwa, _recallCsGlobal;
+
         public int ContextLength { get { return MaxCtx; } }
         public int VocabSize { get { return C.NVocab; } }
 

@@ -19,6 +19,10 @@ namespace Phoenix
         int VocabSize { get; }
         // Earliest cached position that can be kept after `fed` tokens (0 = any; ring caches return more).
         int MinReuse(int fed);
+        // Instant Recall: save the KV cache of positions pos0.. and put it back at another position (re-rotated).
+        bool CanRecall { get; }
+        KvSnapshot CaptureKv(int pos0, int count);
+        void SpliceKv(KvSnapshot s, int dst0);
     }
 
     public sealed class ChatMessage
@@ -30,7 +34,7 @@ namespace Phoenix
 
     public sealed class GenerationStats
     {
-        public int PromptTokens, ReusedTokens, GeneratedTokens;
+        public int PromptTokens, ReusedTokens, GeneratedTokens, RecalledTokens;   // RecalledTokens: part of PromptTokens spliced, not read
         public double PromptSeconds, GenerateSeconds;
         public string StopReason = "";
         public double PromptTokensPerSecond { get { return PromptSeconds > 0 ? PromptTokens / PromptSeconds : 0; } }
@@ -113,7 +117,7 @@ namespace Phoenix
                     ids.Add(_channelEnd);
                     ids.AddRange(ReplyIds(m.Text));
                 }
-                else ids.AddRange(Tokenizer.Encode(m.Role + "\n" + m.Text.Trim(), false, false));
+                else ids.AddRange(EncodeBody(m.Role + "\n", m.Text.Trim(), ids.Count));
                 ids.Add(_turnEnd);
                 ids.AddRange(Tokenizer.Encode("\n", false, false));
             }
@@ -212,6 +216,69 @@ namespace Phoenix
             }
         }
 
+        // ---- Instant Recall ----
+        // File contents the model read (registered by the server) are encoded as their own token run inside a message,
+        // so their position in the prompt is known. The first time such a run is read, its KV cache is captured; when the
+        // same file text comes up again (next message, another chat) it is spliced in instead of read: ~12x faster to the
+        // first token for a 1,300-token file on Gemma 12B (4.7 s -> 0.4 s). Snapshots live in RAM up to RecallBudget.
+        public static long RecallBudget = 3L << 30;
+        const int RecallMinTokens = 64;
+        readonly Dictionary<string, List<int>> _segIds = new Dictionary<string, List<int>>();
+        readonly Dictionary<string, KvSnapshot> _recall = new Dictionary<string, KvSnapshot>();
+        readonly List<string> _recallOrder = new List<string>();   // least recently used first
+        long _recallBytes;
+        sealed class Span { public int Start, Len; public string Key; }
+        List<Span> _spans = new List<Span>();
+
+        public void RegisterRecall(string text)
+        {
+            if (text == null || text.Length < 300 || _segIds.ContainsKey(text) || !_model.CanRecall) return;
+            _segIds[text] = Tokenizer.Encode(text, false, false);
+            if (_segIds.Count > 256) { foreach (string k in new List<string>(_segIds.Keys)) { if (!_recall.ContainsKey(k)) { _segIds.Remove(k); break; } } }
+        }
+
+        public long RecallBytes { get { return _recallBytes; } }
+        public int RecallFiles { get { return _recall.Count; } }
+
+        // Encodes a message body; registered file texts inside it become their own token runs (recorded in _spans).
+        List<int> EncodeBody(string prefix, string text, int at)
+        {
+            List<int> ids = new List<int>();
+            string rest = text;
+            bool any = true;
+            while (any)
+            {
+                any = false;
+                int best = -1; string seg = null;
+                foreach (string s in _segIds.Keys)
+                {
+                    int i = rest.IndexOf(s, StringComparison.Ordinal);
+                    if (i >= 0 && (best < 0 || i < best)) { best = i; seg = s; }
+                }
+                if (seg == null) break;
+                ids.AddRange(Tokenizer.Encode(prefix + rest.Substring(0, best), false, false));
+                prefix = "";
+                Span sp = new Span(); sp.Start = at + ids.Count; sp.Len = _segIds[seg].Count; sp.Key = seg;
+                _spans.Add(sp);
+                ids.AddRange(_segIds[seg]);
+                rest = rest.Substring(best + seg.Length);
+                any = true;
+            }
+            ids.AddRange(Tokenizer.Encode(prefix + rest, false, false));
+            return ids;
+        }
+
+        void StoreRecall(string key, KvSnapshot s)
+        {
+            if (_recall.ContainsKey(key)) return;
+            _recall[key] = s; _recallOrder.Add(key); _recallBytes += s.Bytes;
+            while (_recallBytes > RecallBudget && _recallOrder.Count > 1)
+            {
+                string old = _recallOrder[0]; _recallOrder.RemoveAt(0);
+                _recallBytes -= _recall[old].Bytes; _recall.Remove(old);
+            }
+        }
+
         // Token ids of recent replies exactly as sampled, by their text. Re-encoding a reply's text usually gives other
         // tokens than the model produced (BPE merges differ), which broke the prompt-cache match at that reply and made
         // every follow-up (the code check, the next message) re-read it: 1,264 tokens = 4-5 s on Gemma 12B.
@@ -236,6 +303,7 @@ namespace Phoenix
         // Llama 3 instruct template; ends with an open assistant header.
         public List<int> Template(IList<ChatMessage> messages)
         {
+            _spans = new List<Span>();
             if (_gemma) return GemmaTemplate(messages);
             if (_mistral) return MistralTemplate(messages);
             List<int> ids = new List<int>();
@@ -251,7 +319,7 @@ namespace Phoenix
                     ids.AddRange(Tokenizer.Encode("\n\n", false, false));
                     ids.AddRange(ReplyIds(m.Text));
                 }
-                else ids.AddRange(Tokenizer.Encode("\n\n" + m.Text.Trim(), false, false));
+                else ids.AddRange(EncodeBody("\n\n", m.Text.Trim(), ids.Count));
                 ids.Add(_eot);
             }
             ids.Add(_startHeader);
@@ -348,13 +416,72 @@ namespace Phoenix
             // The prompt is fed in chunks so Stop stays responsive: 512 tokens on the GPU (~1-2 s each with batched
             // prefill), 8 on the CPU (a few tokens per second there, so a 512 chunk would ignore Stop for minutes).
             int chunk = Backend == "CPU" ? 8 : 512;
-            for (int i = reuse; i < prompt.Count; i += chunk)
+            List<Span> spans = _spans.FindAll(delegate(Span s) { return s.Start >= reuse && s.Start + s.Len < prompt.Count; });
+            int pos = reuse, si = 0;
+            while (pos < prompt.Count)
             {
-                if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
-                int n = Math.Min(chunk, prompt.Count - i);
-                logits = _model.Prefill(prompt, i, n);
-                for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
-                if (PrefillProgress != null) PrefillProgress(i + n - reuse, prompt.Count - reuse);
+                Span sp = si < spans.Count ? spans[si] : null;
+                int end = sp != null ? sp.Start : prompt.Count;
+                for (int i = pos; i < end; i += chunk)
+                {
+                    if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
+                    int n = Math.Min(chunk, end - i);
+                    logits = _model.Prefill(prompt, i, n);
+                    for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
+                    if (PrefillProgress != null) PrefillProgress(i + n - reuse, prompt.Count - reuse);
+                }
+                if (sp == null) break;
+                si++;
+                KvSnapshot snap;
+                if (_recall.TryGetValue(sp.Key, out snap) && snap.Count == sp.Len)
+                {
+                    // seen before: splice its cache instead of reading it
+                    _model.SpliceKv(snap, sp.Start);
+                    for (int j = 0; j < sp.Len; j++) _fed.Add(prompt[sp.Start + j]);
+                    st.RecalledTokens += sp.Len;
+                    _recallOrder.Remove(sp.Key); _recallOrder.Add(sp.Key);
+                }
+                else if (sp.Len >= RecallMinTokens && _gemma)
+                {
+                    // First read of this file: read it on its own (after just the turn header), save that snapshot, then
+                    // rebuild the conversation up to here and splice the file in. A snapshot taken inside the conversation
+                    // would carry the question asked then (measured: a later chat about Write() got an answer about
+                    // Resolve()); read alone, it is neutral and reusable by any later chat.
+                    List<int> alone = new List<int>();
+                    alone.Add(Tokenizer.BosId); alone.Add(_turn); alone.AddRange(Tokenizer.Encode("user\n", false, false));
+                    int at = alone.Count;
+                    alone.AddRange(_segIds[sp.Key]);
+                    _model.Reset();
+                    for (int i = 0; i < alone.Count; i += chunk)
+                    {
+                        if (cancel != null && cancel()) { _fed.Clear(); st.StopReason = "stopped"; return st; }
+                        _model.Prefill(alone, i, Math.Min(chunk, alone.Count - i));
+                    }
+                    KvSnapshot fresh = _model.CaptureKv(at, sp.Len);
+                    StoreRecall(sp.Key, fresh);
+                    _fed.Clear();
+                    for (int i = 0; i < sp.Start; i += chunk)
+                    {
+                        if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
+                        int n = Math.Min(chunk, sp.Start - i);
+                        logits = _model.Prefill(prompt, i, n);
+                        for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
+                    }
+                    _model.SpliceKv(fresh, sp.Start);
+                    for (int j = 0; j < sp.Len; j++) _fed.Add(prompt[sp.Start + j]);
+                }
+                else
+                {
+                    for (int i = sp.Start; i < sp.Start + sp.Len; i += chunk)
+                    {
+                        if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
+                        int n = Math.Min(chunk, sp.Start + sp.Len - i);
+                        logits = _model.Prefill(prompt, i, n);
+                        for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
+                    }
+                }
+                pos = sp.Start + sp.Len;
+                if (PrefillProgress != null) PrefillProgress(pos - reuse, prompt.Count - reuse);
             }
             st.PromptSeconds = sw.Elapsed.TotalSeconds;
 

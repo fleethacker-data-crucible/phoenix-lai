@@ -633,6 +633,11 @@ namespace Phoenix
             return _logitsHost;
         }
 
+        // Instant Recall is implemented for GemmaGpu (fp16 cache) only.
+        public bool CanRecall { get { return false; } }
+        public KvSnapshot CaptureKv(int pos0, int count) { throw new NotSupportedException(); }
+        public void SpliceKv(KvSnapshot s, int dst0) { throw new NotSupportedException(); }
+
         public int ContextLength { get { return MaxCtx; } }
         public int VocabSize { get { return NVocab; } }
 
