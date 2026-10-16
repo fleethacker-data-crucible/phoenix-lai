@@ -129,7 +129,20 @@ namespace Phoenix
                         string garch = g.GetString("general.architecture");
                         if (garch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
                         gpu = GpuDevice.Create();
-                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, contextLength) : new LlamaGpu(gpu, g, contextLength);
+                        int ctx = contextLength;
+                        if (ctx <= 0)
+                        {
+                            ulong used, budget;
+                            string why;
+                            // VRAM, and system commit: on Windows the driver backs video memory with commit charge, so with a
+                            // small page file a big cache can leave other programs unable to start (seen 2026-10-16).
+                            if (gpu.MemoryBudget(out used, out budget))
+                                ctx = ContextPlanner.Choose(g, path, true, (long)(budget - Math.Min(used, budget)), MemoryTrim.AvailableCommit(), out why);
+                            else { ctx = 8192; why = "auto context 8192 (the driver does not report free VRAM)"; }
+                            if (log != null) log(why);
+                        }
+                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, ctx) : new LlamaGpu(gpu, g, ctx);
+                        contextLength = ctx;
                     }
                     catch (Exception ex)
                     {
@@ -147,6 +160,14 @@ namespace Phoenix
                 {
                     string arch = g.GetString("general.architecture");
                     if (arch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
+                    if (contextLength <= 0 || allowGpu)   // auto, or a GPU context that fell back here: size it for RAM
+                    {
+                        int requested = contextLength;
+                        string why;
+                        contextLength = ContextPlanner.Choose(g, path, false, MemoryTrim.AvailableRam(), MemoryTrim.AvailableCommit(), out why);
+                        if (requested > 0) contextLength = Math.Min(requested, contextLength);
+                        if (log != null) log(why);
+                    }
                     model = GemmaConfig.IsGemma(arch) ? (ILanguageModel)new GemmaCpu(g, contextLength) : new LlamaCpu(g, contextLength);
                     backend = "CPU";
                 }
@@ -234,6 +255,9 @@ namespace Phoenix
 
         // Generates a reply to the conversation. Streams text through onText; returns stats.
         // Oldest non-system messages are dropped when the prompt would not leave room for maxTokens.
+        // Called after each prompt chunk with (tokens done, tokens to do), e.g. to show progress on the slow CPU path.
+        public Action<int, int> PrefillProgress;
+
         public GenerationStats Generate(List<ChatMessage> messages, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
         {
             lock (GpuGate.Lock) return GenerateLocked(messages, settings, maxTokens, onText, cancel);
@@ -264,13 +288,16 @@ namespace Phoenix
 
             Stopwatch sw = Stopwatch.StartNew();
             float[] logits = null;
-            const int Chunk = 512; // prompt is fed in chunks so Stop stays responsive (~1-2 s each with batched prefill)
-            for (int i = reuse; i < prompt.Count; i += Chunk)
+            // The prompt is fed in chunks so Stop stays responsive: 512 tokens on the GPU (~1-2 s each with batched
+            // prefill), 8 on the CPU (a few tokens per second there, so a 512 chunk would ignore Stop for minutes).
+            int chunk = Backend == "CPU" ? 8 : 512;
+            for (int i = reuse; i < prompt.Count; i += chunk)
             {
                 if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
-                int n = Math.Min(Chunk, prompt.Count - i);
+                int n = Math.Min(chunk, prompt.Count - i);
                 logits = _model.Prefill(prompt, i, n);
                 for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
+                if (PrefillProgress != null) PrefillProgress(i + n - reuse, prompt.Count - reuse);
             }
             st.PromptSeconds = sw.Elapsed.TotalSeconds;
 

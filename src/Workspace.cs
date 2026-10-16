@@ -30,7 +30,7 @@ namespace Phoenix
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Phoenix_Projects");
 
         public static readonly string PathRule = "Folders are always inside " + ProjectsRoot + " (fixed, cannot be changed). " +
-            "Give the project path relative to it, e.g. /folder /my-project or /folder /my-project/src";
+            "Give the project folder relative to it, e.g. /folder my-project or /folder my-project/src";
 
         // Creates the projects root if it is missing (called at server startup).
         public static void EnsureProjectsRoot() { Directory.CreateDirectory(ProjectsRoot); }
