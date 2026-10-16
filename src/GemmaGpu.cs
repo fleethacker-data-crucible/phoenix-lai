@@ -72,6 +72,10 @@ namespace Phoenix
         public static bool UsePrefill = true;
         const uint MmTok = 24;                       // tokens per prefill matmul tile (RX 6700 XT sweep: 16 6.0, 24 7.4, 32 6.6 TMAC/s)
         GpuKernel _kMm, _kMmAny, _kKvRows, _kAttnPre, _kCopyRange, _kRowNorm, _kRopeRows, _kCopyRows;
+        public static bool UseFlash = true;
+        bool _flash;
+        readonly Dictionary<uint, GpuKernel> _kFlash = new Dictionary<uint, GpuKernel>();
+        readonly Dictionary<uint, uint> _flashTq = new Dictionary<uint, uint>();
         GpuBuffer _pX, _pXb, _pTmp, _pQ, _pK, _pV, _pAtt, _pG, _pU, _pXq, _pXd, _pCsSwa, _pCsGlobal, _pUp;
         int _maxQ, _maxKv, _maxFf;
         readonly GpuBuffer _x, _xb, _q, _k, _v, _attn, _g, _u, _xq, _xd, _kq, _kd, _scores, _attnPart, _logits;
@@ -511,7 +515,22 @@ namespace Phoenix
             _kMm = Kernel(KernelsPrefill.MatMulQ4Q8Tile(_gpu.IntegerDot, 1, MmTok, true), 5, 4, "pf matmul q4_0");
             _kMmAny = Kernel(KernelsPrefill.MatMulQ4Q8(_gpu.IntegerDot, 1), 5, 4, "pf matmul q4_0 (any)");
             _kKvRows = Kernel(KernelsKv.StoreRows(Kv, KvV), 4, 5, "pf kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
+            // tiled attention when shared memory allows (KernelsFlash: ~16x less K/V traffic at long context)
+            // one tiled kernel per head size (Gemma: 256 sliding-window, 512 global)
+            _flash = UseFlash;
             _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 8, "pf attention");
+            if (_flash)
+                foreach (Layer l in _layers)
+                {
+                    uint hdT = ((uint)l.HeadDim + 31) & ~31u;
+                    if (_kFlash.ContainsKey(hdT)) continue;
+                    uint tq, kc;
+                    KernelsFlash.Tile(hdT, _gpu.MaxSharedMemory, out tq, out kc);
+                    // 8 x 8 tiles (512-wide heads under a 32 KB limit) measured slower than the plain kernel: keep it there
+                    if (tq < 16 || (_gpu.MaxSharedMemory != 0 && KernelsFlash.SharedBytes(hdT, tq, kc) > _gpu.MaxSharedMemory)) continue;
+                    _kFlash[hdT] = Kernel(KernelsFlash.Attention(Kv, KvV, hdT, tq, kc), 4, 9, "pf attention tiled " + hdT);
+                    _flashTq[hdT] = tq;
+                }
             _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
             _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");
             _kRopeRows = Kernel(KernelsBatch.RopeNeoxRows(), 2, 4, "pf rope");
@@ -595,8 +614,14 @@ namespace Phoenix
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pK, cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half, (uint)T }, Groups(T * l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
                 for (uint par = 0; par < KernelsKv.Passes(Kv); par++)
                     _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
-                _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
-                    new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f) }, (uint)T, (uint)C.NHead, 1);
+                uint hdT = ((uint)hd + 31) & ~31u;
+                if (_flash && _kFlash.ContainsKey(hdT))
+                    _gpu.Record(_kFlash[hdT], new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
+                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), (uint)T },
+                        Groups(T, _flashTq[hdT]), (uint)C.NHead, 1);
+                else
+                    _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
+                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f) }, (uint)T, (uint)C.NHead, 1);
                 RowQuant(_pAtt, null, KernelsQuant.Mode.Plain, T * qDim);
                 Mm(l.Wo, _pTmp, T, true);
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostAttnNorm }, new uint[] { (uint)d, eps, 1, Bits(1f) }, (uint)T, 1, 1);
