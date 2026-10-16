@@ -71,6 +71,16 @@ namespace Phoenix
 
         public string EmbedBackend { get { Embedder e = _embedder; return e != null ? e.Backend : null; } }
 
+        // True when docs\ holds files but there is no usable index yet.
+        public bool HasUnindexedDocs()
+        {
+            if (_index != null && _index.FileCount > 0) return false;
+            foreach (string f in Directory.EnumerateFiles(DocsDir, "*", SearchOption.AllDirectories))
+                if (!f.Contains(Path.DirectorySeparatorChar + ".index" + Path.DirectorySeparatorChar) &&
+                    Array.IndexOf(TextExtensions, Path.GetExtension(f).ToLowerInvariant()) >= 0) return true;
+            return false;
+        }
+
         public bool Indexing { get { return _busy != 0; } }
 
         // EmbeddingGemma from models\, loaded on first use and kept (it is small); null if there is none.
@@ -85,6 +95,15 @@ namespace Phoenix
                 }
                 return _embedder;
             }
+        }
+
+        // Embeds text as given (no query/document prefix) for the /v1/embeddings API.
+        public float[] EmbedRaw(string text, out string model)
+        {
+            Embedder e = GetEmbedder();
+            if (e == null) throw new InvalidOperationException("No embedding model in the models folder.");
+            model = System.IO.Path.GetFileNameWithoutExtension(e.ModelPath);
+            return e.Embed(text);
         }
 
         public string StatusJson()

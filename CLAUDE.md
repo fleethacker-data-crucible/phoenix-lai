@@ -16,6 +16,9 @@ PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by Powe
 - **No third-party code.** No NuGet `PackageReference`, `Reference`, or `NativeLibrary` entries. BCL only.
 - **No network.** No `System.Net`, `HttpClient`, `Socket`, `WebRequest`, or `Process.Start`. No downloads, telemetry, or URL fields in the UI. Models load from local paths only.
 - **Single exception (approved 2026-10-15): loopback chat server.** Only `src/WebServer.cs` may use `System.Net.HttpListener` (bound to `http://127.0.0.1` only, never outgoing) and `Process.Start` (only to open `msedge.exe --app`, or `chrome.exe --app` when Edge is missing or `/browser chrome` is set; approved 2026-10-15). It rejects foreign `Host`/`Origin` headers and serves only files inside `html\`. `run.ps1` enforces this; `html\` may not reference external URLs.
+- **Model never runs a shell** (`src/ShellGuard.cs`, enforced by `run.ps1`): its only tools are list/read/write; command tags are refused; no executable files.
+- **Project jail:** `/folder` only opens subfolders of `%USERPROFILE%\Phoenix_Projects` (created at startup, hard-coded), given as `/project/sub`; absolute paths, `..` and junctions are refused.
+- **API server (approved 2026-10-16):** `src/WebServer.OpenAi.cs` serves the OpenAI-compatible API on `http://localhost:1234/v1` (LM Studio paths: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), loopback only, no process starts, no tools/RAG.
 - **P/Invoke allowlist:** `vulkan-1.dll` and `kernel32.dll` only. Never bundle or download Vulkan; use the driver-installed loader.
 - **GPU kernels are SPIR-V** emitted by the in-repo C# `SpirvBuilder`, loaded via `vkCreateShaderModule`. No Vulkan SDK, glslc, or shader compiler DLLs. Baseline Vulkan 1.2 / SPIR-V 1.5; query optional features and fall back.
 - No `.dll` files in the repo; no `Assembly.Load*` or `NativeLibrary`.

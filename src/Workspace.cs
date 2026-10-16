@@ -24,15 +24,44 @@ namespace Phoenix
             public bool Ok;
         }
 
+        // Hard rule: the model only ever works inside <user home>\Phoenix_Projects. The root is fixed here, cannot be
+        // configured, and every folder is given relative to it ("/my-app/src"); absolute paths are refused.
+        public static readonly string ProjectsRoot = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Phoenix_Projects");
+
+        public static readonly string PathRule = "Folders are always inside " + ProjectsRoot + " (fixed, cannot be changed). " +
+            "Give the project path relative to it, e.g. /folder /my-project or /folder /my-project/src";
+
+        // Creates the projects root if it is missing (called at server startup).
+        public static void EnsureProjectsRoot() { Directory.CreateDirectory(ProjectsRoot); }
+
+        // The connected folder relative to the projects root: "/my-project/src".
+        public readonly string Display;
+
         public Workspace(string path)
         {
-            if (string.IsNullOrEmpty(path)) throw new ArgumentException("No folder given.");
-            if (path.StartsWith(@"\\") || path.StartsWith("//")) throw new ArgumentException("Network folders are not allowed; use a local folder.");
-            string full = System.IO.Path.GetFullPath(path.Trim().Trim('"'));
-            if (!Directory.Exists(full)) throw new DirectoryNotFoundException("Folder not found: " + full);
-            DriveInfo drive = new DriveInfo(System.IO.Path.GetPathRoot(full));
-            if (drive.DriveType == DriveType.Network) throw new ArgumentException("Network drives are not allowed; use a local folder.");
-            Root = full.TrimEnd(System.IO.Path.DirectorySeparatorChar);
+            if (string.IsNullOrEmpty(path)) throw new ArgumentException("No folder given. " + PathRule);
+            string p = path.Trim().Trim('"', '\'').Replace('\\', '/');
+            // Anything naming a drive, share, device or home shortcut is refused: only paths under the projects root.
+            if (p.IndexOf(':') >= 0 || p.StartsWith("//") || p.StartsWith("~"))
+                throw new ArgumentException("Only subfolders of the projects root are allowed. " + PathRule);
+            p = p.Trim('/');
+            if (p.Length == 0) throw new ArgumentException("Pick a project folder, not the projects root itself. " + PathRule);
+            foreach (string seg in p.Split('/'))
+                if (seg == ".." || seg == "." || seg.Length == 0) throw new ArgumentException("'.', '..' and empty parts are not allowed. " + PathRule);
+            EnsureProjectsRoot();
+            string root = System.IO.Path.GetFullPath(ProjectsRoot).TrimEnd(System.IO.Path.DirectorySeparatorChar);
+            string full = System.IO.Path.GetFullPath(System.IO.Path.Combine(root, p.Replace('/', System.IO.Path.DirectorySeparatorChar)))
+                .TrimEnd(System.IO.Path.DirectorySeparatorChar);
+            if (!full.StartsWith(root + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Only subfolders of the projects root are allowed. " + PathRule);
+            if (!Directory.Exists(full)) throw new DirectoryNotFoundException("No folder /" + p + " in " + root + ". " + PathRule);
+            // A junction or symlink could point outside the root; none is allowed between the root and the folder.
+            for (string d = full; d.Length > root.Length; d = System.IO.Path.GetDirectoryName(d))
+                if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
+                    throw new ArgumentException("Linked folders (junctions/symlinks) are not allowed: /" + d.Substring(root.Length + 1).Replace('\\', '/'));
+            Root = full;
+            Display = "/" + full.Substring(root.Length + 1).Replace('\\', '/');
         }
 
         // Resolves a relative path inside the workspace, or throws.
@@ -44,6 +73,10 @@ namespace Phoenix
             string full = System.IO.Path.GetFullPath(System.IO.Path.Combine(Root, rel)).TrimEnd(System.IO.Path.DirectorySeparatorChar);
             if (full != Root && !full.StartsWith(Root + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Path is outside the workspace folder.");
+            // No links inside the project either: a junction would lead the model out of the projects root.
+            for (string d = full; d.Length > Root.Length; d = System.IO.Path.GetDirectoryName(d))
+                if ((File.Exists(d) || Directory.Exists(d)) && (File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
+                    throw new ArgumentException("Linked files and folders (junctions/symlinks) are not allowed.");
             return full;
         }
 
@@ -210,6 +243,7 @@ namespace Phoenix
         public string Write(string rel, string content)
         {
             string f = Resolve(rel);
+            ShellGuard.CheckWrite(f);
             if (f == Root || Directory.Exists(f)) throw new ArgumentException("Cannot write to a folder.");
             if (Relative(f).StartsWith(BackupDir)) throw new ArgumentException("The backup folder is read-only.");
             byte[] data = new UTF8Encoding(false).GetBytes(content);
@@ -229,6 +263,7 @@ namespace Phoenix
 
         static readonly Regex WriteTag = new Regex("<write\\s+path\\s*=\\s*\"([^\"]+)\"\\s*>\\r?\\n?(.*?)</write>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         static readonly Regex ReadTag = new Regex("<read\\s+path\\s*=\\s*\"([^\"]+)\"\\s*/?>", RegexOptions.IgnoreCase);
+        static readonly Regex CommandTag = new Regex("<(" + string.Join("|", ShellGuard.CommandTags) + ")\\b[^>]*>", RegexOptions.IgnoreCase);
         static readonly Regex ListTag = new Regex("<list(?:\\s+path\\s*=\\s*\"([^\"]*)\")?\\s*/?>", RegexOptions.IgnoreCase);
 
         // Carries out every tag in a model reply, in order of appearance.
@@ -255,6 +290,12 @@ namespace Phoenix
                 Action a = new Action(); a.Op = "list"; a.Path = m.Groups[1].Success && m.Groups[1].Value.Length > 0 ? m.Groups[1].Value : ".";
                 found.Add(new KeyValuePair<int, Action>(m.Index, a));
             }
+            // Command-style tags (<run>, <exec>, ...) are never carried out; the model is told they were refused.
+            foreach (Match m in CommandTag.Matches(reply))
+            {
+                Action a = new Action(); a.Op = "refused"; a.Path = m.Groups[1].Value.ToLowerInvariant();
+                found.Add(new KeyValuePair<int, Action>(m.Index, a));
+            }
             found.Sort(delegate(KeyValuePair<int, Action> x, KeyValuePair<int, Action> y) { return x.Key.CompareTo(y.Key); });
 
             List<Action> done = new List<Action>();
@@ -263,6 +304,7 @@ namespace Phoenix
                 Action a = kv.Value;
                 try
                 {
+                    if (a.Op == "refused") { a.Ok = false; a.Message = "<" + a.Path + "> " + ShellGuard.Refusal; a.Content = null; done.Add(a); continue; }
                     if (a.Op == "write") { a.Message = Write(a.Path, a.Content); a.Content = null; }
                     else if (a.Op == "read") { a.Content = Read(a.Path); a.Message = "read " + a.Path + " (" + a.Content.Length + " chars)"; }
                     else { a.Content = List(a.Path); a.Message = "listed " + a.Path; }
@@ -282,6 +324,7 @@ namespace Phoenix
                    "<write path=\"relative/path\">\nfull file content\n</write>   create or replace a file (always write the complete file)\n" +
                    "Use paths relative to the project folder. After <read> or <list> you will receive the results and can continue. " +
                    "When the user asks you to create or change a file, do it with <write> instead of only showing the code. " +
+                   "You cannot run commands, scripts or programs, and cannot create executable files; this is permanent. " +
                    "Keep explanations short.\n\nExample:\nUser: make hello.txt that says hi\nAssistant: <write path=\"hello.txt\">\nhi\n</write>\nCreated hello.txt.\n\n" +
                    "Project folder contents:\n" + List(".");
         }
