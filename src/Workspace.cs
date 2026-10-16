@@ -232,7 +232,13 @@ namespace Phoenix
         public string Read(string rel)
         {
             string f = Resolve(rel);
-            if (!File.Exists(f)) throw new FileNotFoundException("No such file: " + rel);
+            if (!File.Exists(f))
+            {
+                // the model reaching for its syntax library through the project tools
+                if (System.Text.RegularExpressions.Regex.IsMatch(rel, @"code-syntax|\brag\b|\.index", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    throw new FileNotFoundException("No such file: " + rel + ". That is the syntax library, not a project file: its matching sections are already added to the user's message when relevant. Answer from those sections (or your own knowledge) without any tool tag.");
+                throw new FileNotFoundException("No such file: " + rel);
+            }
             byte[] b = File.ReadAllBytes(f);
             for (int i = 0; i < Math.Min(b.Length, 8000); i++) if (b[i] == 0) throw new InvalidDataException(rel + " looks like a binary file.");
             string text = Encoding.UTF8.GetString(b, 0, Math.Min(b.Length, MaxReadBytes));

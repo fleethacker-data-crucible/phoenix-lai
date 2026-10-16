@@ -96,6 +96,9 @@ namespace Phoenix
         // EmbeddingGemma from models\, loaded on first use and kept (it is small); null if there is none.
         Embedder GetEmbedder()
         {
+            // GPU lock first, always: loading takes it inside, and the startup warm-up holds it before this one;
+            // the opposite order deadlocked a chat sent in the first second after a model load.
+            lock (GpuGate.Lock)
             lock (_embedLock)
             {
                 if (!_embedderTried && ModelsDir != null)
@@ -264,7 +267,8 @@ namespace Phoenix
             bool explicitDocs = ExplicitRe.IsMatch(query);
             // The library is a syntax reference for writing code: other messages (chat, "what files do I have") get
             // nothing, so a shared word like "files" no longer drags unrelated sections into the prompt.
-            if (!explicitDocs && !IsCodeRequest(query)) return hits;
+            // A question about a language ("what does it say about c# functions?") is a lookup too.
+            if (!explicitDocs && !IsCodeRequest(query) && !(DetectLanguage(query) >= 0 && AskRe.IsMatch(query))) return hits;
             Dictionary<ulong, float> q = new Dictionary<ulong, float>();
             AddQueryTerms(q, query, 1f);
             if (!string.IsNullOrEmpty(context)) AddQueryTerms(q, context, 0.5f);
@@ -385,6 +389,10 @@ namespace Phoenix
             @"\b(rag|docs|documents|documentation|docs? library|knowledge ?base|reference material)\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+        static readonly System.Text.RegularExpressions.Regex AskRe = new System.Text.RegularExpressions.Regex(
+            @"\?|\b(what|how|which|when|why|does|do|is|are|say|says|syntax|explain|show|tell|example|examples)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
         // One line for the system prompt so the model always knows the library exists, even when nothing was retrieved.
         // Changes only when the index does, so the cached prompt prefix stays valid.
         public string LibraryNote()
@@ -394,9 +402,10 @@ namespace Phoenix
             List<string> names = new List<string>();
             for (int i = 0; i < ix.FileCount && i < 20; i++) names.Add(ix.FilePath(i));
             return "Syntax reference library (the user calls it their \"RAG\"): " + string.Join(", ", names.ToArray()) +
-                   (ix.FileCount > 20 ? ", and more" : "") + ". It is separate from the project folder: you cannot open it with <read> or <list>, " +
-                   "and it is not part of the user's project. When a message asks for code, the matching reference sections are " +
-                   "added to that message automatically; use them to check that the code you write uses correct syntax and APIs. " +
+                   (ix.FileCount > 20 ? ", and more" : "") + ". You DO have this library: whenever a message asks for code or about a " +
+                   "language, the matching sections are added to that message automatically (\"Reference sections from my syntax " +
+                   "library\"), and you answer from them in your own words (never paste those sections into your reply). If asked whether you can see it, say yes. It is not in the project folder, " +
+                   "so never use <read> or <list> on it. Use it to check that the code you write uses correct syntax and APIs. " +
                    "Do not mention the library unless the user asks about it.";
         }
 
