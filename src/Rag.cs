@@ -195,8 +195,11 @@ namespace Phoenix
         // Prompt block placed before the user's question.
         public static string PromptBlock(List<RagHit> hits)
         {
-            StringBuilder sb = new StringBuilder("Reference material retrieved from the user's docs library for this message. " +
-                "Use it when it is relevant and prefer it over memory; cite it as [n]. Ignore it if it does not apply.\n");
+            StringBuilder sb = new StringBuilder("[Docs library search results (RAG)]\n" +
+                "The app searched the user's local docs library (the \"RAG\", \"docs\" or \"documents\" the user may mention) for this " +
+                "message and found the excerpts below. They ARE the user's RAG documents: when asked what is in the RAG or docs, " +
+                "describe these excerpts. Use them when relevant, prefer them over memory, and cite them as [n]. " +
+                "Only these best-matching excerpts are shown, not the whole library.\n");
             for (int i = 0; i < hits.Count; i++)
                 sb.Append("\n[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " › " + hits[i].Title : "")
                   .Append('\n').Append(hits[i].Text.Trim()).Append('\n');
