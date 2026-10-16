@@ -267,6 +267,11 @@ namespace Phoenix
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
+                    // Warm up before reporting ready (the UI shows "loading" until then): first prompt runs at full speed.
+                    Stopwatch wsw = Stopwatch.StartNew();
+                    if (_engine.Backend.StartsWith("GPU")) try { _engine.WarmUp(); } catch (Exception ex) { Log.Text("  warm-up failed: " + ex.Message); }
+                    try { Rag.WarmUpNow(); } catch (Exception ex) { Log.Text("  docs search warm-up failed: " + ex.Message); }
+                    Log.Text("  warmed up in " + ChatLog.Ms(wsw.Elapsed.TotalSeconds) + " ms (docs search on " + (Rag.EmbedBackend ?? "none") + ")");
                     if (_engine.Backend.StartsWith("GPU")) Log.Text("  released " + MemoryTrim.Trim() + " MB of RAM after the upload");
                     // Remember it so the next start opens the same model (only for models inside models\).
                     if (string.Equals(Path.GetDirectoryName(path), _modelsDir, StringComparison.OrdinalIgnoreCase))
