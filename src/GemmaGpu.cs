@@ -37,7 +37,9 @@ namespace Phoenix
         // Sliding-window layers keep a ring of the last NSwa + SwaSlack positions instead of the whole context (all caches
         // are fp16, packed): Gemma 4 12B at 32K context needs ~1.4 GB of cache instead of ~11 GB. The slack lets the chat
         // engine keep its cache when a new prompt rewinds up to SwaSlack tokens (MinReuse); a longer rewind re-reads it.
-        public static int SwaSlack = 1536;   // static (not const) so tests can force the ring to wrap early
+        // 512: with exact-token reply reuse (Engine.ReplyIds) conversations rarely rewind further; 1536 cost Gemma 12B
+        // ~0.3 GB more VRAM for its 40 sliding-window layers. Static (not const) so tests can force the ring to wrap early.
+        public static int SwaSlack = 512;
 
         // Per-kind (sliding / global) state: rope table, attention params, indirect grids, attention kernels.
         sealed class Kind

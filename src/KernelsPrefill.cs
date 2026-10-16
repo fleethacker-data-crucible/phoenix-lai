@@ -139,7 +139,6 @@ namespace Phoenix
         // build time; each thread keeps rpt rows (lid, lid + 64, ...) x tok tokens of accumulators, so every activation
         // word read from shared memory feeds rpt dot products; integer dot products accumulate in one instruction
         // (OpSDotAccSat). Same math as MatMulQ4Q8. Grid (ceil(rows / (64 rpt)), ceil(T / tok)). Bindings/push as MatMulQ4Q8.
-        public static uint[] MatMulQ4Q8Unrolled(bool dot, uint tok) { return MatMulQ4Q8Tile(dot, 1, tok); }
 
         public static uint[] MatMulQ4Q8Tile(bool dot, uint rpt, uint tok) { return MatMulQ4Q8Tile(dot, rpt, tok, false); }
         // (push: rows, nb, T, stride — weight rows may be padded so they do not all start on the same memory channel)
