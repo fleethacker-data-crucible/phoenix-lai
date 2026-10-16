@@ -9,6 +9,7 @@ The studio is buildable under the rule, with one unavoidable exception: the GPU 
 - **No third-party DLLs.** No NuGet packages, no ILGPU, Silk.NET, Vortice, LLamaSharp, ONNX Runtime, or bundled native libraries. Code uses only the .NET base class library.
 - **No network.** No `System.Net` usage, no telemetry, no model downloads. GGUF files are copied in by hand.
 - **Driver exception.** `vulkan-1.dll` (the Khronos loader) ships with AMD, NVIDIA and Intel display drivers in `System32`. The studio calls it via `DllImport`; nothing is added to the machine. If even this is off-limits, the studio is CPU-only.
+- **Loopback chat exception.** `src/WebServer.cs` alone may run an `HttpListener` on 127.0.0.1 and start Edge in app mode for the browser chat page (`html\chat.html`, `Chat.bat`). No outgoing connections; enforced by `run.ps1`.
 - **Allowed system calls.** `vulkan-1.dll` (GPU) and `kernel32.dll` (optional memory/affinity tweaks). Nothing else.
 
 ## Architecture

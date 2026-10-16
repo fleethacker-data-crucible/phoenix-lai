@@ -170,6 +170,9 @@ namespace Phoenix
 
         public void ClearCache() { _fed.Clear(); _model.Reset(); }
 
+        // Tokens currently held in the context (KV cache) for the conversation.
+        public int UsedTokens { get { return _fed.Count; } }
+
         // Generates a reply to the conversation. Streams text through onText; returns stats.
         // Oldest non-system messages are dropped when the prompt would not leave room for maxTokens.
         public GenerationStats Generate(List<ChatMessage> messages, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
