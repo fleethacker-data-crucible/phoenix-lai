@@ -68,6 +68,10 @@ namespace Phoenix
                         "--app=" + server.Url + " --user-data-dir=\"" + profile + "\" --no-first-run --window-size=1100,800");
                     psi.UseShellExecute = false;
                     using (Process p = Process.Start(psi)) p.WaitForExit();
+                    // If an app window was already open, Edge hands the new one to that process and exits at once, so
+                    // the process alone can't tell us when the user is done: stay up while any page is still talking to us
+                    // (the page polls /api/info every 4 s; a running chat counts as active).
+                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));   // > 60 s: minimized windows poll only once a minute
                 }
                 else
                 {
@@ -147,7 +151,28 @@ namespace Phoenix
             }
         }
 
+        long _lastRequestTicks = DateTime.UtcNow.Ticks;
+        int _activeRequests;
+
+        void WaitWhilePagesActive(TimeSpan idle)
+        {
+            while (Thread.VolatileRead(ref _activeRequests) > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastRequestTicks) < idle.Ticks)
+                Thread.Sleep(500);
+        }
+
         void Handle(HttpListenerContext ctx)
+        {
+            Interlocked.Increment(ref _activeRequests);
+            Interlocked.Exchange(ref _lastRequestTicks, DateTime.UtcNow.Ticks);
+            try { HandleRequest(ctx); }
+            finally
+            {
+                Interlocked.Exchange(ref _lastRequestTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Decrement(ref _activeRequests);
+            }
+        }
+
+        void HandleRequest(HttpListenerContext ctx)
         {
             HttpListenerRequest req = ctx.Request;
             HttpListenerResponse res = ctx.Response;
@@ -348,7 +373,15 @@ namespace Phoenix
                    ",\"folderName\":" + (w != null ? Json.Quote(Path.GetFileName(w.Root)) : "null") +
                    ",\"git\":" + (w != null ? w.GitJson() : "null") +
                    ",\"rules\":" + RulesJson() +
-                   ",\"rag\":" + Rag.StatusJson() + "}";
+                   ",\"rag\":" + Rag.StatusJson() +
+                   ",\"version\":" + Json.Quote(Version()) + "}";
+        }
+
+        // App version from src\__version.info (read on each request, so editing it needs no restart).
+        string Version()
+        {
+            try { return File.ReadAllText(Path.Combine(Directory.GetParent(_htmlDir).FullName, "src", "__version.info")).Trim(); }
+            catch { return ""; }
         }
 
         static string HitsJson(List<RagHit> hits, bool withText)
