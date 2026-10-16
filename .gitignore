@@ -1,2 +1,4 @@
 /models/
 *.gguf
+/logs/
+/docs/.index/
