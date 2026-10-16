@@ -102,9 +102,18 @@ namespace Phoenix
             ids.Add(Tokenizer.BosId);
             foreach (ChatMessage m in messages)
             {
-                string role = m.Role == "assistant" ? "model" : m.Role;
                 ids.Add(_turn);
-                ids.AddRange(Tokenizer.Encode(role + "\n" + m.Text.Trim(), false, false));
+                if (m.Role == "assistant")
+                {
+                    // A model turn is written exactly as it was generated (header, empty thought channel, the sampled
+                    // tokens), so the KV cache of the reply is reused instead of re-reading it on the next request.
+                    ids.AddRange(Tokenizer.Encode("model\n", false, false));
+                    ids.Add(_channel);
+                    ids.AddRange(Tokenizer.Encode("thought\n", false, false));
+                    ids.Add(_channelEnd);
+                    ids.AddRange(ReplyIds(m.Text));
+                }
+                else ids.AddRange(Tokenizer.Encode(m.Role + "\n" + m.Text.Trim(), false, false));
                 ids.Add(_turnEnd);
                 ids.AddRange(Tokenizer.Encode("\n", false, false));
             }
@@ -203,6 +212,27 @@ namespace Phoenix
             }
         }
 
+        // Token ids of recent replies exactly as sampled, by their text. Re-encoding a reply's text usually gives other
+        // tokens than the model produced (BPE merges differ), which broke the prompt-cache match at that reply and made
+        // every follow-up (the code check, the next message) re-read it: 1,264 tokens = 4-5 s on Gemma 12B.
+        readonly Dictionary<string, List<int>> _sampled = new Dictionary<string, List<int>>();
+        readonly Queue<string> _sampledOrder = new Queue<string>();
+
+        List<int> ReplyIds(string text)
+        {
+            List<int> ids;
+            if (_sampled.TryGetValue(text, out ids)) return ids;
+            return Tokenizer.Encode(text.Trim(), false, false);
+        }
+
+        void RememberReply(string text, List<int> ids)
+        {
+            if (text.Length == 0 || _sampled.ContainsKey(text)) return;
+            _sampled[text] = ids;
+            _sampledOrder.Enqueue(text);
+            while (_sampledOrder.Count > 32) _sampled.Remove(_sampledOrder.Dequeue());
+        }
+
         // Llama 3 instruct template; ends with an open assistant header.
         public List<int> Template(IList<ChatMessage> messages)
         {
@@ -215,7 +245,13 @@ namespace Phoenix
                 ids.Add(_startHeader);
                 ids.AddRange(Tokenizer.Encode(m.Role, false, false));
                 ids.Add(_endHeader);
-                ids.AddRange(Tokenizer.Encode("\n\n" + m.Text.Trim(), false, false));
+                if (m.Role == "assistant")
+                {
+                    // as generated: "\n\n" then the sampled tokens (KV cache reuse, see ReplyIds)
+                    ids.AddRange(Tokenizer.Encode("\n\n", false, false));
+                    ids.AddRange(ReplyIds(m.Text));
+                }
+                else ids.AddRange(Tokenizer.Encode("\n\n" + m.Text.Trim(), false, false));
                 ids.Add(_eot);
             }
             ids.Add(_startHeader);
@@ -323,6 +359,8 @@ namespace Phoenix
             st.PromptSeconds = sw.Elapsed.TotalSeconds;
 
             Sampler sampler = new Sampler(settings);
+            StringBuilder emitted = new StringBuilder();
+            List<int> sampledIds = new List<int>();
             List<int> history = new List<int>(prompt);
             Decoder utf8 = Encoding.UTF8.GetDecoder();
             char[] chars = new char[64];
@@ -336,7 +374,8 @@ namespace Phoenix
 
                 byte[] bytes = Tokenizer.TokenBytes(next, false);
                 int nc = utf8.GetChars(bytes, 0, bytes.Length, chars, 0, false);
-                if (nc > 0 && onText != null) onText(new string(chars, 0, nc));
+                if (nc > 0) { string piece = new string(chars, 0, nc); emitted.Append(piece); if (onText != null) onText(piece); }
+                sampledIds.Add(next);
                 st.GeneratedTokens++;
                 history.Add(next);
 
@@ -347,6 +386,7 @@ namespace Phoenix
                 _fed.Add(next);
             }
             st.GenerateSeconds = sw.Elapsed.TotalSeconds;
+            RememberReply(emitted.ToString(), sampledIds);
             return st;
         }
 
