@@ -1,4 +1,4 @@
-# DEV TOOL. Creates <root>\Phoenix_AI_App.lnk: a shortcut that runs src\run.ps1 with no window at all and works from
+# DEV TOOL. Creates <root>\PhoenixLAI_App.lnk: a shortcut that runs src\run.ps1 with no window at all and works from
 # wherever the project folder is placed.
 #   powershell.exe -NoProfile -File .claude\tools\make-shortcut.ps1 [-Root <project root>]
 #
@@ -20,12 +20,12 @@ $args = '--headless %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe 
 if ($args.Length -gt 1023) { throw "Shortcut arguments too long ($($args.Length))." }
 
 $sh = New-Object -ComObject WScript.Shell
-$lnkPath = Join-Path $Root 'Phoenix_AI_App.lnk'
+$lnkPath = Join-Path $Root 'PhoenixLAI_App.lnk'
 $lnk = $sh.CreateShortcut($lnkPath)
 $lnk.TargetPath = '%SystemRoot%\System32\conhost.exe'
 $lnk.Arguments = $args
 $lnk.WorkingDirectory = ''
-$lnk.Description = 'PhoenixAI - local coding assistant'
+$lnk.Description = 'PhoenixLAI - local coding assistant'
 $lnk.IconLocation = '%SystemRoot%\System32\shell32.dll,13'
 $lnk.Save()
 "created $lnkPath (arguments $($args.Length) chars)"

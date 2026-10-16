@@ -6,7 +6,7 @@
 - No recaps of what the diff already shows. Mention only what failed, was skipped, or needs a decision.
 
 ## Project
-PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by PowerShell 5.1) that runs GGUF models on the GPU through Vulkan compute, with zero third-party dependencies. UI: `html\chat.html` (+ `html\css`, `html\js`) served by the loopback server and shown in a Chrome (or Edge) app window. No menus: everything is a `/command` (`/help`). Full plan: `.claude/Local LLM Studio (C#) — Development Plan.md`.
+PhoenixLAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by PowerShell 5.1) that runs GGUF models on the GPU through Vulkan compute, with zero third-party dependencies. UI: `html\chat.html` (+ `html\css`, `html\js`) served by the loopback server and shown in a Chrome (or Edge) app window. No menus: everything is a `/command` (`/help`). Full plan: `.claude/Local LLM Studio (C#) — Development Plan.md`.
 
 ## Hardware
 - Dev machine: AMD Radeon RX 6700 XT (RDNA2, 12 GB VRAM), Vulkan 1.4 loader at `C:\Windows\System32\vulkan-1.dll`. Has run a 9B model.
@@ -26,12 +26,12 @@ PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by Powe
 ## Build
 - **Production machine:** no installs, no SDK, nothing external; only PowerShell 5.1 + the driver's `vulkan-1.dll`. The studio must run there as-is.
 - **Dev machine (this one):** dev/reference tools are allowed (e.g. llama.cpp to generate reference outputs, internet for specs). None of them may become a runtime dependency of the studio.
-- **Entry point:** `Phoenix_AI_App.lnk` (root) -> `conhost --headless` -> `src\run.ps1`, no windows; it finds the project from the shortcut's own path, so the folder can live anywhere. Recreate it with `.claude\tools\make-shortcut.ps1`. No VBS/HTA/JS launchers.
+- **Entry point:** `PhoenixLAI_App.lnk` (root) -> `conhost --headless` -> `src\run.ps1`, no windows; it finds the project from the shortcut's own path, so the folder can live anywhere. Recreate it with `.claude\tools\make-shortcut.ps1`. No VBS/HTA/JS launchers.
 - **Windows PowerShell 5.1 only** (target machine has no PS7). `src\run.ps1` runs the locality checks, then compiles `src\*.cs` in memory via `Add-Type` with `CompilerParameters` (`/unsafe /optimize+`), then calls the entry point on an STA thread.
 - Compiler is .NET Framework 4.8 CodeDom: **C# 5 only**. No `=>` members, `$""`, `?.`, `nameof`, tuples, `Span<T>`, `stackalloc` outside unsafe, `System.Numerics.Vector`, or `System.Runtime.Intrinsics`. CPU code is scalar + `Parallel.For` + unsafe pointers.
 - Never compile or test under PowerShell 7 (`pwsh`). Always invoke `powershell.exe` (5.1) explicitly, e.g. `powershell.exe -NoProfile -STA -File src\run.ps1`, even when the shell tool itself is pwsh.
 - No project file, no `dotnet`. Each run is a fresh `powershell -NoProfile -STA -File src\run.ps1` (Add-Type types can't reload).
-- Root holds only `Phoenix_AI_App.lnk`, `CLAUDE.md`, `.gitignore` and folders (`src`, `html`, `models`, `logs`, `docs`). Scripts live in `src\`.
+- Root holds only `PhoenixLAI_App.lnk`, `CLAUDE.md`, `.gitignore` and folders (`src`, `html`, `models`, `logs`, `docs`). Scripts live in `src\`.
 
 ## Modules
 `Gguf` (memory-mapped parse) · `Tokenizer` (BPE/SentencePiece) · `Vulkan` (DllImport bindings) · `Kernels` (SPIR-V: dequant+matvec, RMSNorm, RoPE, softmax, attention, SiLU, add/mul) · `CpuRef` (scalar/parallel ground truth + fallback) · `Model` (forward pass, KV cache in VRAM) · `Sampler` · `Engine` (chat template, KV reuse) · `WebServer` + `Workspace` + `ChatLog` (loopback chat API, folder tools, session logs) · `Rag` (docs\ library: `/index` builds the incremental BM25 index `docs\.index\rag.bin`, memory-mapped; top chunks go into the newest user message) · `html\chat.html` (UI).

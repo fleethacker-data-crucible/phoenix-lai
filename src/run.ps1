@@ -1,4 +1,4 @@
-# PhoenixAI launcher (entry point; Phoenix_AI_App.lnk runs this). Windows PowerShell 5.1 only.
+# PhoenixLAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
 #   powershell.exe -NoProfile -STA -File src\run.ps1                     # checks, compile, chat in an Edge app window
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Model models\x.gguf -Context 8192
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -CheckOnly          # locality checks only

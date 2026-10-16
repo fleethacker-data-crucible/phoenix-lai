@@ -136,7 +136,7 @@ async function refresh() {
   if (info.focus) bringForward();
   drawStatus(false);
   const ver = $('ver'); if (ver && info.version) ver.textContent = 'v.' + info.version;
-  if (info.version) document.title = 'PhoenixAI v.' + info.version;
+  if (info.version) document.title = 'PhoenixLAI v.' + info.version;
   if (info.loading || (info.rag && info.rag.indexing)) setTimeout(refresh, 700);
 }
 // Keep the status line (git changes, model state) current.
@@ -208,7 +208,7 @@ async function setFolder(arg) {
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/phoenix_logo2.png" alt="PhoenixAI">' +
+  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/dark_phoenix_logo.png" alt="PhoenixLAI">' +
     // The empty .sub line keeps the hint where it always was; the version hangs below it without moving anything.
     '<div class="sub">&nbsp;</div>' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.' +
@@ -368,10 +368,10 @@ const COMMANDS = [
     } },
   { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
     run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
-  { name: '/vram', use: '/vram', desc: 'video memory: what PhoenixAI uses, what is free, and which programs use the most',
+  { name: '/vram', use: '/vram', desc: 'video memory: what PhoenixLAI uses, what is free, and which programs use the most',
     run: async () => {
       const r = await api('/api/vram'), v = (await api('/api/info')).vram, gb = b => (b / 1073741824).toFixed(2) + ' GB';
-      let txt = v ? 'PhoenixAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
+      let txt = v ? 'PhoenixLAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
       if (r.processes) txt += 'Largest users of video memory:\n' + r.processes.map(p => '  ' + gb(p.bytes).padStart(9) + '  ' + p.name).join('\n');
       else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
       systemLine(txt);
@@ -818,7 +818,7 @@ document.addEventListener('wheel', e => {
 // Background: grid fading out toward the edges, two soft gold glows and a faint blurred monochrome logo, painted once
 // per size. Redrawn only after a resize settles; while dragging, the canvas is just stretched (no per-frame repaint).
 const bgLogo = new Image();
-bgLogo.src = 'assets/phoenix_logo.png';
+bgLogo.src = 'assets/light_phoenix_logo.png';
 function drawBackground() {
   const cv = $('bg'), dpr = window.devicePixelRatio || 1, W = innerWidth, H = innerHeight;
   if (!W || !H) return;   // hidden or minimized: draw when it has a size again
