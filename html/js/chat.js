@@ -21,9 +21,10 @@ async function api(path, body) {
 }
 
 chatEl.addEventListener('click', e => {
-  if (!e.target.classList.contains('copy')) return;
-  const pre = e.target.closest('.code').querySelector('pre');
-  navigator.clipboard.writeText(pre.textContent).then(() => { e.target.textContent = 'Copied'; setTimeout(() => e.target.textContent = 'Copy', 1200); });
+  const btn = e.target.closest('.copy');
+  if (!btn) return;
+  const pre = btn.closest('.code').querySelector('pre');
+  navigator.clipboard.writeText(pre.textContent).then(() => { btn.innerHTML = CHECK_ICON; btn.classList.add('done'); setTimeout(() => { btn.innerHTML = COPY_ICON; btn.classList.remove('done'); }, 1200); });
 });
 
 function scrollDown() { if (glide) glide.delete(chatEl); chatEl.scrollTop = chatEl.scrollHeight; }
@@ -41,15 +42,24 @@ const SICON = {
   rag: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>'
 };
 let lastTps = '', ctxUsed = 0;
-function statusItem(icon, text, lower) {
-  return '<span class="item' + (lower ? ' lower' : '') + '"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+// Generation speed shown in the status bar: the average over the last 25 replies, recalculated after each one.
+const tpsHistory = [];
+function recordTps(tps) {
+  if (!(tps > 0)) return;
+  tpsHistory.push(tps); if (tpsHistory.length > 25) tpsHistory.shift();
+  lastTps = (tpsHistory.reduce((a, b) => a + b, 0) / tpsHistory.length).toFixed(1);
+}
+function statusItem(icon, text, lower, cls) {
+  return '<span class="item' + (lower ? ' lower' : '') + (cls ? ' ' + cls : '') + '"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
          'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + SICON[icon] + '</svg>' + esc(text) + '</span>';
 }
 function drawStatus(offline) {
   const items = [];
   if (offline) items.push(statusItem('model', 'server offline'));
   else {
-    items.push(statusItem('folder', info.folder ? info.folderName : 'no folder'));
+    // Folder: green = connected, orange = access on but nothing connected, grey = folder access off.
+    if (info.folderAccess === false) items.push(statusItem('folder', 'folder access off', false, 'off'));
+    else items.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'warn'));
     const g = info.git;
     if (g) {
       items.push(statusItem('branch', (g.branch || 'detached') + (g.commit ? ' @' + g.commit : '')));
@@ -57,13 +67,43 @@ function drawStatus(offline) {
     }
     if (info.rules && info.rules.length) items.push(statusItem('rules', 'rules: ' + info.rules.join(' + ')));
     const rg = info.rag;
-    if (rg && rg.indexing) items.push(statusItem('rag', 'indexing: ' + rg.indexing));
-    else if (rg && rg.chunks) items.push(statusItem('rag', 'rag' + (rg.enabled ? '' : ' off') + ': ' + rg.files + ' docs · ' + rg.chunks + ' chunks' + (rg.vectors ? ' · hybrid' : '')));
-    if (lastTps) items.push(statusItem('speed', lastTps + ' t/s'));
-    if (info.file) items.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens'));
-    if (info.vram) items.push(statusItem('gpu', 'vram ' + (info.vram.used / 1073741824).toFixed(1) + '/' + (info.vram.budget / 1073741824).toFixed(1) + ' GB'));
-    items.push(statusItem('model', info.loading ? 'loading ' + info.loading.replace(/\.gguf$/i, '') + '…' : (info.file ? info.file.replace(/\.gguf$/i, '') : 'no model'), true));
-    if (info.backend) items.push(statusItem('gpu', info.backend.replace(/^GPU: /, ''), true));
+    // RAG: grey = off, green = indexed with vectors (hybrid search working), orange = indexing, not indexed,
+    // keyword-only (no embedding model) or an error.
+    if (rg) {
+      const docs = rg.chunks ? rg.files + ' docs · ' + rg.chunks + ' chunks' : 'not indexed';
+      if (!rg.enabled) items.push(statusItem('rag', 'rag off' + (rg.chunks ? ': ' + docs : ''), false, 'off'));
+      else if (rg.indexing) items.push(statusItem('rag', 'indexing: ' + rg.indexing, false, 'warn'));
+      else if (rg.error) items.push(statusItem('rag', 'rag error: ' + rg.error, false, 'warn'));
+      else if (!rg.chunks) items.push(statusItem('rag', 'rag: not indexed (/index)', false, 'warn'));
+      else if (!rg.vectors) items.push(statusItem('rag', 'rag: ' + docs + ' · keywords only', false, 'warn'));
+      else items.push(statusItem('rag', 'rag: ' + docs + ' · hybrid', false, 'ok'));
+    }
+    if (lastTps) items.push(statusItem('speed', lastTps + ' t/s avg', false, 'ok'));
+    // Context: green < 70% used, gold < 90%, red beyond.
+    if (info.file) {
+      const f = info.context ? ctxUsed / info.context : 0;
+      items.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens', false, f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad'));
+    }
+    // VRAM: gold while a model loads, green when loaded, red after a failed load, grey with no model.
+    const gb = b => (b / 1073741824).toFixed(1);
+    if (info.loading) items.push(statusItem('gpu', 'vram: loading…', false, 'gold'));
+    else if (info.loadError) items.push(statusItem('gpu', 'vram: load failed', false, 'bad'));
+    else if (info.vram) items.push(statusItem('gpu', 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB', false, 'ok'));
+    else items.push(statusItem('gpu', 'vram: no model', false, 'off'));
+    // Model: gold while loading, green when loaded in memory, red after a failed load, grey with none.
+    const mname = f => f.replace(/\.gguf$/i, '');
+    if (info.loading) items.push(statusItem('model', 'loading ' + mname(info.loading) + '…', true, 'gold'));
+    else if (info.file) items.push(statusItem('model', mname(info.file), true, 'ok'));
+    else if (info.loadError) items.push(statusItem('model', 'model error', true, 'bad'));
+    else items.push(statusItem('model', 'no model', true, 'off'));
+    // Video card: gold while detecting (model loading), green when the model runs on it, red on an error or an
+    // unwanted CPU fallback, grey when idle or in CPU mode.
+    const onGpu = info.backend && /^GPU/.test(info.backend);
+    if (info.loading && info.device !== 'cpu') items.push(statusItem('gpu', 'detecting gpu…', true, 'gold'));
+    else if (info.loadError && info.device !== 'cpu') items.push(statusItem('gpu', 'gpu error', true, 'bad'));
+    else if (onGpu) items.push(statusItem('gpu', info.backend.replace(/^GPU: /, ''), true, 'ok'));
+    else if (info.backend && info.device !== 'cpu') items.push(statusItem('gpu', 'gpu unavailable: on cpu', true, 'bad'));
+    else items.push(statusItem('gpu', info.device === 'cpu' ? 'cpu mode' : 'gpu idle', true, 'off'));
   }
   $('status').innerHTML = items.join('<span class="sep">|</span>');
 }
@@ -325,11 +365,12 @@ async function openSettings() {
   $('modelList').innerHTML = models.map(m => '<label class="' + (m.name === info.file ? 'current' : '') + '"><input type="radio" name="model" value="' + esc(m.name) + '"' +
     (m.name === info.file ? ' checked' : '') + '><span class="name">' + esc(m.name.replace(/\.gguf$/i, '').toLowerCase()) + '</span><span class="mb">' + (m.mb / 1024).toFixed(1) + ' GB</span></label>').join('') ||
     '<div class="note">No .gguf files in the models folder.</div>';
-  let b = { browser: 'edge', installed: true };
+  let b = { browser: 'auto', installed: true };
   try { b = await api('/api/browser'); } catch (e) {}
   openedBrowser = b.browser;
-  radios('sBrowser', [{ value: 'edge', label: 'Edge' }, { value: 'chrome', label: 'Chrome' }], b.browser);
-  $('browserNote').textContent = (b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
+  radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
+  $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
+    : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
   $('settingsModal').classList.add('show');
   $('settingsBody').scrollTop = 0;
 }
@@ -414,6 +455,29 @@ async function send() {
   // A timer (not requestAnimationFrame) so the reveal keeps going when the window is hidden or minimized.
   raf = setInterval(tick, 16);
 
+  // Code requests: drafting and checking stream into a collapsed box (closed unless the user opens it); only the
+  // checked reply appears below it.
+  const work = {
+    box: null, log: null, label: null, text: '',
+    ensure() {
+      if (this.box) return;
+      this.box = document.createElement('details'); this.box.className = 'work';
+      this.box.innerHTML = '<summary><span class="spin"></span><span class="lbl"></span></summary><pre class="worklog"></pre>';
+      this.label = this.box.querySelector('.lbl'); this.log = this.box.querySelector('.worklog');
+      turn.insertBefore(this.box, out);
+    },
+    add(t) { this.ensure(); this.text += t; this.log.textContent = this.text; if (this.box.open) this.log.scrollTop = this.log.scrollHeight; },
+    phase(p) {
+      this.ensure();
+      const labels = { generating: 'Generating code…', checking: 'Checking code…', good: 'Looks good!', fixed: 'Fixed and checked', kept: 'Checked' };
+      this.label.textContent = labels[p] || p;
+      const busy = p === 'generating' || p === 'checking';
+      this.box.classList.toggle('busy', busy);
+      this.box.classList.toggle('ok', p === 'good' || p === 'fixed' || p === 'kept');
+      if (p === 'generating' && this.text) this.add('\n\n— next step —\n\n');
+    }
+  };
+
   history.push({ role: 'user', content: text });
   const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history] : [...history];
   controller = new AbortController();
@@ -434,6 +498,8 @@ async function send() {
         if (!line.startsWith('data: ')) continue;
         const ev = JSON.parse(line.slice(6));
         if (ev.t !== undefined) { if (!firstAt) firstAt = performance.now(); reply += ev.t; }
+        else if (ev.w !== undefined) { if (!firstAt) firstAt = performance.now(); work.add(ev.w); }
+        else if (ev.phase) work.phase(ev.phase);
         else if (ev.rag) {
           const d = document.createElement('div'); d.className = 'sources';
           // One short line (files used); click it to see the exact sections that were added.
@@ -459,7 +525,7 @@ async function send() {
           const secs = ((performance.now() - t0) / 1000).toFixed(1), ttft = firstAt ? ((firstAt - t0) / 1000).toFixed(2) : '-';
           m.innerHTML = '<b>' + ev.tps + ' t/s</b> · ' + ev.tokens + ' tokens · ' + secs + ' s · first token ' + ttft + ' s';
           turn.appendChild(m);
-          lastTps = ev.tps; if (ev.ctx_used !== undefined) ctxUsed = ev.ctx_used; drawStatus(false);
+          recordTps(ev.tps); if (ev.ctx_used !== undefined) ctxUsed = ev.ctx_used; drawStatus(false);
         }
       }
     }

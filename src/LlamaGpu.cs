@@ -499,12 +499,17 @@ namespace Phoenix
             float[] logits = null;
             int i = start, end = start + count;
             if (UsePrefill && PrefillSupported())
-                while (end - i >= 8)
+            {
+                // Chunk buffers (~100 MB) are allocated on first use; with no VRAM left the model prefills token by token.
+                try { EnsurePrefill(); }
+                catch (Exception) { _prefillState = -1; }
+                while (_prefillState > 0 && end - i >= 8)
                 {
                     int T = Math.Min(PrefillChunk, end - i);
                     logits = PrefillChunkRun(tokens, i, T);
                     i += T;
                 }
+            }
             for (; i < end; i++) logits = Forward(tokens[i], i);
             return logits;
         }
@@ -532,7 +537,7 @@ namespace Phoenix
 
         void EnsurePrefill()
         {
-            if (_kMmQ4K != null) return;
+            if (_pUp != null) return;   // the last allocation: everything before it exists
             _kMmQ4K = Kernel(KernelsPrefillK.MatMulK(GgmlType.Q4_K, MmTok), 4, 4, "pf matmul q4_K");
             _kMmQ6K = Kernel(KernelsPrefillK.MatMulK(GgmlType.Q6_K, MmTok), 4, 4, "pf matmul q6_K");
             _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");

@@ -6,7 +6,7 @@
 - No recaps of what the diff already shows. Mention only what failed, was skipped, or needs a decision.
 
 ## Project
-PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by PowerShell 5.1) that runs GGUF models on the GPU through Vulkan compute, with zero third-party dependencies. UI: `html\chat.html` (+ `html\css`, `html\js`) served by the loopback server and shown in an Edge (or Chrome) app window. No menus: everything is a `/command` (`/help`). Full plan: `.claude/Local LLM Studio (C#) — Development Plan.md`.
+PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by PowerShell 5.1) that runs GGUF models on the GPU through Vulkan compute, with zero third-party dependencies. UI: `html\chat.html` (+ `html\css`, `html\js`) served by the loopback server and shown in a Chrome (or Edge) app window. No menus: everything is a `/command` (`/help`). Full plan: `.claude/Local LLM Studio (C#) — Development Plan.md`.
 
 ## Hardware
 - Dev machine: AMD Radeon RX 6700 XT (RDNA2, 12 GB VRAM), Vulkan 1.4 loader at `C:\Windows\System32\vulkan-1.dll`. Has run a 9B model.
@@ -15,7 +15,7 @@ PhoenixAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by Powe
 ## Hard rules (never break)
 - **No third-party code.** No NuGet `PackageReference`, `Reference`, or `NativeLibrary` entries. BCL only.
 - **No network.** No `System.Net`, `HttpClient`, `Socket`, `WebRequest`, or `Process.Start`. No downloads, telemetry, or URL fields in the UI. Models load from local paths only.
-- **Single exception (approved 2026-10-15): loopback chat server.** Only `src/WebServer.cs` may use `System.Net.HttpListener` (bound to `http://127.0.0.1` only, never outgoing) and `Process.Start` (only to open `msedge.exe --app`, or `chrome.exe --app` when Edge is missing or `/browser chrome` is set; approved 2026-10-15). It rejects foreign `Host`/`Origin` headers and serves only files inside `html\`. `run.ps1` enforces this; `html\` may not reference external URLs.
+- **Single exception (approved 2026-10-15): loopback chat server.** Only `src/WebServer.cs` may use `System.Net.HttpListener` (bound to `http://127.0.0.1` only, never outgoing) and `Process.Start` (only to open `chrome.exe --app` or `msedge.exe --app`: settings Auto (default: Chrome, else Edge), Chrome or Edge; approved 2026-10-15). It rejects foreign `Host`/`Origin` headers and serves only files inside `html\`. `run.ps1` enforces this; `html\` may not reference external URLs.
 - **Model never runs a shell** (`src/ShellGuard.cs`, enforced by `run.ps1`): its only tools are list/read/write; command tags are refused; no executable files.
 - **Project jail:** `/folder` only opens subfolders of `%USERPROFILE%\Phoenix_Projects` (created at startup, hard-coded), given as `/project/sub`; absolute paths, `..` and junctions are refused.
 - **API server (approved 2026-10-16):** `src/WebServer.OpenAi.cs` serves the OpenAI-compatible API on `http://localhost:1234/v1` (LM Studio paths: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), loopback only, no process starts, no tools/RAG.

@@ -266,6 +266,18 @@ namespace Phoenix
         static readonly Regex CommandTag = new Regex("<(" + string.Join("|", ShellGuard.CommandTags) + ")\\b[^>]*>", RegexOptions.IgnoreCase);
         static readonly Regex ListTag = new Regex("<list(?:\\s+path\\s*=\\s*\"([^\"]*)\")?\\s*/?>", RegexOptions.IgnoreCase);
 
+        // End index of the first complete <read .../> or <list .../> tag in a reply, or -1.
+        public static int QueryTagEnd(string reply)
+        {
+            Match r = ReadTag.Match(reply), l = ListTag.Match(reply);
+            Match m = r.Success && (!l.Success || r.Index < l.Index) ? r : l;
+            if (!m.Success) return -1;
+            // A <write> that opens before it holds file content (which may mention tags): leave it alone.
+            int w = reply.IndexOf("<write", StringComparison.OrdinalIgnoreCase);
+            if (w >= 0 && w < m.Index && reply.IndexOf("</write>", w, StringComparison.OrdinalIgnoreCase) < 0) return -1;
+            return m.Index + m.Length;
+        }
+
         // Carries out every tag in a model reply, in order of appearance.
         public List<Action> Execute(string reply)
         {
@@ -318,7 +330,8 @@ namespace Phoenix
 
         public string ToolInstructions()
         {
-            return "You can work with files in the user's project folder. To act, put these tags in your reply:\n" +
+            return "You can work with files in the user's project folder (" + Display + "); these tags only reach that folder. " +
+                   "To act, put these tags in your reply:\n" +
                    "<list path=\".\"/>   list a folder\n" +
                    "<read path=\"relative/path\"/>   read a file\n" +
                    "<write path=\"relative/path\">\nfull file content\n</write>   create or replace a file (always write the complete file)\n" +

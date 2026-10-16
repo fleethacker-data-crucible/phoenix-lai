@@ -22,6 +22,7 @@ namespace Phoenix
         ChatEngine _engine;
         Workspace _workspace;
         string _loading;
+        string _loadError;   // last model load / GPU failure, shown red in the status bar; cleared by the next good load
         public int ContextLength = 4096;
         public readonly int Port;
         public readonly ChatLog Log;
@@ -89,11 +90,88 @@ namespace Phoenix
             string profile = Path.Combine(AppDataDir, used + "-profile");
             Directory.CreateDirectory(profile);
             if (log != null) log.Log.Text("opening " + used + (used != pref ? " (" + pref + " is not installed)" : "") + ": " + exe);
+            // Opens WindowWidth x WindowHeight, centered horizontally, WindowTop px below the top of the primary screen
+            // (the browser's remembered placement is cleared first, or it would win over these flags).
+            ForgetWindowPlacement(profile);
+            DisableMiniMenu(profile);
+            System.Drawing.Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            int w = Math.Min(WindowWidth, wa.Width), h = Math.Min(WindowHeight, Math.Max(400, wa.Height - WindowTop));
+            int x = wa.Left + (wa.Width - w) / 2, y = wa.Top + Math.Min(WindowTop, Math.Max(0, wa.Height - h));
             ProcessStartInfo psi = new ProcessStartInfo(exe,
-                "--app=" + url + " --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check --window-size=1100,800");
+                "--app=" + url + " --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check" +
+                " --window-size=" + w + "," + h + " --window-position=" + x + "," + y);
             psi.UseShellExecute = false;
             ShellGuard.CheckLaunch(psi.FileName, psi.Arguments);
             return Process.Start(psi);
+        }
+
+        const int WindowWidth = 1300, WindowHeight = 800, WindowTop = 100;
+
+        // Removes the browser's saved app-window placement ("app_window_placement" in the profile's Preferences) so the
+        // window opens where the launch flags say. Preferences is JSON; the key's object is cut out by brace matching.
+        static void ForgetWindowPlacement(string profile)
+        {
+            try
+            {
+                string prefs = Path.Combine(profile, "Default", "Preferences");
+                if (!File.Exists(prefs)) return;
+                string t = File.ReadAllText(prefs, Encoding.UTF8);
+                const string key = "\"app_window_placement\":";
+                int k = t.IndexOf(key, StringComparison.Ordinal);
+                if (k < 0) return;
+                int i = k + key.Length;
+                if (i >= t.Length || t[i] != '{') return;
+                int depth = 0, end = -1;
+                bool inStr = false;
+                for (int j = i; j < t.Length; j++)
+                {
+                    char c = t[j];
+                    if (inStr) { if (c == '\\') j++; else if (c == '"') inStr = false; continue; }
+                    if (c == '"') inStr = true;
+                    else if (c == '{') depth++;
+                    else if (c == '}' && --depth == 0) { end = j + 1; break; }
+                }
+                if (end < 0) return;
+                // Drop the member and one adjoining comma.
+                int from = k, to = end;
+                if (to < t.Length && t[to] == ',') to++;
+                else if (from > 0 && t[from - 1] == ',') from--;
+                File.WriteAllText(prefs, t.Substring(0, from) + t.Substring(to), new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        // Turns off Edge's text-selection mini menu for the app's private profile only (the user's own Edge is untouched):
+        // the profile preference edge_quick_search.show_mini_menu = false, written before every launch because Edge
+        // rewrites Preferences while it runs. Chrome ignores the key.
+        static void DisableMiniMenu(string profile)
+        {
+            try
+            {
+                string dir = Path.Combine(profile, "Default"), prefs = Path.Combine(dir, "Preferences");
+                Directory.CreateDirectory(dir);
+                string t = File.Exists(prefs) ? File.ReadAllText(prefs, Encoding.UTF8).Trim() : "";
+                if (t.Length < 2 || t[0] != '{') t = "{}";
+                const string section = "\"edge_quick_search\":{", key = "\"show_mini_menu\":";
+                int sx = t.IndexOf(section, StringComparison.Ordinal);
+                if (sx < 0)
+                    t = "{" + section + key + "false}" + (t.Length > 2 ? "," : "") + t.Substring(1);
+                else
+                {
+                    int body = sx + section.Length;
+                    int close = t.IndexOf('}', body);   // the section holds only scalars and flat lists before its close
+                    int kx = t.IndexOf(key, body, StringComparison.Ordinal);
+                    if (kx >= 0 && (close < 0 || kx < close))
+                    {
+                        int v = kx + key.Length, ve = v;
+                        while (ve < t.Length && char.IsLetter(t[ve])) ve++;
+                        t = t.Substring(0, v) + "false" + t.Substring(ve);
+                    }
+                    else t = t.Substring(0, body) + key + "false" + (t[body] == '}' ? "" : ",") + t.Substring(body);
+                }
+                File.WriteAllText(prefs, t, new UTF8Encoding(false));
+            }
+            catch { }
         }
 
         static int RunServer(string root, string modelPath, int ctx)
@@ -140,8 +218,8 @@ namespace Phoenix
                     }
                     else
                     {
-                        MessageBox.Show("Neither Microsoft Edge nor Google Chrome was found. Open this address in any browser:\n\n" + server.Url +
-                            "\n\nClose this box to stop the server.", "PhoenixAI");
+                        MessageBox.Show("There is no compatible browsers installed. Please get either Chrome or Edge installed before this program can run.",
+                            "PhoenixAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
                 lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
@@ -164,16 +242,17 @@ namespace Phoenix
         static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio");
         static string BrowserFile { get { return Path.Combine(AppDataDir, "browser.txt"); } }
 
-        // "edge" (default) or "chrome", as chosen with /browser.
+        // "auto" (default: Chrome, else Edge), "chrome" or "edge", as chosen in /settings.
         static string PreferredBrowser()
         {
-            try { string b = File.ReadAllText(BrowserFile).Trim().ToLowerInvariant(); if (b == "chrome" || b == "edge") return b; } catch { }
-            return "edge";
+            try { string b = File.ReadAllText(BrowserFile).Trim().ToLowerInvariant(); if (b == "chrome" || b == "edge" || b == "auto") return b; } catch { }
+            return "auto";
         }
 
-        // Path of the preferred browser, or of the other one if the preferred is not installed; null if neither is.
+        // Path of the preferred browser (auto = Chrome), or of the other one if it is not installed; null if neither is.
         static string FindBrowser(string preferred, out string used)
         {
+            if (preferred == "auto") preferred = "chrome";
             string other = preferred == "chrome" ? "edge" : "chrome";
             string exe = BrowserPath(preferred);
             used = preferred;
@@ -246,8 +325,9 @@ namespace Phoenix
         {
             string pref = PreferredBrowser(), used;
             FindBrowser(pref, out used);
-            return "{\"browser\":" + Json.Quote(pref) + ",\"installed\":" + (used == pref ? "true" : "false") +
-                   ",\"fallback\":" + (used != null && used != pref ? Json.Quote(used) : "null") + "}";
+            bool ok = pref == "auto" ? used != null : used == pref;
+            return "{\"browser\":" + Json.Quote(pref) + ",\"used\":" + (used != null ? Json.Quote(used) : "null") + ",\"installed\":" + (ok ? "true" : "false") +
+                   ",\"fallback\":" + (used != null && !ok ? Json.Quote(used) : "null") + "}";
         }
 
         // Loads a model from models\ (by file name) or a full local path; replaces the current one.
@@ -264,6 +344,7 @@ namespace Phoenix
                 try
                 {
                     if (_engine != null) { _engine.Dispose(); _engine = null; }
+                    _loadError = null;
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
@@ -281,6 +362,7 @@ namespace Phoenix
                 }
                 catch (Exception ex)
                 {
+                    _loadError = ex.Message;
                     Log.Text("model load FAILED: " + ex.Message);
                     Log.Json("model_load_error", "\"file\":" + Json.Quote(_loading) + ",\"error\":" + Json.Quote(ex.Message));
                     throw;
@@ -462,7 +544,7 @@ namespace Phoenix
                 if (post)
                 {
                     string b = Json.GetStr(body, "browser", "").Trim().ToLowerInvariant();
-                    if (b != "edge" && b != "chrome") throw new ArgumentException("Browser must be edge or chrome.");
+                    if (b != "edge" && b != "chrome" && b != "auto") throw new ArgumentException("Browser must be auto, chrome or edge.");
                     Directory.CreateDirectory(AppDataDir);
                     File.WriteAllText(BrowserFile, b);
                     Log.Text("browser set to " + b);
@@ -568,6 +650,7 @@ namespace Phoenix
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + ContextLength +
                    ",\"loading\":" + (_loading != null ? Json.Quote(_loading) : "null") +
+                   ",\"loadError\":" + (_loadError != null ? Json.Quote(_loadError) : "null") +
                    ",\"folder\":" + (w != null ? Json.Quote(w.Display) : "null") +
                    ",\"projectsRoot\":" + Json.Quote(Workspace.ProjectsRoot) +
                    ",\"folderName\":" + (w != null ? Json.Quote(Path.GetFileName(w.Root)) : "null") +
@@ -750,6 +833,9 @@ namespace Phoenix
                         }
                     }
 
+                    // Code requests: every step is generated out of sight ("w" events, a collapsed box in the UI), the code is
+                    // then checked against the syntax reference, and only the checked (or corrected) reply is shown.
+                    bool codeMode = Rag.IsCodeRequest(lastUser);
                     StringBuilder append = new StringBuilder("[");
                     GenerationStats st = null;
                     int totalTokens = 0;
@@ -760,12 +846,19 @@ namespace Phoenix
                         StringBuilder reply = new StringBuilder();
                         Stopwatch stepWatch = Stopwatch.StartNew();
                         double ttft = -1;
+                        int toolEnd = -1;   // end of the first <read>/<list> tag: the model must wait for its result
+                        if (codeMode) write("{\"phase\":\"generating\"}");
+                        string stream = codeMode ? "w" : "t";
                         st = _engine.Generate(msgs, s, maxTokens, delegate(string piece)
                         {
                             if (ttft < 0) ttft = stepWatch.Elapsed.TotalSeconds;
+                            if (toolEnd >= 0) return;
                             reply.Append(piece);
-                            write("{\"t\":" + Json.Quote(piece) + "}");
-                        }, delegate { return gone; });
+                            write("{\"" + stream + "\":" + Json.Quote(piece) + "}");
+                            if (ws != null) toolEnd = Workspace.QueryTagEnd(reply.ToString());
+                        }, delegate { return gone || toolEnd >= 0; });
+                        // Anything after a read/list tag would be invented results; the real ones follow in the next step.
+                        if (toolEnd >= 0 && toolEnd < reply.Length) reply.Length = toolEnd;
                         double stepSec = stepWatch.Elapsed.TotalSeconds;
                         Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
                             "#{0} ASSISTANT step {1}: first token {2} ms | prompt {3} new + {4} cached tokens in {5} ms ({6:F1} tok/s) | " +
@@ -781,6 +874,17 @@ namespace Phoenix
                         totalTokens += st.GeneratedTokens;
                         genSeconds += st.GenerateSeconds;
                         string replyText = reply.ToString();
+                        if (codeMode && !gone)
+                        {
+                            if (HasCode(replyText))
+                            {
+                                GenerationStats cst;
+                                replyText = CheckCode(rid, msgs, replyText, s, maxTokens, write, delegate { return gone; }, out cst);
+                                totalTokens += cst.GeneratedTokens;
+                                genSeconds += cst.GenerateSeconds;
+                            }
+                            write("{\"t\":" + Json.Quote(replyText) + "}");   // the visible reply
+                        }
                         msgs.Add(new ChatMessage("assistant", replyText));
                         if (append.Length > 1) append.Append(',');
                         append.Append("{\"role\":\"assistant\",\"content\":").Append(Json.Quote(replyText)).Append('}');
@@ -832,12 +936,84 @@ namespace Phoenix
                         string file = _engine.ModelPath;
                         try { _engine.Dispose(); } catch { }
                         _engine = null;
+                        _loadError = "GPU reset by the driver";
                         Log.Text("#" + rid + " GPU device lost; reloading " + Path.GetFileName(file));
                         ThreadPool.QueueUserWorkItem(delegate { try { LoadModel(file); } catch { } });
                     }
                 }
             }
             try { outS.Close(); } catch { }
+        }
+
+        static bool HasCode(string reply)
+        {
+            return reply.IndexOf("```", StringComparison.Ordinal) >= 0 || reply.IndexOf("<write", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // Second pass for a reply with code: the model checks its own code against the syntax-reference sections that
+        // match the code and answers LOOKS GOOD or with the corrected reply. Streams "w" events and the phase.
+        // Returns the reply to show: the draft when it passed (or the check went off the rails), else the correction.
+        string CheckCode(int rid, List<ChatMessage> msgs, string draft, SamplerSettings s, int maxTokens, TextCallback write, CancelCheck cancel, out GenerationStats cst)
+        {
+            write("{\"phase\":\"checking\"}");
+            Stopwatch sw = Stopwatch.StartNew();
+            // Certain problems (missing usings) are fixed in code first; the model then judges the fixed version.
+            List<string> lint = new List<string>();
+            draft = CodeLint.FixUsings(draft, lint);
+            if (lint.Count > 0) write("{\"w\":" + Json.Quote("\n\n— fixed: " + string.Join(", ", lint.ToArray()) + " —") + "}");
+            string code = CodeOf(draft);
+            List<RagHit> hits = Rag.Enabled ? Rag.Search(code, null) : new List<RagHit>();
+            StringBuilder p = new StringBuilder("Check the code in your reply above for mistakes: syntax errors, wrong type or method names, " +
+                "wrong API usage, and logic errors. Do not change anything that is already correct, and do not use <read> or <list>.");
+            if (hits.Count > 0)
+            {
+                p.Append(" Compare it with these sections from my syntax reference where they apply:\n\n");
+                for (int i = 0; i < hits.Count; i++)
+                    p.Append('[').Append(i + 1).Append("] ").Append(hits[i].Title).Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
+            }
+            else p.Append("\n\n");
+            p.Append("If everything is correct, reply with exactly: LOOKS GOOD\n" +
+                     "Otherwise reply with your complete corrected reply in the same format (including any <write> tags) and nothing else.");
+            List<ChatMessage> check = new List<ChatMessage>(msgs);
+            check.Add(new ChatMessage("assistant", draft));
+            check.Add(new ChatMessage("user", p.ToString()));
+            write("{\"w\":" + Json.Quote("\n\n— checking against " + hits.Count + " reference section" + (hits.Count == 1 ? "" : "s") + " —\n\n") + "}");
+            SamplerSettings cs = s.Clone();
+            cs.Temperature = Math.Min(cs.Temperature, 0.2f);
+            StringBuilder verdict = new StringBuilder();
+            cst = _engine.Generate(check, cs, maxTokens, delegate(string piece)
+            {
+                verdict.Append(piece);
+                write("{\"w\":" + Json.Quote(piece) + "}");
+            }, cancel);
+            string v = verdict.ToString().Trim();
+            bool good = v.TrimStart('*', '"', '`', ' ').StartsWith("LOOKS GOOD", StringComparison.OrdinalIgnoreCase);
+            // A correction must keep the reply's form: code, and no file queries (those would start another round).
+            bool fixedIt = !good && HasCode(v) && Workspace.QueryTagEnd(v) < 0;
+            if (fixedIt) v = CodeLint.FixUsings(v, new List<string>());   // the rewrite may drop usings again
+            write("{\"phase\":\"" + (good ? (lint.Count > 0 ? "fixed" : "good") : fixedIt ? "fixed" : "kept") + "\"}");
+            Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "#{0} CHECK {1} in {2} ms ({3} reference sections, lint {4}; prompt {5} new + {6} cached tokens, {7} generated){8}",
+                rid, good ? "looks good" : fixedIt ? "corrected the code" : "unclear verdict, kept the draft", ChatLog.Ms(sw.Elapsed.TotalSeconds),
+                hits.Count, lint.Count == 0 ? "clean" : string.Join(" ", lint.ToArray()), cst.PromptTokens, cst.ReusedTokens, cst.GeneratedTokens, good ? "" : "\n" + v));
+            return fixedIt ? v : draft;
+        }
+
+        static bool IsCSharp(string reply, string code)
+        {
+            return System.Text.RegularExpressions.Regex.IsMatch(reply, @"```\s*(csharp|cs|c#)\b|<write\s+path\s*=\s*""[^""]*\.cs""", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
+                   System.Text.RegularExpressions.Regex.IsMatch(code, @"\busing System\b|\bnamespace\s+\w|\bpublic\s+(static\s+)?(class|void|async)\b");
+        }
+
+        // The code in a reply (fenced blocks and <write> bodies) as the reference-search query.
+        static string CodeOf(string reply)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(reply,
+                "```[^\\n]*\\n([\\s\\S]*?)```|<write[^>]*>([\\s\\S]*?)</write>"))
+                sb.Append(m.Groups[1].Success && m.Groups[1].Length > 0 ? m.Groups[1].Value : m.Groups[2].Value).Append('\n');
+            string code = sb.Length > 0 ? sb.ToString() : reply;
+            return code.Length > 3000 ? code.Substring(0, 3000) : code;
         }
 
         static Dictionary<string, object> ReadJson(HttpListenerRequest req)

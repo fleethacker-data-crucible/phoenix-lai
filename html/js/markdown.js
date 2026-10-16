@@ -1,7 +1,10 @@
 // Reply rendering for the chat page: code fences, markdown and tool tags. No dependencies, no network.
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-// Reply rendering: code fences become boxes with a copy button; <write>/<read>/<list> tags are highlighted.
+const COPY_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
+const CHECK_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+
+// Reply rendering: code fences become boxes with a language badge, VS Code colors and a copy icon; <write>/<read>/<list> tags are highlighted.
 function render(text, streaming) {
   // File writes become code boxes labelled with the path (inner code fences dropped).
   text = text.replace(/<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)(<\/write>|$)/g, (m, p, c) =>
@@ -11,11 +14,19 @@ function render(text, streaming) {
   parts.forEach((part, i) => {
     if (i % 2 === 1) {
       const nl = part.indexOf('\n');
-      const lang = nl >= 0 ? part.slice(0, nl).trim() : '';
-      const code = nl >= 0 ? part.slice(nl + 1) : part;
+      const tag = nl >= 0 ? part.slice(0, nl).trim() : '';
+      const code = (nl >= 0 ? part.slice(nl + 1) : part).replace(/\n$/, '');
       const done = i < parts.length - 1 || !streaming;
-      html += '<div class="code"><header><span>' + esc(lang || 'code') + '</span>' +
-              (done ? '<button class="copy">Copy</button>' : '') + '</header><pre>' + esc(code.replace(/\n$/, '')) + '</pre></div>';
+      // "✎ path" marks a file the model wrote: the path goes right, the language comes from its extension.
+      const file = tag.startsWith('✎') ? tag.slice(1).trim() : '';
+      const lang = detectLang(file ? '' : tag, code, file);
+      const info = LANGS[lang];
+      const badge = info ? '<span class="badge" style="background:' + info.color + ';color:' + badgeText(info.color) + '">' + esc(info.name) + '</span>'
+                         : '<span class="badge plain">' + esc(tag && !file ? tag : 'code') + '</span>';
+      html += '<div class="code"><header>' + badge + '<span class="grow"></span>' +
+              (file ? '<span class="file">' + esc(file) + '</span>' : '') +
+              (done ? '<button class="copy" title="Copy">' + COPY_ICON + '</button>' : '') +
+              '</header><pre>' + highlight(code, lang) + '</pre></div>';
     } else {
       html += markdown(part);
     }
