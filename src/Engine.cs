@@ -21,9 +21,11 @@ namespace Phoenix
         int MinReuse(int fed);
         // Instant Recall: save the KV cache of positions pos0.. and put it back at another position (re-rotated).
         bool CanRecall { get; }
-        // Feeds tokens[start .. start+count) (count <= 16) and returns the logits after each of them, or null when the
-        // model has no batched path (speculative verification).
-        float[][] PrefillAll(IList<int> tokens, int start, int count);
+        // Speculative verification: feeds tokens[start .. start+count) (count <= 16) through the layers in one batched pass
+        // (false when the model has no batched path); RowLogits(i) then computes the logits after token i on demand, so
+        // the output layer (566 MB per row on Gemma's 262K vocabulary) is only paid for rows that are actually checked.
+        bool PrefillRows(IList<int> tokens, int start, int count);
+        float[] RowLogits(int row);
         KvSnapshot CaptureKv(int pos0, int count);
         void SpliceKv(KvSnapshot s, int dst0);
     }
@@ -360,27 +362,43 @@ namespace Phoenix
             }
         }
 
+        public List<int> LastReplyIds = new List<int>();   // tokens of the last reply as sampled
+
         // ---- prompt-lookup speculation ----
         public static bool Speculate = true;
+        public static int GuessKeepTenths = 7;   // keep guessing while at least this many tenths of guesses are kept
         const int DraftMax = 8, NgramMax = 4, NgramMin = 3;
 
-        // The tokens that followed the most recent earlier occurrence of the context's last n tokens (n = 4 .. 2).
-        static List<int> Draft(List<int> h, int room)
+        // A draft answer written during a typing pause (WebServer answer-while-typing): searched for guesses after the
+        // context itself.
+        public List<int> Hint;
+
+        // The tokens that followed the most recent earlier occurrence of the context's last n tokens (n = 4 .. 3), in the
+        // context, else in the typing-pause draft.
+        List<int> Draft(List<int> h, int room)
+        {
+            List<int> d = DraftFrom(h, h, room);
+            if (d == null && Hint != null && Hint.Count > 0) d = DraftFrom(h, Hint, room);
+            return d;
+        }
+
+        static List<int> DraftFrom(List<int> h, List<int> src, int room)
         {
             int n0 = h.Count;
             if (room < 2 || n0 < NgramMin + 1) return null;
             for (int n = NgramMax; n >= NgramMin; n--)
             {
                 if (n0 <= n) continue;
-                int stop = Math.Max(0, n0 - 32768);
-                for (int i = n0 - n - 1; i >= stop; i--)
+                bool self = ReferenceEquals(src, h);
+                int last = self ? n0 - n - 1 : src.Count - n, stop = Math.Max(0, last - 32768);
+                for (int i = last; i >= stop; i--)
                 {
                     bool same = true;
-                    for (int j = 0; j < n && same; j++) same = h[i + j] == h[n0 - n + j];
+                    for (int j = 0; j < n && same; j++) same = src[i + j] == h[n0 - n + j];
                     if (!same) continue;
-                    int from = i + n, take = Math.Min(Math.Min(DraftMax, room - 1), n0 - from);
+                    int from = i + n, take = Math.Min(Math.Min(DraftMax, room - 1), (self ? n0 : src.Count) - from);
                     if (take <= 0) continue;
-                    return h.GetRange(from, take);
+                    return src.GetRange(from, take);
                 }
             }
             return null;
@@ -613,20 +631,20 @@ namespace Phoenix
                 // position gives that very token, so the output distribution is exactly that of plain decoding.
                 // adaptive: after a few guesses, keep guessing only while at least 70% of them are kept (a wasted batched
                 // check costs more than the decode steps it was meant to save; measured on Gemma 12B at 41% kept)
-                bool guessing = Speculate && (st.DraftedTokens < 24 || st.AcceptedTokens * 10 >= st.DraftedTokens * 7);
+                bool guessing = Speculate && (st.DraftedTokens < 24 || st.AcceptedTokens * 10 >= st.DraftedTokens * GuessKeepTenths);
                 List<int> draft = guessing ? Draft(history, maxTokens - st.GeneratedTokens) : null;
-                float[][] all = null;
+                bool batched = false;
                 if (draft != null && draft.Count > 0)
                 {
                     List<int> run = new List<int>(); run.Add(next); run.AddRange(draft);
                     List<int> seq = new List<int>(_fed); seq.AddRange(run);
-                    if (_fed.Count + run.Count < ContextLength) all = _model.PrefillAll(seq, _fed.Count, run.Count);
-                    if (all != null)
+                    if (_fed.Count + run.Count < ContextLength) batched = _model.PrefillRows(seq, _fed.Count, run.Count);
+                    if (batched)
                     {
                         _fed.Add(next);
                         st.DraftedTokens += draft.Count;
                         int accepted = 0;
-                        logits = all[0];
+                        logits = _model.RowLogits(0);
                         bool stop = false;
                         for (int di = 0; di < draft.Count; di++)
                         {
@@ -648,7 +666,7 @@ namespace Phoenix
                             st.GeneratedTokens++;
                             history.Add(tok);
                             _fed.Add(tok);
-                            logits = all[di + 1];
+                            logits = _model.RowLogits(di + 1);
                             if (st.GeneratedTokens >= maxTokens) { st.StopReason = "max tokens"; stop = true; break; }
                             if (cancel != null && cancel()) { st.StopReason = "stopped"; stop = true; break; }
                         }
@@ -662,6 +680,7 @@ namespace Phoenix
             }
             st.GenerateSeconds = sw.Elapsed.TotalSeconds;
             RememberReply(emitted.ToString(), sampledIds);
+            LastReplyIds = sampledIds;
             return st;
         }
 

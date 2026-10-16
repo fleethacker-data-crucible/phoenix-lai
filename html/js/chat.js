@@ -4,7 +4,7 @@ const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine'), prom
 const mirror = $('mirror');
 let history = [], info = {}, models = [], controller = null, filesAt = '.';
 const DEFAULT_SYSTEM = 'You are a concise, expert assistant running locally.';
-const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048, system: DEFAULT_SYSTEM };
+const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048, system: DEFAULT_SYSTEM, pretype: true, typeEffect: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
 
@@ -439,6 +439,8 @@ async function openSettings() {
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
   $('loadNote').textContent = '';
   lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner };
+  $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
+  $('sTypeEffect').checked = settings.typeEffect !== false; $('sTypeEffect').onchange = () => { settings.typeEffect = $('sTypeEffect').checked; save(); };
   $('sBanner').checked = !!settings.banner;
   $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
@@ -540,20 +542,32 @@ async function send() {
   // shown character (also inside code boxes); it is solid while characters are appearing and blinks when paused.
   let reply = '', shown = 0, lastGrow = 0, raf = 0;
   const MARK = '\u0001';
+  // Typing effect (settings.typeEffect): now and then a neighbouring key is "hit" by mistake and backspaced a moment
+  // later. Purely on screen: the text received and kept is never changed. Only while the reveal is nearly caught up,
+  // so it never slows a fast stream noticeably.
+  let typo = null;   // { ch, left: ticks shown before the backspace }
+  const NEAR = { a: 'sq', b: 'vn', c: 'xv', d: 'sf', e: 'wr', f: 'dg', g: 'fh', h: 'gj', i: 'uo', j: 'hk', k: 'jl', l: 'k', m: 'n', n: 'bm', o: 'ip', p: 'o', q: 'w', r: 'et', s: 'ad', t: 'ry', u: 'yi', v: 'cb', w: 'qe', x: 'zc', y: 'tu', z: 'x' };
   const draw = typing => {
-    const html = render(reply.slice(0, shown) + MARK, true);
+    const html = render(reply.slice(0, shown) + (typo ? typo.ch : '') + MARK, true);
     out.innerHTML = html.replace(MARK, '<span class="caret' + (typing ? ' typing' : '') + '"></span>');
     scrollDown();
   };
   const tick = () => {
+    if (typo) { if (--typo.left <= 0) typo = null; lastGrow = performance.now(); draw(true); return; }
     const backlog = reply.length - shown;
     if (backlog > 0) {
+      const next = reply[shown];
+      if (settings.typeEffect && backlog < 24 && /[a-z]/.test(next) && Math.random() < 0.012) {
+        const n = NEAR[next] || 'e';
+        typo = { ch: n[Math.floor(Math.random() * n.length)], left: 7 };   // ~110 ms visible, then backspaced
+        draw(true); return;
+      }
       shown += Math.max(1, Math.ceil(backlog / 6));   // catch up smoothly when tokens arrive in bursts
       lastGrow = performance.now();
       draw(true);
     } else if (performance.now() - lastGrow > 450) draw(false);
   };
-  const flush = () => { shown = reply.length; };
+  const flush = () => { shown = reply.length; typo = null; };
   const paint = () => {};
   draw(false);
   // A timer (not requestAnimationFrame) so the reveal keeps going when the window is hidden or minimized.
@@ -652,7 +666,8 @@ async function send() {
     const m = document.createElement('div'); m.className = 'meta'; m.textContent = e.name === 'AbortError' ? 'stopped' : 'error: ' + e.message; turn.appendChild(m);
   }
   // Let the typewriter finish revealing what arrived, then render the final text without a cursor.
-  while (shown < reply.length && !document.hidden && !(controller && controller.signal.aborted)) await new Promise(r => setTimeout(r, 16));
+  while ((shown < reply.length || typo) && !document.hidden && !(controller && controller.signal.aborted)) await new Promise(r => setTimeout(r, 16));
+  typo = null;
   clearInterval(raf);
   work.done();   // never leave a spinner running (stopped or failed requests included)
   out.innerHTML = render(reply, false);
@@ -739,7 +754,22 @@ function unquoteFolderPath() {
   const m = input.value.match(/^(\/folder\s+)"([^"]*)"(\s*)$/i);
   if (m) { input.value = m[1] + m[2]; autosize(); }
 }
-input.addEventListener('input', () => { unquoteFolderPath(); cmdSel = 0; cmdNavigated = false; drawCmds(); });
+input.addEventListener('input', () => { unquoteFolderPath(); cmdSel = 0; cmdNavigated = false; drawCmds(); schedulePretype(); });
+
+// Answer while typing: after a 1.2 s pause the half-written message goes to the server, which reads it into the model and
+// drafts an answer while you finish (settings.pretype). Sending stops the draft at once; the reply is never affected.
+let pretypeTimer = 0, lastPretyped = '';
+function schedulePretype() {
+  clearTimeout(pretypeTimer);
+  if (!settings.pretype) return;
+  pretypeTimer = setTimeout(() => {
+    const text = input.value.trim();
+    if (controller || !info.file || text.length < 8 || text.startsWith('/') || text === lastPretyped) return;
+    lastPretyped = text;
+    const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history, { role: 'user', content: text }] : [...history, { role: 'user', content: text }];
+    fetch('/api/pretype', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }) }).catch(() => {});
+  }, 1200);
+}
 input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) cmdBox.classList.remove('show'); }, 100));
 input.addEventListener('keydown', e => {
   if (cmdBox.classList.contains('show')) {

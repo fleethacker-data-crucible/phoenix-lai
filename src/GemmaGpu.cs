@@ -636,36 +636,43 @@ namespace Phoenix
 
                 if ((il + 1) % LayersPerSubmit == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
-            // The last token's hidden state goes to the decode buffer for the output head (every row's for PrefillAll).
-            int first = _allRows ? 0 : T - 1;
-            for (int r = first; r < T; r++)
-            {
-                GpuBuffer lg = _allRows ? _lgAll[r] : _logits;
-                _gpu.Record(_kCopyRange, new GpuBuffer[] { _pX, _x }, new uint[] { (uint)d, (uint)(r * d), 0 }, Groups(d, Kernels.Wg), 1, 1);
-                Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, C.NEmbd, _output);
-                MatVec(_output, lg, true);
-                if (C.Softcap > 0)
-                    _gpu.Record(_kSoftcap, new GpuBuffer[] { lg }, new uint[] { (uint)C.NVocab, Bits(C.Softcap) }, Groups(C.NVocab, Kernels.Wg), 1, 1);
-            }
+            if (_allRows) { _gpu.SubmitAndWait(); return null; }   // PrefillRows: rows' logits on demand (RowLogits)
+            RecordHead(T - 1);
             _gpu.SubmitAndWait();
-            if (_allRows) return null;
             _logits.Download(_logitsHost, 0);
             return _logitsHost;
         }
 
+        // Output head for row r of the last batched pass (its hidden state is still in _pX).
+        void RecordHead(int r)
+        {
+            int d = C.NEmbd;
+            _gpu.Record(_kCopyRange, new GpuBuffer[] { _pX, _x }, new uint[] { (uint)d, (uint)(r * d), 0 }, Groups(d, Kernels.Wg), 1, 1);
+            Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, C.NEmbd, _output);
+            MatVec(_output, _logits, true);
+            if (C.Softcap > 0)
+                _gpu.Record(_kSoftcap, new GpuBuffer[] { _logits }, new uint[] { (uint)C.NVocab, Bits(C.Softcap) }, Groups(C.NVocab, Kernels.Wg), 1, 1);
+        }
+
         // ---- speculative verification ----
         bool _allRows;
-        GpuBuffer[] _lgAll;
 
-        public float[][] PrefillAll(IList<int> tokens, int start, int count)
+        public bool PrefillRows(IList<int> tokens, int start, int count)
         {
-            if (!UsePrefill || !_prefillOk || count < 1 || count > 16 || start + count > MaxCtx) return null;
-            if (_lgAll == null) { _lgAll = new GpuBuffer[16]; for (int i = 0; i < 16; i++) _lgAll[i] = Buf((ulong)C.NVocab * 4, BufferKind.Readback); }
+            if (!UsePrefill || !_prefillOk || count < 1 || count > 16 || start + count > MaxCtx) return false;
             _allRows = true;
             try { PrefillChunkRun(tokens, start, count); }
             finally { _allRows = false; }
-            float[][] r = new float[count][];
-            for (int i = 0; i < count; i++) { r[i] = new float[C.NVocab]; _lgAll[i].Download(r[i], 0); }
+            return true;
+        }
+
+        public float[] RowLogits(int row)
+        {
+            _gpu.Begin();
+            RecordHead(row);
+            _gpu.SubmitAndWait();
+            float[] r = new float[C.NVocab];
+            _logits.Download(r, 0);
             return r;
         }
 
