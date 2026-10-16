@@ -37,6 +37,9 @@ namespace Phoenix
             return b;
         }
 
+        // Shared array / buffer element helpers for uvec4 (16-byte) loads.
+        public uint Comp(uint vec, uint index) { return S.Value(Op.CompositeExtract, U32, vec, index); }
+
         public void Push(int count)
         {
             uint[] m = new uint[count];
@@ -154,6 +157,16 @@ namespace Phoenix
             S.Capability(Spv.CapabilityDotProductInput4x8BitPacked);
             S.Extension("SPV_KHR_integer_dot_product");
             return S.Value(signedB ? Op.SDot : Op.SUDot, I32, a, b, Spv.PackedVectorFormat4x8Bit);
+        }
+
+        // acc + dot(a, b) for packed signed 4 x 8-bit vectors (OpSDotAccSat; saturation never triggers for these sizes):
+        // one instruction instead of a dot and an add.
+        public uint Dot4Acc(uint a, uint b, uint acc)
+        {
+            S.Capability(Spv.CapabilityDotProduct);
+            S.Capability(Spv.CapabilityDotProductInput4x8BitPacked);
+            S.Extension("SPV_KHR_integer_dot_product");
+            return S.Value(Op.SDotAccSat, I32, a, b, acc, Spv.PackedVectorFormat4x8Bit);
         }
 
         // Signed byte k (0..3) of a packed word, sign-extended.

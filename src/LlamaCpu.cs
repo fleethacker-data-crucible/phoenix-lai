@@ -183,6 +183,7 @@ namespace Phoenix
         public int ContextLength { get { return MaxCtx; } }
         public int VocabSize { get { return NVocab; } }
         public void Reset() { }
+        public int MinReuse(int fed) { return 0; }
         public void Dispose() { }
 
         // Greedy generation: feeds the prompt, then appends argmax tokens.

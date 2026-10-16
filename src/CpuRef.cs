@@ -73,6 +73,8 @@ namespace Phoenix
             switch (w.Type)
             {
                 case GgmlType.Q8_0: MatVecQ8_0(w, x, xq, y); return;
+                case GgmlType.Q4_0: MatVecQ4_0(w, x, xq, y); return;
+                case GgmlType.BF16: MatVecBF16(w, x, y); return;
                 case GgmlType.F32: MatVecF32(w, x, y); return;
                 case GgmlType.F16: MatVecF16(w, x, y); return;
                 case GgmlType.Q3_K:
@@ -162,6 +164,12 @@ namespace Phoenix
                     return;
                 case GgmlType.F16:
                     for (int j = 0; j < w.Cols; j++) dst[j] = Half.ToFloat(((ushort*)row)[j]);
+                    return;
+                case GgmlType.BF16:
+                    for (int j = 0; j < w.Cols; j++) dst[j] = Bf16ToFloat(((ushort*)row)[j]);
+                    return;
+                case GgmlType.Q4_0:
+                    DequantizeRowQ4_0(row, w.Cols, dst);
                     return;
             }
             if (w.Type == GgmlType.Q3_K || w.Type == GgmlType.Q4_K || w.Type == GgmlType.Q5_K || w.Type == GgmlType.Q6_K)

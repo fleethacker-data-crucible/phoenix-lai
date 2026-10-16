@@ -1,9 +1,9 @@
 const $ = id => document.getElementById(id);
 const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
 const mirror = $('mirror');
-let history = [], info = {}, models = [], controller = null, browseAt = '', filesAt = '.';
-const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048,
-                   system: 'You are a concise, expert assistant running locally.' };
+let history = [], info = {}, models = [], controller = null, filesAt = '.';
+const DEFAULT_SYSTEM = 'You are a concise, expert assistant running locally.';
+const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048, system: DEFAULT_SYSTEM };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
 
@@ -26,7 +26,7 @@ chatEl.addEventListener('click', e => {
   navigator.clipboard.writeText(pre.textContent).then(() => { e.target.textContent = 'Copied'; setTimeout(() => e.target.textContent = 'Copy', 1200); });
 });
 
-function scrollDown() { chatEl.scrollTop = chatEl.scrollHeight; }
+function scrollDown() { if (glide) glide.delete(chatEl); chatEl.scrollTop = chatEl.scrollHeight; }
 
 // Status line: one centered row of icon + value items separated by "|". Empty items are left out.
 const SICON = {
@@ -58,22 +58,35 @@ function drawStatus(offline) {
     if (info.rules && info.rules.length) items.push(statusItem('rules', 'rules: ' + info.rules.join(' + ')));
     const rg = info.rag;
     if (rg && rg.indexing) items.push(statusItem('rag', 'indexing: ' + rg.indexing));
-    else if (rg && rg.chunks) items.push(statusItem('rag', 'rag' + (rg.enabled ? '' : ' off') + ': ' + rg.files + ' docs · ' + rg.chunks + ' chunks'));
+    else if (rg && rg.chunks) items.push(statusItem('rag', 'rag' + (rg.enabled ? '' : ' off') + ': ' + rg.files + ' docs · ' + rg.chunks + ' chunks' + (rg.vectors ? ' · hybrid' : '')));
     if (lastTps) items.push(statusItem('speed', lastTps + ' t/s'));
     if (info.file) items.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens'));
+    if (info.vram) items.push(statusItem('gpu', 'vram ' + (info.vram.used / 1073741824).toFixed(1) + '/' + (info.vram.budget / 1073741824).toFixed(1) + ' GB'));
     items.push(statusItem('model', info.loading ? 'loading ' + info.loading.replace(/\.gguf$/i, '') + '…' : (info.file ? info.file.replace(/\.gguf$/i, '') : 'no model'), true));
     if (info.backend) items.push(statusItem('gpu', info.backend.replace(/^GPU: /, ''), true));
   }
   $('status').innerHTML = items.join('<span class="sep">|</span>');
 }
+// This window's id: the server counts open windows by it, so launching the app again reuses this window.
+const PAGE_ID = Math.random().toString(36).slice(2, 12);
+window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye?page=' + PAGE_ID));
+// Launched again while this window is open: come to the front (and flash the title in case Windows blocks that).
+function bringForward() {
+  window.focus();
+  if (document.hasFocus()) { input.focus(); return; }
+  const title = document.title; let n = 0;
+  const t = setInterval(() => { document.title = n++ % 2 ? title : '● ' + title; if (n > 9 || document.hasFocus()) { clearInterval(t); document.title = title; } }, 500);
+}
 async function refresh() {
-  try { info = await api('/api/info'); } catch (e) { drawStatus(true); return; }
+  try { info = await api('/api/info?page=' + PAGE_ID); } catch (e) { drawStatus(true); return; }
+  if (info.focus) bringForward();
   drawStatus(false);
   const ver = $('ver'); if (ver && info.version) ver.textContent = 'v.' + info.version;
+  if (info.version) document.title = 'PhoenixAI v.' + info.version;
   if (info.loading || (info.rag && info.rag.indexing)) setTimeout(refresh, 700);
 }
 // Keep the status line (git changes, model state) current.
-setInterval(() => { if (!controller) refresh(); }, 4000);
+setInterval(() => { if (!controller) refresh(); }, 2000);
 
 // ---------- folder panel (above the prompt) ----------
 async function showFiles(path) {
@@ -100,64 +113,18 @@ $('files').addEventListener('click', e => {
   else { input.value += (input.value && !/\s$/.test(input.value) ? ' ' : '') + item.dataset.file; placePrompt(); input.focus(); autosize(); }
 });
 
-// ---------- folder browser window ----------
-async function browse(path) {
-  browseAt = path || '';
-  let r;
-  try { r = await api('/api/browse?path=' + encodeURIComponent(browseAt)); } catch (e) { $('dirList').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; return; }
-  $('browsePath').textContent = r.path || 'This PC';
-  let html = r.parent !== null ? '<div data-path="' + esc(r.parent) + '">' + ICON_DIR + '..</div>' : '';
-  for (const d of r.dirs) html += '<div data-path="' + esc(d.path) + '">' + ICON_DIR + esc(d.name) + '</div>';
-  $('dirList').innerHTML = html || '<div style="cursor:default;color:var(--dim)">(no subfolders)</div>';
-  $('connect').disabled = !r.path;
-}
-$('dirList').addEventListener('click', e => { const d = e.target.closest('[data-path]'); if (d) browse(d.dataset.path); });
-function openFolder() { $('folderModal').classList.add('show'); browse(info.folder || browseAt); }
-$('closeFolder').addEventListener('click', () => $('folderModal').classList.remove('show'));
-$('connect').addEventListener('click', async () => {
-  try { info = await api('/api/folder', { path: browseAt }); } catch (e) { alert(e.message); return; }
-  $('folderModal').classList.remove('show');
+// ---------- folder ----------
+// /folder <path> connects a folder (paste it, quotes are fine); /folder off disconnects; /folder alone shows the current one.
+async function setFolder(arg) {
+  if (!arg) { systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder off to disconnect)' : 'No folder connected. Use /folder <path>, e.g. /folder D:\\Projects\\MyApp'); return; }
+  const path = arg.trim().replace(/^["']|["']$/g, '');
+  const off = /^(off|none|disconnect)$/i.test(path);
+  try { info = await api('/api/folder', { path: off ? '' : path }); } catch (e) { systemLine('Could not connect: ' + e.message); return; }
   await refresh();
-  systemLine('Connected ' + info.folderName + ' — the model can now list, read and write files there.');
-});
-$('disconnect').addEventListener('click', async () => {
-  await api('/api/folder', { path: '' });
-  $('folderModal').classList.remove('show');
-  await refresh(); $('files').classList.remove('show');
-  systemLine('Folder disconnected.');
-});
-
-// ---------- settings window ----------
-async function openSettings() {
-  $('sContext').value = info.context || 4096; $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
-  $('sTopK').value = settings.top_k; $('sTopP').value = settings.top_p; $('sRepeat').value = settings.repeat_penalty; $('sSystem').value = settings.system;
-  $('loadNote').textContent = '';
-  try { models = (await api('/api/models')).models; } catch (e) { models = []; }
-  $('modelList').innerHTML = models.map(m => '<label class="' + (m.name === info.file ? 'current' : '') + '"><input type="radio" name="model" value="' + esc(m.name) + '"' +
-    (m.name === info.file ? ' checked' : '') + '>' + esc(m.name.replace(/\.gguf$/i, '').toLowerCase()) + '<span class="mb">' + (m.mb / 1024).toFixed(1) + ' GB</span></label>').join('') ||
-    '<div class="note">No .gguf files in the models folder.</div>';
-  $('settingsModal').classList.add('show');
+  if (off) { $('files').classList.remove('show'); systemLine('Folder disconnected.'); }
+  else { systemLine('Connected ' + info.folder + ' — the model can now list, read and write files there.'); loadRecentFolders(); }
 }
 
-$('closeSettings').addEventListener('click', () => $('settingsModal').classList.remove('show'));
-$('applySettings').addEventListener('click', async () => {
-  settings.max_tokens = +$('sMax').value; settings.temperature = +$('sTemp').value; settings.top_k = +$('sTopK').value;
-  settings.top_p = +$('sTopP').value; settings.repeat_penalty = +$('sRepeat').value; settings.system = $('sSystem').value; save();
-  const sel = document.querySelector('input[name=model]:checked');
-  const ctx = +$('sContext').value;
-  if (sel && (sel.value !== info.file || ctx !== info.context)) {
-    $('applySettings').disabled = true; $('loadNote').textContent = 'Loading ' + sel.value + '…';
-    setTimeout(refresh, 300);
-    const t0 = performance.now();
-    try { info = await api('/api/load', { name: sel.value, context: ctx }); }
-    catch (e) { $('loadNote').textContent = 'Could not load: ' + e.message; $('applySettings').disabled = false; return; }
-    $('applySettings').disabled = false;
-    systemLine('Loaded ' + info.model + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + info.context + '.');
-    history = []; ctxUsed = 0;
-  }
-  $('settingsModal').classList.remove('show');
-  refresh();
-});
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
 function welcome() {
   promptLine.remove();
@@ -172,39 +139,9 @@ function welcome() {
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); scrollDown(); }
 function newChat() { if (controller) controller.abort(); history = []; ctxUsed = 0; if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
 welcome();
-$('newChat').addEventListener('click', newChat);
 
-// Right-click menu.
-const menu = $('ctxmenu');
-document.addEventListener('contextmenu', e => {
-  if (e.target.closest('.modal')) return;               // normal menu inside windows
-  e.preventDefault();
-  const sel = window.getSelection().toString();
-  menu.querySelector('[data-cmd=copy]').classList.toggle('off', !sel);
-  menu.querySelector('[data-cmd=stop]').classList.toggle('off', !controller);
-  menu.querySelector('[data-cmd=files]').classList.toggle('off', !info.folder);
-  menu.querySelector('[data-cmd=files]').textContent = $('files').classList.contains('show') ? 'Hide files' : 'Files';
-  menu.classList.add('show');
-  const w = menu.offsetWidth, h = menu.offsetHeight;
-  menu.style.left = Math.min(e.clientX, innerWidth - w - 6) + 'px';
-  menu.style.top = Math.min(e.clientY, innerHeight - h - 6) + 'px';
-  menu.dataset.sel = sel;
-});
-document.addEventListener('mousedown', e => { if (!e.target.closest('#ctxmenu')) menu.classList.remove('show'); });
-menu.addEventListener('click', e => {
-  const item = e.target.closest('[data-cmd]');
-  if (!item) return;
-  menu.classList.remove('show');
-  switch (item.dataset.cmd) {
-    case 'new': newChat(); break;
-    case 'settings': openSettings(); break;
-    case 'folder': openFolder(); break;
-    case 'files': if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); break;
-    case 'copy': navigator.clipboard.writeText(menu.dataset.sel || ''); break;
-    case 'stop': if (controller) controller.abort(); break;
-    case 'index': reindex(); break;
-  }
-});
+// No context menus at all (custom or the browser's): everything is a /command. Copy with Ctrl+C, stop with Esc.
+document.addEventListener('contextmenu', e => e.preventDefault());
 // Clicking anywhere in the conversation (without selecting text) puts you back at the prompt.
 chatEl.addEventListener('mouseup', e => {
   if (e.button !== 0 || window.getSelection().toString() || e.target.closest('button, a, .code')) return;
@@ -213,7 +150,7 @@ chatEl.addEventListener('mouseup', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (controller) controller.abort();
-    menu.classList.remove('show');
+    if ($('settingsModal').classList.contains('show')) closeSettings(false);
     document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show'));
   }
 });
@@ -234,34 +171,180 @@ async function reindex() {
   systemLine(r.error ? 'Index failed: ' + r.error : 'Docs index ready: ' + r.last + '.');
   refresh();
 }
-// Slash commands, A-Z. `use` is the full syntax shown by /help; commands without `run` take arguments.
+// Slash commands, A-Z. `use` is the full syntax shown by /help; `arg` = takes arguments (completion leaves a space).
+// Model, sampling, docs and browser settings live in the /settings window.
+// The last 10 connected folders (kept by the server), offered when you type "/folder ".
+let recentFolders = [];
+async function loadRecentFolders() { try { recentFolders = (await api('/api/recent-folders')).folders; } catch (e) {} }
+loadRecentFolders();
+// Chat models in the models folder (embedding models, used for docs search, can't chat). Refreshed when needed.
+let chatModels = [];
+async function loadModelList() { try { chatModels = (await api('/api/models')).models.filter(m => !/embed/i.test(m.name)); } catch (e) {} }
+loadModelList();
+async function loadModel(name, ctx) {
+  systemLine('Loading ' + name + (ctx ? ', context ' + ctx : '') + '…');
+  setTimeout(refresh, 300);
+  const t0 = performance.now();
+  try { info = await api('/api/load', { name, context: ctx || info.context }); }
+  catch (e) { systemLine('Could not load: ' + e.message); return false; }
+  systemLine('Loaded ' + info.model + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + info.context + '.');
+  history = []; ctxUsed = 0; refresh();
+  return true;
+}
 const COMMANDS = [
   { name: '/files', use: '/files', desc: 'show or hide the connected folder\'s files', run: () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); } },
-  { name: '/folder', use: '/folder', desc: 'connect a project folder the model can read and write', run: () => openFolder() },
-  { name: '/help', use: '/help', desc: 'list all commands with full syntax', run: () => systemLine('Commands:\n' + COMMANDS.map(c => '  ' + c.use + '  —  ' + c.desc).join('\n')) },
+  { name: '/folder', use: '/folder <path>', desc: 'connect a project folder: paste its path, or pick a recent one (off = disconnect)', arg: true,
+    options: () => recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })),
+    run: arg => setFolder(arg) },
+  { name: '/help', use: '/help', desc: 'list all commands with full syntax', run: () => systemLine('Commands:\n' + COMMANDS.map(c => '  ' + c.use + '  —  ' + c.desc).join('\n') + '\nKeys: Esc stops a reply · Ctrl+C copies selected text.') },
   { name: '/index', use: '/index', desc: 'reindex new and changed files in docs\\', run: () => reindex() },
+  { name: '/model', use: '/model <name>', desc: 'switch model (Tab completes names from the models folder)', arg: true,
+    options: () => chatModels.map(m => ({ value: m.name.replace(/\.gguf$/i, ''), desc: (m.mb / 1024).toFixed(1) + ' GB' + (m.name === info.file ? ' · loaded' : '') })),
+    run: async arg => {
+      await loadModelList();
+      if (!arg) { systemLine('Models: ' + chatModels.map(m => m.name.replace(/\.gguf$/i, '') + (m.name === info.file ? ' (loaded)' : '')).join(', ')); return; }
+      const a = arg.toLowerCase().replace(/\.gguf$/, '');
+      const m = chatModels.find(x => x.name.toLowerCase().replace(/\.gguf$/, '') === a) || chatModels.find(x => x.name.toLowerCase().includes(a));
+      if (!m) { systemLine('No model matches "' + arg + '". Type /model and a space to see the list.'); return; }
+      if (m.name === info.file) { systemLine(m.name.replace(/\.gguf$/i, '') + ' is already loaded.'); return; }
+      await loadModel(m.name);
+    } },
   { name: '/new', use: '/new', desc: 'start a new chat', run: () => newChat() },
-  { name: '/rag', use: '/rag [on | off | <words>]', desc: 'docs status, turn retrieval on/off, or preview a search',
-    subs: [{ name: 'on', desc: 'add matching docs to every message' }, { name: 'off', desc: 'stop adding docs to messages' },
-           { name: '<words>', desc: 'preview which docs a message would retrieve' }] },
-  { name: '/settings', use: '/settings', desc: 'model, context and sampling settings', run: () => openSettings() }
+  { name: '/rag', use: '/rag [on | off | <words>]', desc: 'docs status, turn retrieval on/off, or preview a search', arg: true,
+    subs: [{ name: 'on' }, { name: 'off' }, { name: '<words>' }],
+    run: async arg => {
+      if (arg === 'on' || arg === 'off') { await api('/api/rag', { enabled: arg === 'on' }); systemLine('Docs retrieval ' + arg + '.'); refresh(); return; }
+      if (!arg) { const r = (await api('/api/info')).rag; systemLine('Docs: ' + r.files + ' files, ' + r.chunks + ' chunks, retrieval ' + (r.enabled ? 'on' : 'off') + '. Commands: /index, /rag on|off, /rag <words>.'); return; }
+      const r = await api('/api/rag?q=' + encodeURIComponent(arg));
+      systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
+    } },
+  { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
+    run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
+  { name: '/vram', use: '/vram', desc: 'video memory: what PhoenixAI uses, what is free, and which programs use the most',
+    run: async () => {
+      const r = await api('/api/vram'), v = (await api('/api/info')).vram, gb = b => (b / 1073741824).toFixed(2) + ' GB';
+      let txt = v ? 'PhoenixAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
+      if (r.processes) txt += 'Largest users of video memory:\n' + r.processes.map(p => '  ' + gb(p.bytes).padStart(9) + '  ' + p.name).join('\n');
+      else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
+      systemLine(txt);
+    } },
+  { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() }
 ];
 
 async function command(text) {
-  const [cmd, ...rest] = text.split(/\s+/), arg = rest.join(' ');
+  const sp = text.search(/\s/), cmd = sp < 0 ? text : text.slice(0, sp), arg = sp < 0 ? '' : text.slice(sp).trim();
   if (cmd === '/reindex') { await reindex(); return true; }
   const c = COMMANDS.find(c => c.name === cmd.toLowerCase());
   if (!c) { systemLine('Unknown command ' + cmd + ' — type /help for the list.'); return true; }
-  if (c.run) { await c.run(); return true; }
-  if (cmd === '/rag') {
-    if (arg === 'on' || arg === 'off') { await api('/api/rag', { enabled: arg === 'on' }); systemLine('Docs retrieval ' + arg + '.'); refresh(); return true; }
-    if (!arg) { const r = (await api('/api/info')).rag; systemLine('Docs: ' + r.files + ' files, ' + r.chunks + ' chunks, retrieval ' + (r.enabled ? 'on' : 'off') + '. Commands: /index, /rag on|off, /rag <words>.'); return true; }
-    const r = await api('/api/rag?q=' + encodeURIComponent(arg));
-    systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
-    return true;
-  }
-  return false;
+  await c.run(arg);
+  return true;
 }
+
+// ---------- settings window ----------
+// Chat fonts: the ones bundled in htmlonts plus fonts every Windows install has (nothing is downloaded).
+const FONTS = [
+  { id: 'syne', label: 'Syne Mono', css: '"Syne Mono", Consolas, monospace' },
+  { id: 'exo', label: 'Exo 2', css: '"Exo 2", "Segoe UI", sans-serif' },
+  { id: 'inter', label: 'Inter', css: 'Inter, "Segoe UI", sans-serif' },
+  { id: 'roboto', label: 'Roboto', css: 'Roboto, "Segoe UI", sans-serif' },
+  { id: 'consolas', label: 'Consolas', css: 'Consolas, monospace' },
+  { id: 'cascadia', label: 'Cascadia Mono', css: '"Cascadia Mono", Consolas, monospace' },
+  { id: 'segoe', label: 'Segoe UI', css: '"Segoe UI", sans-serif' }
+];
+const SIZES = [12, 13, 14, 15, 16, 18];
+// Accent colours: gold (the default) first. Picking one recolours everything that was gold.
+const ACCENTS = ['#e8c15a', '#f08a3c', '#e85a5a', '#e85aa8', '#a77bf0', '#5a8ce8', '#4fc3e8', '#3cc8a0', '#7ad35a', '#d8d8e0'];
+function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function applyLook() {
+  document.documentElement.classList.toggle('no-banner', !settings.banner);   // banner kept, off by default
+  const acc = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : ACCENTS[0], rgb = hexRgb(acc), root = document.documentElement.style;
+  root.setProperty('--accent', acc);
+  root.setProperty('--accent-rgb', rgb.join(','));
+  root.setProperty('--accent-2', 'rgb(' + rgb.map(c => Math.round(c + (255 - c) * 0.4)).join(',') + ')');   // lighter shade
+  if (typeof drawBackground === 'function' && bgReady) drawBackground();   // the glows use the accent too
+  const f = FONTS.find(x => x.id === settings.font) || FONTS[0];
+  document.documentElement.style.setProperty('--chat', f.css);
+  document.documentElement.style.setProperty('--chat-size', (settings.size || 14) + 'px');
+  alignChevrons();
+}
+// A row of radio buttons; `value` is the selected one, `onPick` previews a choice immediately.
+function radios(box, items, value, onPick) {
+  $(box).innerHTML = items.map(it => '<label' + (it.style ? ' style="' + it.style + '"' : '') + '><input type="radio" name="' + box + '" value="' + esc(it.value) + '"' +
+    (String(it.value) === String(value) ? ' checked' : '') + '><span>' + esc(it.label) + '</span></label>').join('');
+  $(box).onchange = e => onPick && onPick(e.target.value);
+}
+function drawSwatches() {
+  const cur = (settings.accent || ACCENTS[0]).toLowerCase(), custom = ACCENTS.indexOf(cur) < 0;
+  $('sAccent').innerHTML = ACCENTS.map((c, i) => '<button type="button" title="' + (i ? c : 'gold (default)') + '" data-c="' + c + '" style="--c:' + c + '"' + (c === cur ? ' class="on"' : '') + '></button>').join('') +
+    '<label class="custom' + (custom ? ' on' : '') + '" title="Pick any colour"><input type="color" id="sAccentPick" value="' + cur + '"></label><span class="hex">' + cur + '</span>';
+  $('sAccentPick').addEventListener('input', e => { settings.accent = e.target.value.toLowerCase(); applyLook(); $('sAccent').querySelector('.hex').textContent = settings.accent;
+    $('sAccent').querySelectorAll('button').forEach(b => b.classList.remove('on')); $('sAccent').querySelector('.custom').classList.add('on'); });
+}
+$('sAccent').addEventListener('click', e => { const b = e.target.closest('button[data-c]'); if (!b) return; settings.accent = b.dataset.c; applyLook(); drawSwatches(); });
+const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
+let openedBrowser = 'edge', lookBefore = null;
+async function openSettings() {
+  $('sContext').value = info.context || 4096; $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
+  $('sTopK').value = settings.top_k; $('sTopP').value = settings.top_p; $('sRepeat').value = settings.repeat_penalty; $('sSystem').value = settings.system;
+  const rg = info.rag || {};
+  $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : ' · docs\\ is empty';
+  $('loadNote').textContent = '';
+  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner };
+  $('sBanner').checked = !!settings.banner;
+  $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
+  radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
+  radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
+  drawSwatches();
+  // Chat models only: embedding models (used for docs search) can't hold a conversation.
+  try { models = (await api('/api/models')).models.filter(m => !/embed/i.test(m.name)); } catch (e) { models = []; }
+  $('modelList').innerHTML = models.map(m => '<label class="' + (m.name === info.file ? 'current' : '') + '"><input type="radio" name="model" value="' + esc(m.name) + '"' +
+    (m.name === info.file ? ' checked' : '') + '><span class="name">' + esc(m.name.replace(/\.gguf$/i, '').toLowerCase()) + '</span><span class="mb">' + (m.mb / 1024).toFixed(1) + ' GB</span></label>').join('') ||
+    '<div class="note">No .gguf files in the models folder.</div>';
+  let b = { browser: 'edge', installed: true };
+  try { b = await api('/api/browser'); } catch (e) {}
+  openedBrowser = b.browser;
+  radios('sBrowser', [{ value: 'edge', label: 'Edge' }, { value: 'chrome', label: 'Chrome' }], b.browser);
+  $('browserNote').textContent = (b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
+  $('settingsModal').classList.add('show');
+  $('settingsBody').scrollTop = 0;
+}
+function closeSettings(applied) {
+  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; applyLook(); }   // undo the preview
+  $('settingsModal').classList.remove('show');
+}
+// Category bar: jump to a section.
+$('settingsCats').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const body = $('settingsBody'), sec = $(b.dataset.cat);
+  body.scrollTo({ top: sec.offsetTop - body.offsetTop - 4, behavior: 'smooth' });
+});
+// Highlight the category being looked at.
+$('settingsBody').addEventListener('scroll', () => {
+  const body = $('settingsBody'); let cur = 'catModel';
+  for (const sec of body.querySelectorAll('section')) if (sec.offsetTop - body.offsetTop - 30 <= body.scrollTop) cur = sec.id;
+  if (body.scrollTop + body.clientHeight >= body.scrollHeight - 4) cur = 'catApp';
+  document.querySelectorAll('#settingsCats button').forEach(x => x.classList.toggle('on', x.dataset.cat === cur));
+});
+$('closeSettings').addEventListener('click', () => closeSettings(false));
+$('settingsNew').addEventListener('click', () => { closeSettings(true); save(); newChat(); });
+$('applySettings').addEventListener('click', async () => {
+  const num = (id, min, max, isInt) => { const v = Number($(id).value); return isFinite(v) && v >= min && v <= max && (!isInt || v === Math.floor(v)) ? v : null; };
+  const vals = { max_tokens: num('sMax', 1, 32768, true), temperature: num('sTemp', 0, 2), top_k: num('sTopK', 0, 1000, true), top_p: num('sTopP', 0, 1), repeat_penalty: num('sRepeat', 1, 2) };
+  const ctx = num('sContext', 256, 131072, true);
+  const bad = Object.keys(vals).filter(k => vals[k] === null).concat(ctx === null ? ['context'] : []);
+  if (bad.length) { $('loadNote').textContent = 'Check: ' + bad.join(', ').replace(/_/g, ' ') + '.'; return; }
+  Object.assign(settings, vals); settings.system = $('sSystem').value; save();
+  try {
+    await api('/api/rag', { enabled: $('sRag').checked });
+    const br = radioValue('sBrowser');
+    if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
+  } catch (e) {}
+  const sel = document.querySelector('input[name=model]:checked');
+  closeSettings(true);
+  if (sel && (sel.value !== info.file || ctx !== info.context)) await loadModel(sel.value, ctx);
+  refresh();
+});
+$('settingsModal').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('applySettings').click(); } });
 
 async function send() {
   const text = input.value.trim();
@@ -273,7 +356,7 @@ async function send() {
     if (handled) return;
     input.value = text; autosize();
   }
-  if (!info.file) { systemLine('No model loaded — right-click > Settings and pick one.'); return; }
+  if (!info.file) { systemLine('No model loaded — use /model to pick one.'); return; }
   input.value = ''; autosize();
   const empty = $('empty'); if (empty) empty.remove();
   promptLine.remove();   // the prompt comes back under the reply when it is done
@@ -403,19 +486,31 @@ document.addEventListener('paste', e => {
   input.focus();
   const text = (e.clipboardData || window.clipboardData).getData('text');
   input.setRangeText(text, input.value.length, input.value.length, 'end');
-  autosize();
+  unquoteFolderPath(); autosize();
 });
 // Command list while typing "/name": filtered A-Z, arrows to move, Tab or click to complete, Enter to run.
 const cmdBox = $('cmds');
-let cmdMatches = [], cmdSel = 0;
+let cmdMatches = [], cmdSel = 0, cmdNavigated = false;   // navigated: the user moved through the list with the arrows
 // Every command plus its sub-commands (e.g. "/rag on"), A-Z. `run`: completing it can run at once.
 const CMD_ENTRIES = [];
 for (const c of COMMANDS) {
   // One row per command; sub-commands shown inline, e.g. "/rag on|off|<words>".
-  CMD_ENTRIES.push({ name: c.name, label: c.name + (c.subs ? ' ' + c.subs.map(s => s.name).join('|') : ''), desc: c.desc, run: !!c.run, insert: c.name + (c.run ? '' : ' ') });
+  CMD_ENTRIES.push({ name: c.name, label: c.subs ? c.name + ' ' + c.subs.map(s => s.name).join('|') : c.use, desc: c.desc, run: !c.arg, insert: c.name + (c.arg ? ' ' : '') });
 }
 function drawCmds() {
   const v = input.value.toLowerCase();
+  const sp = v.indexOf(' '), cmd = sp < 0 ? null : COMMANDS.find(c => c.name === v.slice(0, sp));
+  if (cmd && cmd.options) {
+    // "/model ll" lists the matching values (e.g. model names); Tab or Enter picks one.
+    const typed = v.slice(sp + 1).trim();
+    // Re-read the models folder when the list opens, so newly added files show up.
+    if ((cmd.name === '/model' || cmd.name === '/folder') && Date.now() - (drawCmds.fetched || 0) > 3000) {
+      drawCmds.fetched = Date.now(); (cmd.name === '/model' ? loadModelList() : loadRecentFolders()).then(drawCmds);
+    }
+    cmdMatches = cmd.options().filter(o => o.value.toLowerCase().includes(typed))
+      .map(o => ({ name: (cmd.name + ' ' + o.value).toLowerCase(), label: o.value, desc: o.desc, run: true, insert: cmd.name + ' ' + o.value, option: true }));
+    if (cmdMatches.length === 1 && cmdMatches[0].name === v.trim()) cmdMatches = [];
+  } else
   // "/ra" lists matching commands; "/rag " (with a space) keeps showing /rag and its options while you pick one.
   cmdMatches = /^\/\S*$/.test(v) ? CMD_ENTRIES.filter(e => e.name.startsWith(v))
              : /^\/\S+ $/.test(v) ? CMD_ENTRIES.filter(e => e.name === v.trim() && e.label !== e.name) : [];
@@ -427,15 +522,21 @@ function drawCmds() {
 }
 function completeCmd(c) { input.value = c.insert; input.focus(); autosize(); drawCmds(); }
 cmdBox.addEventListener('mousedown', e => { const el = e.target.closest('.c'); if (el) { e.preventDefault(); completeCmd(cmdMatches[+el.dataset.i]); } });
-input.addEventListener('input', () => { cmdSel = 0; drawCmds(); });
+// A path pasted after /folder loses its surrounding quotes ("D:\My Project" -> D:\My Project) right in the prompt.
+function unquoteFolderPath() {
+  const m = input.value.match(/^(\/folder\s+)"([^"]*)"(\s*)$/i);
+  if (m) { input.value = m[1] + m[2]; autosize(); }
+}
+input.addEventListener('input', () => { unquoteFolderPath(); cmdSel = 0; cmdNavigated = false; drawCmds(); });
 input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) cmdBox.classList.remove('show'); }, 100));
 input.addEventListener('keydown', e => {
   if (cmdBox.classList.contains('show')) {
     const c = cmdMatches[cmdSel];
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); cmdSel = (cmdSel + (e.key === 'ArrowDown' ? 1 : cmdMatches.length - 1)) % cmdMatches.length; drawCmds(); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); cmdNavigated = true; cmdSel = (cmdSel + (e.key === 'ArrowDown' ? 1 : cmdMatches.length - 1)) % cmdMatches.length; drawCmds(); return; }
     if (e.key === 'Tab') { e.preventDefault(); completeCmd(c); return; }
     // Enter on a partly typed name picks the highlighted command; it runs at once unless it takes arguments.
-    if (e.key === 'Enter' && !e.shiftKey && input.value.toLowerCase().trim() !== c.name) { e.preventDefault(); completeCmd(c); if (!c.run) return; }
+    // A typed or pasted value (a path, a model name) is used as typed unless you picked a suggestion with the arrows.
+    if (e.key === 'Enter' && !e.shiftKey && input.value.toLowerCase().trim() !== c.name && (!c.option || cmdNavigated)) { e.preventDefault(); completeCmd(c); if (!c.run) return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cmdBox.classList.remove('show'); send(); }
 });
@@ -450,7 +551,7 @@ function alignChevrons() {
   const x = ctx.measureText('x'), textMid = (x.actualBoundingBoxAscent - x.actualBoundingBoxDescent) / 2;
   document.documentElement.style.setProperty('--chev-shift', (chevMid - textMid).toFixed(2) + 'px');
 }
-alignChevrons();
+applyLook();
 document.fonts.ready.then(alignChevrons);
 document.fonts.addEventListener('loadingdone', alignChevrons);
 
@@ -459,3 +560,119 @@ refresh();
 window.addEventListener('load', () => input.focus());
 window.addEventListener('focus', () => { if (promptLine.isConnected && !document.querySelector('.modal.show')) input.focus(); });
 input.focus();
+
+// Mouse wheel, everywhere (chat, windows, file list, code blocks), always smooth and with no scrollbars:
+//   wheel = scroll up/down · Ctrl + wheel = up/down at 2x (instead of zooming) · Shift + wheel = left/right.
+// The area under the mouse that can scroll that way is used; each glides to its target over a few frames.
+var glide = new Map();     // element -> { x, y } target scroll position (var: scrollDown may run before this line)
+function canScroll(el, horizontal) {
+  const s = getComputedStyle(el), o = horizontal ? s.overflowX : s.overflowY;
+  return (o === 'auto' || o === 'scroll') && (horizontal ? el.scrollWidth > el.clientWidth : el.scrollHeight > el.clientHeight);
+}
+// Next frame: animation frame normally, a timer if frames are paused (some hosts throttle them), whichever comes first.
+let glideQueued = false;
+function glideLater() {
+  if (glideQueued) return;
+  glideQueued = true;
+  const go = () => { if (glideQueued) { glideQueued = false; glideStep(); } };
+  requestAnimationFrame(go); setTimeout(go, 20);
+}
+function glideStep() {
+  for (const [el, t] of glide) {
+    const dx = t.x - el.scrollLeft, dy = t.y - el.scrollTop;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) { el.scrollLeft = t.x; el.scrollTop = t.y; glide.delete(el); continue; }
+    el.scrollLeft += dx * 0.28; el.scrollTop += dy * 0.28;
+    // Stopped by an edge: drop the rest so the next wheel turn starts from where we are.
+    if (Math.abs(t.x - el.scrollLeft - dx) < 0.01 && Math.abs(t.y - el.scrollTop - dy) < 0.01) glide.delete(el);
+  }
+  if (glide.size) glideLater();
+}
+document.addEventListener('wheel', e => {
+  const horizontal = e.shiftKey && !e.ctrlKey;
+  let delta = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1);
+  if (e.ctrlKey) delta *= 2;
+  e.preventDefault();   // also stops Ctrl + wheel zoom and the browser's own scroll
+  for (let el = e.target; el && el !== document.documentElement; el = el.parentElement) {
+    if (!canScroll(el, horizontal)) continue;
+    const t = glide.get(el) || { x: el.scrollLeft, y: el.scrollTop };
+    if (horizontal) t.x = Math.max(0, Math.min(el.scrollWidth - el.clientWidth, t.x + delta));
+    else t.y = Math.max(0, Math.min(el.scrollHeight - el.clientHeight, t.y + delta));
+    glide.set(el, t);
+    glideLater();
+    return;
+  }
+}, { passive: false });
+
+// Background: grid fading out toward the edges, two soft gold glows and a faint blurred monochrome logo, painted once
+// per size. Redrawn only after a resize settles; while dragging, the canvas is just stretched (no per-frame repaint).
+const bgLogo = new Image();
+bgLogo.src = 'assets/phoenix_logo.png';
+function drawBackground() {
+  const cv = $('bg'), dpr = window.devicePixelRatio || 1, W = innerWidth, H = innerHeight;
+  if (!W || !H) return;   // hidden or minimized: draw when it has a size again
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext('2d'), css = getComputedStyle(document.documentElement), v = n => css.getPropertyValue(n).trim();
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = v('--bg'); g.fillRect(0, 0, W, H);
+
+  // Grid on its own layer, masked by an ellipse (85% x 75% radii at 50%/35%, solid to 40%, gone at 100%).
+  const grid = document.createElement('canvas'); grid.width = cv.width; grid.height = cv.height;
+  const q = grid.getContext('2d'); q.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const lines = (step, color) => {
+    q.fillStyle = color;
+    for (let x = 0; x < W; x += step) q.fillRect(x, 0, 1, H);
+    for (let y = 0; y < H; y += step) q.fillRect(0, y, W, 1);
+  };
+  lines(32, v('--grid')); lines(160, v('--grid-strong'));
+  q.globalCompositeOperation = 'destination-in';
+  q.translate(W * 0.5, H * 0.35); q.scale(W * 0.85, H * 0.75);
+  const m = q.createRadialGradient(0, 0, 0, 0, 0, 1);
+  m.addColorStop(0.4, '#000'); m.addColorStop(1, 'rgba(0,0,0,0)');
+  q.fillStyle = m; q.fillRect(-2, -2, 4, 4);
+  g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(grid, 0, 0); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Gold glows at the top and bottom (600x300 and 500x260 ellipses, fading out by 70%).
+  const glow = (cx, cy, rx, ry, a) => {
+    g.save(); g.translate(cx, cy); g.scale(rx, ry);
+    const r = g.createRadialGradient(0, 0, 0, 0, 0, 1);
+    const rgb = v('--accent-rgb');
+    r.addColorStop(0, 'rgba(' + rgb + ',' + a + ')'); r.addColorStop(0.7, 'rgba(' + rgb + ',0)');
+    g.fillStyle = r; g.fillRect(-1, -1, 2, 2); g.restore();
+  };
+  glow(W / 2, 0, 600, 300, 0.08); glow(W / 2, H, 500, 260, 0.06);
+
+}
+
+// Watermark logo: its own canvas, painted once at a fixed 820px width (grayscale, brighter, 2px blur, 3.5% opacity) and
+// pinned to the window centre by CSS, so it never scales and stays centred even mid-resize.
+function drawLogo() {
+  if (!bgLogo.naturalWidth) return;
+  const cv = $('bgLogo'), dpr = window.devicePixelRatio || 1, w = 820, h = Math.round(w * bgLogo.naturalHeight / bgLogo.naturalWidth), pad = 8;
+  cv.width = (w + 2 * pad) * dpr; cv.height = (h + 2 * pad) * dpr;
+  cv.style.width = (w + 2 * pad) + 'px'; cv.style.height = (h + 2 * pad) + 'px';
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.globalAlpha = 0.035; g.filter = 'grayscale(1) brightness(1.4) blur(2px)';
+  g.drawImage(bgLogo, pad, pad, w, h);
+}
+var bgReady = true;
+let bgTimer = 0;
+window.addEventListener('resize', () => { clearTimeout(bgTimer); bgTimer = setTimeout(drawBackground, 150); });
+bgLogo.onload = drawLogo;
+if (bgLogo.complete) drawLogo();
+drawBackground();
+
+// Centre the banner's capital letters exactly: flexbox centres the font's line box, not the letters' ink, so measure the
+// ink of the text and shift it by the difference.
+function centerBanner() {
+  const span = document.querySelector('#banner span'), cs = getComputedStyle(span), size = parseFloat(cs.fontSize);
+  const g = document.createElement('canvas').getContext('2d');
+  g.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+  const m = g.measureText(span.textContent);
+  const lineTop = (size - (m.fontBoundingBoxAscent + m.fontBoundingBoxDescent)) / 2;    // line-height 1: content area centred
+  const baseline = lineTop + m.fontBoundingBoxAscent;
+  const inkMid = baseline - (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+  document.documentElement.style.setProperty('--banner-shift', (size / 2 - inkMid).toFixed(2) + 'px');
+}
+centerBanner();
+document.fonts.ready.then(centerBanner);

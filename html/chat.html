@@ -1,13 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="no-banner">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>phoenix</title>
+<title>PhoenixAI</title>
+<link rel="icon" type="image/png" href="assets/toolbar_icon.png">
 <link rel="stylesheet" href="css/chat.css">
 </head>
 <body>
-<div id="bgLogo"></div>
+<div id="banner"><span>UNCLASSIFIED</span></div>
+<canvas id="bg"></canvas><canvas id="bgLogo"></canvas>
 <div class="wrap">
   <div id="chat">
   </div>
@@ -17,47 +19,53 @@
 <div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div></div>
 <div id="files"></div>
 <div id="status"></div>
-<div id="ctxmenu">
-  <div data-cmd="new">New chat</div>
-  <div data-cmd="settings">Settings</div>
-  <div data-cmd="folder">Folder</div>
-  <div data-cmd="files">Files</div>
-  <div data-cmd="index">Reindex docs</div>
-  <hr>
-  <div data-cmd="copy">Copy</div>
-  <div data-cmd="stop">Stop <span class="key">Esc</span></div>
-</div>
-
 <div class="modal" id="settingsModal">
-  <div class="window">
-    <header><h2>Model &amp; settings</h2><button id="closeSettings">✕</button></header>
-    <div class="body">
-      <div class="section">Model</div>
-      <div class="models" id="modelList"></div>
-      <div class="grid2">
-        <label class="field">Context length<input id="sContext" type="number" min="256" step="256"></label>
-        <label class="field">Max tokens per reply<input id="sMax" type="number" min="1"></label>
-        <label class="field">Temperature<input id="sTemp" type="number" step="0.05" min="0"></label>
-        <label class="field">Top K<input id="sTopK" type="number" min="0"></label>
-        <label class="field">Top P<input id="sTopP" type="number" step="0.01" min="0" max="1"></label>
-        <label class="field">Repeat penalty<input id="sRepeat" type="number" step="0.01" min="1"></label>
-      </div>
-      <label class="field" style="margin-top:10px">System prompt<textarea id="sSystem"></textarea></label>
+  <div class="window settings">
+    <header><h2><span class="chev">›</span> settings</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+    <nav class="cats" id="settingsCats">
+      <button data-cat="catModel">model</button><button data-cat="catGen">generation</button><button data-cat="catPrompt">prompt</button>
+      <button data-cat="catDocs">docs</button><button data-cat="catLook">appearance</button><button data-cat="catApp">app</button>
+    </nav>
+    <div class="body" id="settingsBody">
+      <section id="catModel">
+        <div class="section">model</div>
+        <div class="models" id="modelList"></div>
+        <div class="grid2" style="margin-top:10px">
+          <label class="field">context<input id="sContext" type="number" min="256" step="256"><span class="hint">tokens · changing it reloads the model</span></label>
+        </div>
+      </section>
+      <section id="catGen">
+        <div class="section">generation</div>
+        <div class="grid2">
+          <label class="field">max reply<input id="sMax" type="number" min="1"><span class="hint">tokens</span></label>
+          <label class="field">temperature<input id="sTemp" type="number" step="0.05" min="0" max="2"><span class="hint">0 = predictable · 2 = wild</span></label>
+          <label class="field">top k<input id="sTopK" type="number" min="0"><span class="hint">0 = off</span></label>
+          <label class="field">top p<input id="sTopP" type="number" step="0.01" min="0" max="1"><span class="hint">1 = off</span></label>
+          <label class="field">repeat penalty<input id="sRepeat" type="number" step="0.01" min="1" max="2"><span class="hint">1 = off</span></label>
+        </div>
+      </section>
+      <section id="catPrompt">
+        <div class="section">system prompt</div>
+        <label class="field"><textarea id="sSystem" spellcheck="false"></textarea><span class="hint">sent with every message · RULES.md files are added on top</span></label>
+      </section>
+      <section id="catDocs">
+        <div class="section">docs</div>
+        <label class="toggle"><input type="checkbox" id="sRag"><span class="sw"></span>docs retrieval (rag)<span class="hint" id="ragNote"></span></label>
+      </section>
+      <section id="catLook">
+        <div class="section">appearance</div>
+        <div class="field">chat font<div class="radios" id="sFont"></div></div>
+        <div class="field" style="margin-top:10px">text size<div class="radios" id="sSize"></div></div>
+        <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
+      </section>
+      <section id="catApp">
+        <div class="section">app</div>
+        <div class="field">browser<div class="radios" id="sBrowser"></div><span class="hint" id="browserNote"></span></div>
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>classification banner (UNCLASSIFIED)</label>
+      </section>
       <div class="note" id="loadNote"></div>
     </div>
-    <footer><button id="newChat">New chat</button><button class="primary" id="applySettings">Apply</button></footer>
-  </div>
-</div>
-
-<div class="modal" id="folderModal">
-  <div class="window">
-    <header><h2>Project folder</h2><button id="closeFolder">✕</button></header>
-    <div class="body">
-      <div id="browsePath"></div>
-      <div class="dirs" id="dirList"></div>
-      <div class="note">The model can list, read and write files only inside the connected folder. Overwritten files are backed up to .llm-backup.</div>
-    </div>
-    <footer><button id="disconnect">Disconnect</button><button class="primary" id="connect">Connect this folder</button></footer>
+    <footer><span class="keys">Enter apply · Esc close</span><button id="settingsNew">new chat</button><button class="primary" id="applySettings">apply</button></footer>
   </div>
 </div>
 

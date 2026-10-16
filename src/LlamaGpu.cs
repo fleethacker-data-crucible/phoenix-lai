@@ -11,6 +11,7 @@ namespace Phoenix
         public readonly float Eps, RopeBase;
         public readonly ModelConfig Config;
         public long WeightBytes;
+        int Ring { get { return (MaxCtx + 1) & ~1; } }   // cache slots (even, for fp16 pairs)
 
         // A weight matrix on the GPU. Q8_0: A = qs bytes, B = f32 scales. K-quants: A = blocks (Q6_K padded), B unused.
         sealed class GW { public GgmlType Type; public GpuBuffer A, B; public int Rows, Cols, Nb; }
@@ -72,9 +73,9 @@ namespace Phoenix
                 uint grp = (uint)(NHead / NHeadKv);
                 if (NHead % NHeadKv == 0 && grp <= KernelsAttention.MaxGroup && HeadDim <= KernelsAttention.MaxHeadDim)
                 {
-                    _kAttnScores = Kernel(KernelsAttention.Scores(grp), 4, 4, "attn scores");
+                    _kAttnScores = Kernel(KernelsAttention.Scores(grp), 4, 5, "attn scores");
                     _kAttnSoftmax = Kernel(KernelsAttention.Softmax(), 2, 1, "attn softmax");
-                    _kAttnOut = Kernel(KernelsAttention.OutputPartial(grp), 4, 4, "attn out");
+                    _kAttnOut = Kernel(KernelsAttention.OutputPartial(grp), 4, 5, "attn out");
                     _kAttnReduce = Kernel(KernelsAttention.OutputReduce(), 3, 1, "attn reduce");
                     _kKvT = Kernel(KernelsAttention.KvStore(), 5, 2, "kv store");
                     _kRopeP = Kernel(KernelsAttention.Rope(), 3, 4, "rope");
@@ -102,8 +103,10 @@ namespace Phoenix
                     l.Gate = UploadW(T(g, p + "ffn_gate.weight"));
                     l.Up = UploadW(T(g, p + "ffn_up.weight"));
                     l.Down = UploadW(T(g, p + "ffn_down.weight"));
-                    l.KCache = Buf((ulong)maxCtx * (ulong)_kvDim * 4, false);
-                    l.VCache = Buf((ulong)maxCtx * (ulong)_kvDim * 4, false);
+                    // Wide attention path: packed fp16 cache (2 bytes per value); the simple fallback kernels use f32.
+                    ulong perValue = _kAttnScores != null ? 2UL : 4UL;
+                    l.KCache = Buf((ulong)Ring * (ulong)_kvDim * perValue, false);
+                    l.VCache = Buf((ulong)Ring * (ulong)_kvDim * perValue, false);
                     _layers[i] = l;
                 }
 
@@ -380,12 +383,12 @@ namespace Phoenix
             {
                 uint chunks = (uint)((n + KernelsAttention.Chunk - 1) / KernelsAttention.Chunk);
                 GpuBuffer[] sb = { _q, l.KCache, _scores, _params };
-                uint[] sp = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, Bits(scale) };
+                uint[] sp = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, Bits(scale), (uint)Ring };
                 if (indirect) _gpu.RecordIndirect(_kAttnScores, sb, sp, _indirect, 0);
                 else _gpu.Record(_kAttnScores, sb, sp, Groups(n, KernelsAttention.KeysPerGroup), (uint)NHeadKv, 1);
                 _gpu.Record(_kAttnSoftmax, new GpuBuffer[] { _scores, _params }, new uint[] { (uint)MaxCtx }, (uint)NHead, 1, 1);
                 GpuBuffer[] ob = { _scores, l.VCache, _attnPart, _params };
-                uint[] op = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, (uint)NHead };
+                uint[] op = { (uint)HeadDim, (uint)_kvDim, (uint)MaxCtx, (uint)NHead, (uint)Ring };
                 if (indirect) _gpu.RecordIndirect(_kAttnOut, ob, op, _indirect, 12);
                 else _gpu.Record(_kAttnOut, ob, op, chunks, (uint)NHeadKv, 1);
                 _gpu.Record(_kAttnReduce, new GpuBuffer[] { _attnPart, _attn, _params }, new uint[] { (uint)(NHead * HeadDim) }, Groups(NHead * HeadDim, Kernels.Wg), 1, 1);
@@ -406,7 +409,7 @@ namespace Phoenix
 
             int n = pos + 1;
             uint chunks = (uint)((n + KernelsAttention.Chunk - 1) / KernelsAttention.Chunk);
-            _paramHost[0] = (uint)pos; _paramHost[1] = (uint)n; _paramHost[2] = chunks; _paramHost[3] = Bits(Config.AttnTemperature(pos));
+            _paramHost[0] = (uint)pos; _paramHost[1] = (uint)n; _paramHost[2] = chunks; _paramHost[3] = Bits(Config.AttnTemperature(pos)); _paramHost[4] = 0;
             _params.UploadWords(_paramHost);
             _indirectHost[0] = Groups(n, KernelsAttention.KeysPerGroup); _indirectHost[1] = (uint)NHeadKv; _indirectHost[2] = 1;
             _indirectHost[3] = chunks; _indirectHost[4] = (uint)NHeadKv; _indirectHost[5] = 1;
@@ -461,7 +464,7 @@ namespace Phoenix
                 {
                     _gpu.Record(_kRopeP, new GpuBuffer[] { _q, _cs, _params }, new uint[] { (uint)NHead, (uint)HeadDim, halfRot, 1 }, Groups(NHead * (int)halfRot, Kernels.Wg), 1, 1, false);
                     _gpu.Record(_kRopeP, new GpuBuffer[] { _k, _cs, _params }, new uint[] { (uint)NHeadKv, (uint)HeadDim, halfRot, 0 }, Groups(NHeadKv * (int)halfRot, Kernels.Wg), 1, 1);
-                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, _params }, new uint[] { (uint)_kvDim, (uint)MaxCtx }, Groups(_kvDim, Kernels.Wg), 1, 1);
+                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, _params }, new uint[] { (uint)_kvDim, (uint)Ring }, Groups(_kvDim / 2, Kernels.Wg), 1, 1);
                 }
                 else
                 {
@@ -486,6 +489,7 @@ namespace Phoenix
 
         // Starts a new sequence. The KV cache needs no clearing: attention only reads positions < pos + 1.
         public void Reset() { }
+        public int MinReuse(int fed) { return 0; }
 
         // Feeds tokens[start .. start+count) at positions start.. ; returns the logits after the last one.
         public float[] Prefill(IList<int> tokens, int start, int count)

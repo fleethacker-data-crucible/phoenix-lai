@@ -131,6 +131,7 @@ namespace Phoenix
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceProperties2(IntPtr phys, byte* props2); // VkPhysicalDeviceProperties2 (+ pNext chain)
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceFeatures2(IntPtr phys, byte* features2);    // VkPhysicalDeviceFeatures2 (+ pNext chain)
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceMemoryProperties(IntPtr phys, byte* props);    // VkPhysicalDeviceMemoryProperties (520 bytes)
+        [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceMemoryProperties2(IntPtr phys, byte* props2); // VkPhysicalDeviceMemoryProperties2 (+ pNext: memory budget)
         [DllImport("vulkan-1.dll")] public static extern void vkGetPhysicalDeviceQueueFamilyProperties(IntPtr phys, uint* count, VkQueueFamilyProperties* props);
         [DllImport("vulkan-1.dll")] public static extern int vkCreateDevice(IntPtr phys, VkDeviceCreateInfo* info, IntPtr alloc, IntPtr* device);
         [DllImport("vulkan-1.dll")] public static extern void vkDestroyDevice(IntPtr device, IntPtr alloc);
@@ -188,9 +189,26 @@ namespace Phoenix
         [DllImport("vulkan-1.dll")] public static extern void vkCmdWriteTimestamp(IntPtr cmd, uint stage, ulong pool, uint query);
         [DllImport("vulkan-1.dll")] public static extern int vkGetQueryPoolResults(IntPtr device, ulong pool, uint first, uint count, UIntPtr dataSize, void* data, ulong stride, uint flags);
 
+        public const int ErrorDeviceLost = -4;
+
         public static void Check(int result, string what)
         {
+            if (result == ErrorDeviceLost) throw new GpuDeviceLostException(what + " failed: the GPU stopped responding (device lost).");
             if (result != 0) throw new InvalidOperationException(what + " failed: VkResult " + result + ".");
         }
+    }
+
+    // The driver reset the GPU (e.g. a job ran past Windows' ~2 s timeout). The device is unusable afterwards: models on
+    // it must be reloaded on a new device.
+    public sealed class GpuDeviceLostException : InvalidOperationException
+    {
+        public GpuDeviceLostException(string message) : base(message) { }
+    }
+
+    // One heavy GPU user at a time across devices (chat model and embedder use separate Vulkan devices on one GPU): model
+    // loading, generation and docs embedding take this lock so their jobs never compete for the GPU's time slice.
+    public static class GpuGate
+    {
+        public static readonly object Lock = new object();
     }
 }

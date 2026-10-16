@@ -1,6 +1,6 @@
 // Loopback-only chat server: serves html\, streams chat, switches models, and lets the model work in a local folder.
 // C# 5 only. The ONLY file allowed to use networking or start a process (enforced by run.ps1): it listens on
-// 127.0.0.1 only, never makes outgoing connections, and only starts msedge.exe.
+// 127.0.0.1 only, never makes outgoing connections, and only starts msedge.exe or chrome.exe (app window).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -36,7 +36,10 @@ namespace Phoenix
             _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             _listener.Start();
             Log = new ChatLog(logsDir);
-            Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"));
+            Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
+            // No automatic rebuild or embedder warm-up at startup until the GPU embedder is made safe (it caused a driver
+            // reset on 2026-10-16); an older index just waits for /index.
+            if (Rag.NeedsRebuild) Log.Text("rag: index is from an older version; run /index to rebuild");
             Log.Text("server started on " + Url);
             Log.Json("server_start", "\"url\":" + Json.Quote(Url));
             Thread t = new Thread(Loop);
@@ -50,33 +53,88 @@ namespace Phoenix
         public static int Run(string root, string modelPath, int ctx)
         {
             Application.EnableVisualStyles();
+            // One server per user: a second launch just opens another window on the running one. (Two servers would fight
+            // over the GPU and the loser falls back to the much slower CPU.) The mutex is freed by Windows if we crash.
+            bool first;
+            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.Server", out first))
+            {
+                if (!first)
+                {
+                    // Ask the running server to show its window (it opens a new one only if none is open).
+                    EventWaitHandle show;
+                    if (EventWaitHandle.TryOpenExisting(ShowEventName, out show)) using (show) show.Set();
+                    return 0;
+                }
+                try { return RunServer(root, modelPath, ctx); }
+                finally { single.ReleaseMutex(); }
+            }
+        }
+
+        const string ShowEventName = @"Local\PhoenixAI.Show";
+
+        // Opens the app window on `url` in the preferred browser; returns the browser process (or null if none found).
+        static Process OpenWindow(string url, WebServer log)
+        {
+            string pref = PreferredBrowser(), used;
+            string exe = FindBrowser(pref, out used);
+            if (exe == null) return null;
+            // A private profile folder per browser keeps the app separate from the user's own browser windows.
+            string profile = Path.Combine(AppDataDir, used + "-profile");
+            Directory.CreateDirectory(profile);
+            if (log != null) log.Log.Text("opening " + used + (used != pref ? " (" + pref + " is not installed)" : "") + ": " + exe);
+            ProcessStartInfo psi = new ProcessStartInfo(exe,
+                "--app=" + url + " --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check --window-size=1100,800");
+            psi.UseShellExecute = false;
+            return Process.Start(psi);
+        }
+
+        static int RunServer(string root, string modelPath, int ctx)
+        {
             using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs")))
             {
                 server.ContextLength = ctx;
+                // Another launch of the app: bring the open window forward, or open one if every window was closed.
+                EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+                Thread showThread = new Thread(delegate()
+                {
+                    while (show.WaitOne())
+                    {
+                        if (server.OpenPages() > 0) { server._focusRequested = true; server.Log.Text("launched again: focusing the open window"); }
+                        else { server.Log.Text("launched again: no window open, opening one"); Process p = OpenWindow(server.Url, server); if (p != null) p.Dispose(); }
+                    }
+                });
+                showThread.IsBackground = true;
+                showThread.Start();
                 if (!string.IsNullOrEmpty(modelPath))
                 {
                     string m = modelPath;
                     ThreadPool.QueueUserWorkItem(delegate { try { server.LoadModel(m); } catch { } });
                 }
-                string edge = FindEdge();
-                if (edge != null)
+                // Windows left open from a previous run reconnect to us by themselves (same port): give them a moment to check
+                // in, and if one does, bring it forward instead of opening another.
+                for (int t = 0; t < 30 && server.OpenPages() == 0; t++) Thread.Sleep(100);
+                if (server.OpenPages() > 0)
                 {
-                    // A private profile folder gives a separate Edge process, so we know when the app window closes.
-                    string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio", "edge-profile");
-                    Directory.CreateDirectory(profile);
-                    ProcessStartInfo psi = new ProcessStartInfo(edge,
-                        "--app=" + server.Url + " --user-data-dir=\"" + profile + "\" --no-first-run --window-size=1100,800");
-                    psi.UseShellExecute = false;
-                    using (Process p = Process.Start(psi)) p.WaitForExit();
-                    // If an app window was already open, Edge hands the new one to that process and exits at once, so
-                    // the process alone can't tell us when the user is done: stay up while any page is still talking to us
-                    // (the page polls /api/info every 4 s; a running chat counts as active).
-                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));   // > 60 s: minimized windows poll only once a minute
+                    server._focusRequested = true;
+                    server.Log.Text("an app window from before is still open: reusing it");
+                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
                 }
                 else
                 {
-                    MessageBox.Show("Microsoft Edge was not found. Open this address in any browser:\n\n" + server.Url +
-                        "\n\nClose this box to stop the server.", "Local LLM Studio");
+                    Process browser = OpenWindow(server.Url, server);
+                    if (browser != null)
+                    {
+                        using (browser) browser.WaitForExit();
+                        // If an app window was already open, the browser hands the new one to that process and exits at once,
+                        // so the process alone can't tell us when the user is done: stay up while any page is still talking to
+                        // us (each window checks in every 2 s and says goodbye when it closes).
+                        server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                    }
+                    else
+                    {
+                        MessageBox.Show("Neither Microsoft Edge nor Google Chrome was found. Open this address in any browser:\n\n" + server.Url +
+                            "\n\nClose this box to stop the server.", "PhoenixAI");
+                    }
                 }
                 lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
                 server.Log.Text("server stopped");
@@ -95,17 +153,71 @@ namespace Phoenix
             throw new InvalidOperationException("No free local port between 8765 and 8799.");
         }
 
-        static string FindEdge()
+        static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio");
+        static string BrowserFile { get { return Path.Combine(AppDataDir, "browser.txt"); } }
+
+        // "edge" (default) or "chrome", as chosen with /browser.
+        static string PreferredBrowser()
         {
-            string[] roots = { Environment.GetEnvironmentVariable("ProgramFiles(x86)"), Environment.GetEnvironmentVariable("ProgramFiles"),
+            try { string b = File.ReadAllText(BrowserFile).Trim().ToLowerInvariant(); if (b == "chrome" || b == "edge") return b; } catch { }
+            return "edge";
+        }
+
+        // Path of the preferred browser, or of the other one if the preferred is not installed; null if neither is.
+        static string FindBrowser(string preferred, out string used)
+        {
+            string other = preferred == "chrome" ? "edge" : "chrome";
+            string exe = BrowserPath(preferred);
+            used = preferred;
+            if (exe == null) { exe = BrowserPath(other); used = exe != null ? other : null; }
+            return exe;
+        }
+
+        static string BrowserPath(string browser)
+        {
+            string rel = browser == "chrome" ? Path.Combine("Google", "Chrome", "Application", "chrome.exe") : Path.Combine("Microsoft", "Edge", "Application", "msedge.exe");
+            string[] roots = { Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetEnvironmentVariable("ProgramFiles(x86)"),
                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) };
             foreach (string r in roots)
             {
                 if (string.IsNullOrEmpty(r)) continue;
-                string p = Path.Combine(r, "Microsoft", "Edge", "Application", "msedge.exe");
+                string p = Path.Combine(r, rel);
                 if (File.Exists(p)) return p;
             }
             return null;
+        }
+
+        // The last 10 connected folders, newest first (offered by /folder). Folders that no longer exist are skipped.
+        const int MaxRecentFolders = 10;
+        static string RecentFile { get { return Path.Combine(AppDataDir, "recent-folders.txt"); } }
+
+        static List<string> RecentFolders()
+        {
+            List<string> list = new List<string>();
+            try
+            {
+                foreach (string line in File.ReadAllLines(RecentFile, Encoding.UTF8))
+                    if (line.Trim().Length > 0 && Directory.Exists(line.Trim())) list.Add(line.Trim());
+            }
+            catch { }
+            return list;
+        }
+
+        static void RememberFolder(string root)
+        {
+            List<string> list = RecentFolders();
+            list.RemoveAll(delegate(string f) { return string.Equals(f, root, StringComparison.OrdinalIgnoreCase); });
+            list.Insert(0, root);
+            if (list.Count > MaxRecentFolders) list.RemoveRange(MaxRecentFolders, list.Count - MaxRecentFolders);
+            try { Directory.CreateDirectory(AppDataDir); File.WriteAllLines(RecentFile, list.ToArray(), Encoding.UTF8); } catch { }
+        }
+
+        static string BrowserJson()
+        {
+            string pref = PreferredBrowser(), used;
+            FindBrowser(pref, out used);
+            return "{\"browser\":" + Json.Quote(pref) + ",\"installed\":" + (used == pref ? "true" : "false") +
+                   ",\"fallback\":" + (used != null && used != pref ? Json.Quote(used) : "null") + "}";
         }
 
         // Loads a model from models\ (by file name) or a full local path; replaces the current one.
@@ -153,10 +265,26 @@ namespace Phoenix
 
         long _lastRequestTicks = DateTime.UtcNow.Ticks;
         int _activeRequests;
+        volatile bool _focusRequested;
+        readonly Dictionary<string, DateTime> _pages = new Dictionary<string, DateTime>();   // page id -> last poll (UTC)
+
+        // Windows that are open: polled within the last 75 s (minimized windows poll only about once a minute) and not closed.
+        int OpenPages()
+        {
+            lock (_pages)
+            {
+                List<string> stale = new List<string>();
+                foreach (KeyValuePair<string, DateTime> kv in _pages) if (DateTime.UtcNow - kv.Value > TimeSpan.FromSeconds(75)) stale.Add(kv.Key);
+                foreach (string k in stale) _pages.Remove(k);
+                return _pages.Count;
+            }
+        }
 
         void WaitWhilePagesActive(TimeSpan idle)
         {
-            while (Thread.VolatileRead(ref _activeRequests) > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastRequestTicks) < idle.Ticks)
+            Thread.Sleep(3000);   // give a new window time to load and check in
+            while (Thread.VolatileRead(ref _activeRequests) > 0 || OpenPages() > 0 ||
+                   DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastRequestTicks) < TimeSpan.FromSeconds(5).Ticks)
                 Thread.Sleep(500);
         }
 
@@ -211,7 +339,16 @@ namespace Phoenix
             Dictionary<string, object> body = post ? ReadJson(req) : null;
             string q = req.QueryString["path"];
 
-            if (path == "/api/info") { SendJson(res, 200, Info()); return; }
+            string page = req.QueryString["page"];
+            if (path == "/api/bye") { if (page != null) lock (_pages) _pages.Remove(page); SendJson(res, 200, "{}"); return; }
+            if (path == "/api/info")
+            {
+                if (page != null && page.Length <= 40) lock (_pages) _pages[page] = DateTime.UtcNow;
+                string json = Info();
+                if (_focusRequested && page != null) { _focusRequested = false; json = json.Substring(0, json.Length - 1) + ",\"focus\":true}"; }
+                SendJson(res, 200, json);
+                return;
+            }
             if (path == "/api/models")
             {
                 StringBuilder sb = new StringBuilder("{\"models\":[");
@@ -240,20 +377,50 @@ namespace Phoenix
                 SendJson(res, 200, Info());
                 return;
             }
+            if (path == "/api/recent-folders")
+            {
+                StringBuilder sb = new StringBuilder("{\"folders\":[");
+                List<string> list = RecentFolders();
+                for (int i = 0; i < list.Count; i++) { if (i > 0) sb.Append(','); sb.Append(Json.Quote(list[i])); }
+                SendJson(res, 200, sb.Append("]}").ToString());
+                return;
+            }
             if (path == "/api/folder" && post)
             {
                 string folder = Json.GetStr(body, "path", "");
                 _workspace = folder.Length == 0 ? null : new Workspace(folder);
+                if (_workspace != null) RememberFolder(_workspace.Root);
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
                 SendJson(res, 200, Info());
                 return;
             }
-            if (path == "/api/browse") { SendJson(res, 200, Browse(q)); return; }
             if (path == "/api/list") { SendJson(res, 200, "{\"entries\":" + RequireWorkspace().ListJson(q ?? ".") + "}"); return; }
             if (path == "/api/ls") { Log.Text("/ls " + (q ?? ".")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().List(q ?? ".")) + "}"); return; }
             if (path == "/api/cat") { Log.Text("/cat " + (q ?? "")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().Read(q ?? "")) + "}"); return; }
             if (path == "/api/chat" && post) { Chat(body, res); return; }
+            if (path == "/api/browser")
+            {
+                if (post)
+                {
+                    string b = Json.GetStr(body, "browser", "").Trim().ToLowerInvariant();
+                    if (b != "edge" && b != "chrome") throw new ArgumentException("Browser must be edge or chrome.");
+                    Directory.CreateDirectory(AppDataDir);
+                    File.WriteAllText(BrowserFile, b);
+                    Log.Text("browser set to " + b);
+                }
+                SendJson(res, 200, BrowserJson());
+                return;
+            }
+            if (path == "/api/vram") { SendJson(res, 200, VramProcessesJson()); return; }
+            if (path == "/api/unload" && post)
+            {
+                // Frees the model's VRAM (weights + context cache); /model loads one again.
+                lock (_engineLock) { if (_engine != null) { Log.Text("unloaded " + Path.GetFileName(_engine.ModelPath)); _engine.Dispose(); _engine = null; } }
+                GC.Collect();
+                SendJson(res, 200, Info());
+                return;
+            }
             if (path == "/api/index" && post)
             {
                 bool started = Rag.StartReindex(delegate(string m) { Log.Text(m); });
@@ -272,45 +439,6 @@ namespace Phoenix
                 return;
             }
             SendJson(res, 404, "{\"error\":\"unknown endpoint\"}");
-        }
-
-        // Local folder picker: drives at the top level, then subfolders. Network drives/shares are not offered.
-        static string Browse(string path)
-        {
-            StringBuilder sb = new StringBuilder();
-            if (string.IsNullOrEmpty(path))
-            {
-                sb.Append("{\"path\":\"\",\"parent\":null,\"dirs\":[");
-                bool first = true;
-                foreach (DriveInfo d in DriveInfo.GetDrives())
-                {
-                    if (d.DriveType != DriveType.Fixed && d.DriveType != DriveType.Removable) continue;
-                    if (!d.IsReady) continue;
-                    if (!first) sb.Append(',');
-                    first = false;
-                    sb.Append("{\"name\":").Append(Json.Quote(d.Name)).Append(",\"path\":").Append(Json.Quote(d.RootDirectory.FullName)).Append('}');
-                }
-                return sb.Append("]}").ToString();
-            }
-            if (path.StartsWith(@"\\") || path.StartsWith("//")) throw new ArgumentException("Network folders are not allowed.");
-            string full = Path.GetFullPath(path);
-            if (!Directory.Exists(full)) throw new DirectoryNotFoundException("Folder not found: " + full);
-            DirectoryInfo parent = Directory.GetParent(full);
-            sb.Append("{\"path\":").Append(Json.Quote(full)).Append(",\"parent\":").Append(parent != null ? Json.Quote(parent.FullName) : "\"\"").Append(",\"dirs\":[");
-            List<string> dirs = new List<string>();
-            try { dirs.AddRange(Directory.GetDirectories(full)); } catch (UnauthorizedAccessException) { }
-            dirs.Sort(StringComparer.OrdinalIgnoreCase);
-            bool f2 = true;
-            foreach (string d in dirs)
-            {
-                FileAttributes a;
-                try { a = File.GetAttributes(d); } catch { continue; }
-                if ((a & (FileAttributes.Hidden | FileAttributes.System)) != 0) continue;
-                if (!f2) sb.Append(',');
-                f2 = false;
-                sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(d))).Append(",\"path\":").Append(Json.Quote(d)).Append('}');
-            }
-            return sb.Append("]}").ToString();
         }
 
         const int MaxRulesChars = 16000;
@@ -374,6 +502,7 @@ namespace Phoenix
                    ",\"git\":" + (w != null ? w.GitJson() : "null") +
                    ",\"rules\":" + RulesJson() +
                    ",\"rag\":" + Rag.StatusJson() +
+                   ",\"vram\":" + VramJson(e) +
                    ",\"version\":" + Json.Quote(Version()) + "}";
         }
 
@@ -382,6 +511,50 @@ namespace Phoenix
         {
             try { return File.ReadAllText(Path.Combine(Directory.GetParent(_htmlDir).FullName, "src", "__version.info")).Trim(); }
             catch { return ""; }
+        }
+
+        static string VramJson(ChatEngine e)
+        {
+            ulong used, budget;
+            if (e == null || !e.Vram(out used, out budget)) return "null";
+            return "{\"used\":" + used + ",\"budget\":" + budget + "}";
+        }
+
+        // Dedicated VRAM per process from Windows' "GPU Process Memory" counters (no admin rights needed), largest first.
+        static string VramProcessesJson()
+        {
+            Dictionary<int, long> byPid = new Dictionary<int, long>();
+            try
+            {
+                // One bulk read of the whole category (reading counters one by one takes seconds).
+                InstanceDataCollection data = new PerformanceCounterCategory("GPU Process Memory").ReadCategory()["Dedicated Usage"];
+                foreach (InstanceData d in data.Values)
+                {
+                    // instance names look like "pid_1234_luid_0x..._phys_0"
+                    string inst = d.InstanceName;
+                    if (!inst.StartsWith("pid_")) continue;
+                    int us = inst.IndexOf('_', 4);
+                    int pid;
+                    if (us < 0 || !int.TryParse(inst.Substring(4, us - 4), out pid)) continue;
+                    long cur; byPid.TryGetValue(pid, out cur);
+                    byPid[pid] = cur + d.RawValue;
+                }
+            }
+            catch (Exception ex) { return "{\"error\":" + Json.Quote(ex.Message) + "}"; }
+            List<KeyValuePair<int, long>> list = new List<KeyValuePair<int, long>>(byPid);
+            list.Sort(delegate(KeyValuePair<int, long> a, KeyValuePair<int, long> b) { return b.Value.CompareTo(a.Value); });
+            StringBuilder sb = new StringBuilder("{\"processes\":[");
+            int n = 0;
+            int self = Process.GetCurrentProcess().Id;
+            foreach (KeyValuePair<int, long> kv in list)
+            {
+                if (kv.Value < (32L << 20) || n >= 12) continue;   // ignore < 32 MB
+                string name;
+                try { using (Process p = Process.GetProcessById(kv.Key)) name = p.ProcessName; } catch { name = "pid " + kv.Key; }
+                if (n++ > 0) sb.Append(',');
+                sb.Append("{\"name\":").Append(Json.Quote(kv.Key == self ? name + " (PhoenixAI)" : name)).Append(",\"pid\":").Append(kv.Key).Append(",\"bytes\":").Append(kv.Value).Append('}');
+            }
+            return sb.Append("]}").ToString();
         }
 
         static string HitsJson(List<RagHit> hits, bool withText)
@@ -478,6 +651,13 @@ namespace Phoenix
 
                     // Retrieved docs go into the newest user message only (not the system prompt), so the cached
                     // conversation prefix stays valid and old turns don't keep spending context on old references.
+                    string libraryNote = Rag.LibraryNote();
+                    if (libraryNote != null)
+                    {
+                        int si2 = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                        if (si2 >= 0) msgs[si2] = new ChatMessage("system", msgs[si2].Text + "\n\n" + libraryNote);
+                        else msgs.Insert(0, new ChatMessage("system", libraryNote));
+                    }
                     if (Rag.Enabled)
                     {
                         int ui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
@@ -488,7 +668,7 @@ namespace Phoenix
                             List<RagHit> hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
                             if (hits.Count > 0)
                             {
-                                msgs[ui] = new ChatMessage("user", Rag.PromptBlock(hits) + "\nUser message:\n" + msgs[ui].Text);
+                                msgs[ui] = new ChatMessage("user", Rag.WrapMessage(hits, msgs[ui].Text));
                                 write("{\"rag\":" + HitsJson(hits, false) + "}");
                                 List<string> srcs = new List<string>();
                                 foreach (RagHit h in hits) srcs.Add(h.File + (h.Title.Length > 0 ? " › " + h.Title : "") + " (" + h.Score.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + ")");
@@ -572,7 +752,17 @@ namespace Phoenix
                 {
                     Log.Text("#" + rid + " ERROR " + ex.Message);
                     Log.Json("error", "\"id\":" + rid + ",\"error\":" + Json.Quote(ex.Message));
-                    write("{\"error\":" + Json.Quote(ex.Message) + "}");
+                    bool lost = ex is GpuDeviceLostException;
+                    write("{\"error\":" + Json.Quote(lost ? "The GPU was reset by the driver; reloading the model. Send the message again in a moment." : ex.Message) + "}");
+                    if (lost && _engine != null)
+                    {
+                        // The old device is gone: drop it and load the model again on a fresh one.
+                        string file = _engine.ModelPath;
+                        try { _engine.Dispose(); } catch { }
+                        _engine = null;
+                        Log.Text("#" + rid + " GPU device lost; reloading " + Path.GetFileName(file));
+                        ThreadPool.QueueUserWorkItem(delegate { try { LoadModel(file); } catch { } });
+                    }
                 }
             }
             try { outS.Close(); } catch { }
