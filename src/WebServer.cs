@@ -221,7 +221,7 @@ namespace Phoenix
                     else
                     {
                         MessageBox.Show("There is no compatible browsers installed. Please get either Chrome or Edge installed before this program can run.",
-                            "PhoenixAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            "PhoenixLAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
                 lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
@@ -853,7 +853,7 @@ namespace Phoenix
                 string name;
                 try { using (Process p = Process.GetProcessById(kv.Key)) name = p.ProcessName; } catch { name = "pid " + kv.Key; }
                 if (n++ > 0) sb.Append(',');
-                sb.Append("{\"name\":").Append(Json.Quote(kv.Key == self ? name + " (PhoenixAI)" : name)).Append(",\"pid\":").Append(kv.Key).Append(",\"bytes\":").Append(kv.Value).Append('}');
+                sb.Append("{\"name\":").Append(Json.Quote(kv.Key == self ? name + " (PhoenixLAI)" : name)).Append(",\"pid\":").Append(kv.Key).Append(",\"bytes\":").Append(kv.Value).Append('}');
             }
             return sb.Append("]}").ToString();
         }
