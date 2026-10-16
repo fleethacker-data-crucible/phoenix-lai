@@ -970,11 +970,12 @@ namespace Phoenix
                         if (toolEnd >= 0 && toolEnd < reply.Length) reply.Length = toolEnd;
                         double stepSec = stepWatch.Elapsed.TotalSeconds;
                         Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                            "#{0} ASSISTANT step {1}: first token {2} ms | prompt {3} new + {4} cached tokens in {5} ms ({6:F1} tok/s) | " +
+                            "#{0} ASSISTANT step {1}: first token {2} ms | prompt {3} new{14} + {4} cached tokens in {5} ms ({6:F1} tok/s) | " +
                             "generated {7} tokens in {8} ms ({9:F1} tok/s) | step {10} ms | stop: {11}{12}\n{13}",
                             rid, step, ttft < 0 ? "-" : ChatLog.Ms(ttft), st.PromptTokens, st.ReusedTokens, ChatLog.Ms(st.PromptSeconds), st.PromptTokensPerSecond,
                             st.GeneratedTokens, ChatLog.Ms(st.GenerateSeconds), st.TokensPerSecond, ChatLog.Ms(stepSec), st.StopReason,
-                            gone ? " (client disconnected / stopped)" : "", reply.ToString()));
+                            gone ? " (client disconnected / stopped)" : "", reply.ToString(),
+                            st.RecalledTokens > 0 ? " (" + st.RecalledTokens + " of them recalled, not read)" : ""));
                         Log.Json("reply", "\"id\":" + rid + ",\"step\":" + step + ",\"ttft_ms\":" + (ttft < 0 ? "null" : ChatLog.Ms(ttft)) +
                             ",\"prompt_tokens\":" + st.PromptTokens + ",\"cached_tokens\":" + st.ReusedTokens + ",\"prompt_ms\":" + ChatLog.Ms(st.PromptSeconds) +
                             ",\"gen_tokens\":" + st.GeneratedTokens + ",\"gen_ms\":" + ChatLog.Ms(st.GenerateSeconds) +
@@ -1046,6 +1047,7 @@ namespace Phoenix
                             results.Append("- ").Append(a.Message).Append('\n');
                             if (a.Content != null)
                             {
+                                if (a.Op == "read") _engine.RegisterRecall(a.Content);   // Instant Recall for this file text
                                 results.Append("```\n").Append(a.Content).Append("\n```\n");
                                 needsAnswer = true;
                             }
