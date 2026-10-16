@@ -114,9 +114,10 @@ $('files').addEventListener('click', e => {
 });
 
 // ---------- folder ----------
-// /folder <path> connects a folder (paste it, quotes are fine); /folder off disconnects; /folder alone shows the current one.
+// /folder /<project>[/sub] connects a folder inside the fixed projects root (<home>\Phoenix_Projects); /folder off
+// disconnects; /folder alone shows the current one. Absolute paths are refused by the server with an explanation.
 async function setFolder(arg) {
-  if (!arg) { systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder off to disconnect)' : 'No folder connected. Use /folder <path>, e.g. /folder D:\\Projects\\MyApp'); return; }
+  if (!arg) { systemLine(info.folder ? 'Folder: ' + info.folder + '  (/folder off to disconnect)' : 'No folder connected. Use /folder /<project>, e.g. /folder /my-app/src (projects live in ' + (info.projectsRoot || 'Phoenix_Projects') + ')'); return; }
   const path = arg.trim().replace(/^["']|["']$/g, '');
   const off = /^(off|none|disconnect)$/i.test(path);
   try { info = await api('/api/folder', { path: off ? '' : path }); } catch (e) { systemLine('Could not connect: ' + e.message); return; }
@@ -193,7 +194,7 @@ async function loadModel(name, ctx) {
 }
 const COMMANDS = [
   { name: '/files', use: '/files', desc: 'show or hide the connected folder\'s files', run: () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); } },
-  { name: '/folder', use: '/folder <path>', desc: 'connect a project folder: paste its path, or pick a recent one (off = disconnect)', arg: true,
+  { name: '/folder', use: '/folder /<project>', desc: 'connect a project in Phoenix_Projects, e.g. /my-app/src (off = disconnect)', arg: true,
     options: () => recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })),
     run: arg => setFolder(arg) },
   { name: '/help', use: '/help', desc: 'list all commands with full syntax', run: () => systemLine('Commands:\n' + COMMANDS.map(c => '  ' + c.use + '  —  ' + c.desc).join('\n') + '\nKeys: Esc stops a reply · Ctrl+C copies selected text.') },
@@ -287,7 +288,7 @@ async function openSettings() {
   $('sContext').value = info.context || 4096; $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
   $('sTopK').value = settings.top_k; $('sTopP').value = settings.top_p; $('sRepeat').value = settings.repeat_penalty; $('sSystem').value = settings.system;
   const rg = info.rag || {};
-  $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : ' · docs\\ is empty';
+  $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
   $('loadNote').textContent = '';
   lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner };
   $('sBanner').checked = !!settings.banner;

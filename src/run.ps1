@@ -63,7 +63,7 @@ function Test-Locality {
             $where = "$($f.Name):$($i + 1)"
 
             # 2. Banned APIs / URLs (the loopback server file gets a narrow exception, checked below).
-            $isLoopback = $f.Name -eq $LoopbackFile
+            $isLoopback = $f.Name -eq $LoopbackFile -or $f.Name -eq 'WebServer.OpenAi.cs'
             foreach ($p in $BannedPatterns.Keys) {
                 if ($isLoopback -and $LoopbackAllowed -contains $p) { continue }
                 if ($line.IndexOf($p, [StringComparison]::Ordinal) -ge 0) {
@@ -76,9 +76,19 @@ function Test-Locality {
                 }
                 # Every http:// must be the loopback address.
                 foreach ($m in [regex]::Matches($line, 'http://([^"/:]*)')) {
-                    if ($m.Groups[1].Value -ne '127.0.0.1') { $failures.Add("$where uses a non-loopback address 'http://$($m.Groups[1].Value)'") }
+                    if ($m.Groups[1].Value -ne '127.0.0.1' -and $m.Groups[1].Value -ne 'localhost') { $failures.Add("$where uses a non-loopback address 'http://$($m.Groups[1].Value)'") }
                 }
             }
+
+            # 2b. Hard rule: the model never runs a shell. No source may name one or start a process outside the guarded
+            #     chat-window launch (ShellGuard.cs holds the refusal lists, WebServer.cs the one guarded Process.Start).
+            if ($f.Name -ne 'ShellGuard.cs') {
+                foreach ($m in [regex]::Matches($line, '(?i)powershell|pwsh|cmd\.exe|conhost|wscript|cscript|mshta|rundll32|Management\.Automation|ShellExecute(?!\s*=\s*false)|CreateProcess|WinExec|Interaction\.Shell')) {
+                    $failures.Add("$where names '$($m.Value)' (the model may never run a shell)")
+                }
+            }
+
+            if ($f.Name -eq 'WebServer.OpenAi.cs' -and $line -match 'Process\.|ShellGuard\.CheckLaunch') { $failures.Add("$where starts a process (the API server may not)") }
 
             # 3. P/Invoke targets must be on the allowlist.
             foreach ($m in [regex]::Matches($line, '(DllImport|LibraryImport)\s*\(\s*"([^"]+)"')) {
@@ -94,6 +104,15 @@ function Test-Locality {
             if ($line -match '^\s*#r\s|extern\s+alias') { $failures.Add("$where adds an assembly reference") }
         }
     }
+    # 4b. The only process launch must go through ShellGuard.CheckLaunch.
+    $ws = Join-Path $src $LoopbackFile
+    if (Test-Path $ws) {
+        $t = [IO.File]::ReadAllText($ws)
+        if ([regex]::Matches($t, 'Process\.Start\(').Count -ne 1 -or $t -notmatch 'ShellGuard\.CheckLaunch\([^)]*\);\s*return Process\.Start\(') {
+            $failures.Add("$LoopbackFile must start exactly one process, right after ShellGuard.CheckLaunch")
+        }
+    }
+    if (-not (Test-Path (Join-Path $src 'ShellGuard.cs'))) { $failures.Add("ShellGuard.cs is missing (the model may never run a shell)") }
     # 5. The chat page may not pull anything from the network.
     $html = Join-Path $Root 'html'
     if (Test-Path $html) {

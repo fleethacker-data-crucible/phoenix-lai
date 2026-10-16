@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 namespace Phoenix
 {
-    public sealed class WebServer : IDisposable
+    public sealed partial class WebServer : IDisposable
     {
         const int MaxToolSteps = 6;
 
@@ -36,11 +36,18 @@ namespace Phoenix
             _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             _listener.Start();
             Log = new ChatLog(logsDir);
+            Workspace.EnsureProjectsRoot();
             Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
-            // No automatic rebuild or embedder warm-up at startup until the GPU embedder is made safe (it caused a driver
-            // reset on 2026-10-16); an older index just waits for /index.
-            if (Rag.NeedsRebuild) Log.Text("rag: index is from an older version; run /index to rebuild");
+            // An outdated or missing index is rebuilt in the background (otherwise the docs look empty and the model is
+            // never told about them). The GPU embedder submits one layer per job and holds GpuGate, so it cannot collide
+            // with a model upload (the 2026-10-16 driver reset); it falls back to the CPU on device loss.
+            if (Rag.NeedsRebuild || Rag.HasUnindexedDocs())
+            {
+                Log.Text("rag: index is missing or outdated; rebuilding");
+                Rag.StartReindex(delegate(string m) { Log.Text(m); });
+            }
             Log.Text("server started on " + Url);
+            StartApi();
             Log.Json("server_start", "\"url\":" + Json.Quote(Url));
             Thread t = new Thread(Loop);
             t.IsBackground = true;
@@ -85,6 +92,7 @@ namespace Phoenix
             ProcessStartInfo psi = new ProcessStartInfo(exe,
                 "--app=" + url + " --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check --window-size=1100,800");
             psi.UseShellExecute = false;
+            ShellGuard.CheckLaunch(psi.FileName, psi.Arguments);
             return Process.Start(psi);
         }
 
@@ -197,7 +205,10 @@ namespace Phoenix
             try
             {
                 foreach (string line in File.ReadAllLines(RecentFile, Encoding.UTF8))
-                    if (line.Trim().Length > 0 && Directory.Exists(line.Trim())) list.Add(line.Trim());
+                {
+                    string f = line.Trim();   // project paths ("/my-app/src"); old absolute entries are dropped
+                    if (f.StartsWith("/") && f.IndexOf("..") < 0 && Directory.Exists(Path.Combine(Workspace.ProjectsRoot, f.Trim('/').Replace('/', '\\')))) list.Add(f);
+                }
             }
             catch { }
             return list;
@@ -364,7 +375,7 @@ namespace Phoenix
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576).Append('}');
                     }
                 }
-                SendJson(res, 200, sb.Append("]}").ToString());
+                SendJson(res, 200, sb.Append("],\"root\":").Append(Json.Quote(Workspace.ProjectsRoot)).Append("}").ToString());
                 return;
             }
             if (path == "/api/load" && post)
@@ -381,6 +392,16 @@ namespace Phoenix
             {
                 StringBuilder sb = new StringBuilder("{\"folders\":[");
                 List<string> list = RecentFolders();
+                // Then every project in the projects root that is not already listed.
+                try
+                {
+                    foreach (string d in Directory.GetDirectories(Workspace.ProjectsRoot))
+                    {
+                        string f = "/" + Path.GetFileName(d);
+                        if (!list.Exists(delegate(string x) { return string.Equals(x, f, StringComparison.OrdinalIgnoreCase); })) list.Add(f);
+                    }
+                }
+                catch { }
                 for (int i = 0; i < list.Count; i++) { if (i > 0) sb.Append(','); sb.Append(Json.Quote(list[i])); }
                 SendJson(res, 200, sb.Append("]}").ToString());
                 return;
@@ -389,7 +410,7 @@ namespace Phoenix
             {
                 string folder = Json.GetStr(body, "path", "");
                 _workspace = folder.Length == 0 ? null : new Workspace(folder);
-                if (_workspace != null) RememberFolder(_workspace.Root);
+                if (_workspace != null) RememberFolder(_workspace.Display);
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
                 SendJson(res, 200, Info());
@@ -476,7 +497,7 @@ namespace Phoenix
 
         Workspace RequireWorkspace()
         {
-            if (_workspace == null) throw new InvalidOperationException("No folder connected. Use /folder <path>.");
+            if (_workspace == null) throw new InvalidOperationException("No folder connected. Use /folder /<project>.");
             return _workspace;
         }
 
@@ -497,7 +518,8 @@ namespace Phoenix
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + ContextLength +
                    ",\"loading\":" + (_loading != null ? Json.Quote(_loading) : "null") +
-                   ",\"folder\":" + (w != null ? Json.Quote(w.Root) : "null") +
+                   ",\"folder\":" + (w != null ? Json.Quote(w.Display) : "null") +
+                   ",\"projectsRoot\":" + Json.Quote(Workspace.ProjectsRoot) +
                    ",\"folderName\":" + (w != null ? Json.Quote(Path.GetFileName(w.Root)) : "null") +
                    ",\"git\":" + (w != null ? w.GitJson() : "null") +
                    ",\"rules\":" + RulesJson() +
@@ -812,6 +834,7 @@ namespace Phoenix
         public void Dispose()
         {
             try { _listener.Stop(); _listener.Close(); } catch { }
+            StopApi();
             Rag.Dispose();
         }
     }
