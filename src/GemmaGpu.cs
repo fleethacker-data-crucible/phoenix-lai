@@ -256,14 +256,25 @@ namespace Phoenix
                 int nr = Math.Min(rowsPer, w.Rows - r0);
                 Array.Clear(pay, 0, pay.Length);
                 if (hs != null) Array.Clear(hs, 0, hs.Length);
-                for (int r = 0; r < nr; r++)
-                    for (int b = 0; b < q.Nb; b++)
+                // Repack rows in parallel (one row per task, whole-block copies): single-threaded byte copies made the
+                // CPU the bottleneck of loading (Gemma 12B: 7 GB at ~0.4 GB/s).
+                int rr0 = r0, nb = q.Nb, stride = q.Stride;
+                byte* data = t.Data;
+                fixed (byte* pp0 = pay)
+                {
+                    byte* pp = pp0;
+                    System.Threading.Tasks.Parallel.For(0, nr, delegate(int r)
                     {
-                        byte* src = t.Data + ((long)(r0 + r) * q.Nb + b) * blockBytes;
-                        long slot = (long)r * q.Stride + b;
-                        if (halfScales) hs[slot] = *(ushort*)src; else d[slot] = Half.ToFloat(*(ushort*)src);
-                        for (int j = 0; j < payload; j++) pay[slot * payload + j] = src[2 + j];
-                    }
+                        byte* src = data + (long)(rr0 + r) * nb * blockBytes;
+                        long slot = (long)r * stride;
+                        byte* dst = pp + slot * payload;
+                        for (int b = 0; b < nb; b++, src += blockBytes, dst += payload, slot++)
+                        {
+                            if (halfScales) hs[slot] = *(ushort*)src; else d[slot] = Half.ToFloat(*(ushort*)src);
+                            Buffer.MemoryCopy(src + 2, dst, payload, payload);
+                        }
+                    });
+                }
                 long n = (long)nr * q.Stride;
                 fixed (byte* pp = pay) _gpu.Upload(q.A, (ulong)((long)r0 * q.Stride) * (ulong)payload, (IntPtr)pp, (ulong)n * (ulong)payload);
                 if (halfScales) { fixed (ushort* ph = hs) _gpu.Upload(q.B, (ulong)((long)r0 * q.Stride) * 2, (IntPtr)ph, (ulong)((n + 1) & ~1) * 2); }

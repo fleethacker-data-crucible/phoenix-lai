@@ -43,6 +43,13 @@ namespace Phoenix
             foreach (string ext in Executable)
                 if (name.EndsWith(ext)) throw new UnauthorizedAccessException("Refused: the model may not create executable or script files (" + ext + ").");
             if (name.IndexOf(':') >= 0) throw new UnauthorizedAccessException("Refused: alternate data streams are not allowed.");
+            // Indirect execution: other tools run files from these places by themselves (git runs .git/hooks on commit,
+            // VS Code runs .vscode/tasks.json "runOn: folderOpen" tasks, the shell runs desktop.ini handlers), so a model
+            // write there would be a command run later. Refused.
+            string p = path.Replace('\\', '/').ToLowerInvariant();
+            if (p.Contains("/.git/") || p.EndsWith("/.git") || p.Contains("/.vscode/") || p.Contains("/.idea/") || name == "desktop.ini" ||
+                name == ".gitattributes" || name == ".gitmodules")
+                throw new UnauthorizedAccessException("Refused: the model may not write into .git, .vscode or .idea, or tool configuration files that run commands.");
         }
     }
 }
