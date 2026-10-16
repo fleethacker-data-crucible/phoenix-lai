@@ -32,6 +32,7 @@
         <div class="models" id="modelList"></div>
         <div class="grid2" style="margin-top:10px">
           <label class="field">context<input id="sContext" type="text" inputmode="numeric" placeholder="auto"><span class="hint">tokens, empty = auto (largest that fits free VRAM / RAM) · changing it reloads the model</span></label>
+          <div class="field">kv cache<div class="radios" id="sKv"></div><span class="hint">memory per context token on the GPU: q8 = half of f16, q4 = a quarter · reloads the model <span id="kvNote"></span></span></div>
         </div>
       </section>
       <section id="catGen">

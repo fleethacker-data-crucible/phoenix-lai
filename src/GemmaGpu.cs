@@ -75,9 +75,16 @@ namespace Phoenix
         readonly GpuBuffer _x, _xb, _q, _k, _v, _attn, _g, _u, _xq, _xd, _kq, _kd, _scores, _attnPart, _logits;
         readonly float[] _xHost, _logitsHost;
 
-        public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx)
+        public readonly KvType Kv, KvV;   // K / V cache formats   // KV cache format (fp16, or 8 / 4-bit with KernelsKv)
+        int KvStoreGroups(int values) { return Kv == KvType.F16 && KvV == KvType.F16 ? values / 2 : values / 64; }
+
+        public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx) : this(gpu, g, maxCtx, KvType.F16, KvType.F16) { }
+        public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv) : this(gpu, g, maxCtx, kv, kv) { }
+
+        public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv, KvType kvV)
         {
             _gpu = gpu;
+            Kv = kv; KvV = kvV;
             C = GemmaConfig.FromGguf(g);
             if (C.Embedding) throw new NotSupportedException("EmbeddingGemma runs on the CPU.");
             MaxCtx = maxCtx;
@@ -99,7 +106,7 @@ namespace Phoenix
                 _kNormAdd = Kernel(KernelsGemma.NormAdd(), 3, 3, "norm add");
                 _kNormAddQ = Kernel(KernelsGemma.NormAddQuant(gpu.SubgroupArithmetic), 6, 3, "norm add + quant");
                 _kSoftcap = Kernel(KernelsGemma.Softcap(), 1, 2, "softcap");
-                _kKvT = Kernel(KernelsAttention.KvStore(), 5, 2, "kv store");
+                _kKvT = Kernel(KernelsKv.Store(Kv, KvV), 5, 2, "kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
                 _kSoftmax = Kernel(KernelsAttention.Softmax(), 2, 1, "attn softmax");
                 _kReduce = Kernel(KernelsAttention.OutputReduce(), 3, 1, "attn reduce");
 
@@ -131,10 +138,11 @@ namespace Phoenix
                     l.Up = UploadW(T(g, p + "ffn_up.weight"));
                     l.Down = UploadW(T(g, p + "ffn_down.weight"));
                     if (g.TensorsByName.ContainsKey(p + "layer_output_scale.weight")) l.OutScale = *(float*)T(g, p + "layer_output_scale.weight").Data;
-                    l.Ring = (Math.Min(maxCtx, l.Swa ? C.NSwa + SwaSlack : maxCtx) + 1) & ~1;
-                    l.KCache = Buf((ulong)l.Ring * (ulong)l.KvDim * 2, BufferKind.Device);
-                    l.VCache = Buf((ulong)l.Ring * (ulong)l.KvDim * 2, BufferKind.Device);
-                    KvBytes += 2L * l.Ring * l.KvDim * 2;
+                    l.Ring = (Math.Min(maxCtx, l.Swa ? C.NSwa + SwaSlack : maxCtx) + 7) & ~7;   // a multiple of 8 (q4 words)
+                    ulong kb = KernelsKv.CacheBytes(Kv, l.Ring, l.KvDim), vb = KernelsKv.CacheBytes(KvV, l.Ring, l.KvDim);
+                    l.KCache = Buf(kb, BufferKind.Device);
+                    l.VCache = Buf(vb, BufferKind.Device);
+                    KvBytes += (long)(kb + vb);
                     maxQ = Math.Max(maxQ, C.NHead * l.HeadDim); maxKv = Math.Max(maxKv, l.KvDim); maxFf = Math.Max(maxFf, l.NFf);
                     _layers[i] = l;
                     if (l.Wq.Type != GgmlType.Q4_0 || l.Wk.Type != GgmlType.Q4_0 || (l.Wv != null && l.Wv.Type != GgmlType.Q4_0) || l.Wo.Type != GgmlType.Q4_0 ||
@@ -179,8 +187,8 @@ namespace Phoenix
             uint need = KernelsAttention.ScoresShared(group, (uint)kd.HeadDim);
             if (_gpu.MaxSharedMemory != 0 && need > _gpu.MaxSharedMemory)
                 throw new NotSupportedException("This GPU has " + _gpu.MaxSharedMemory + " bytes of shared memory; Gemma attention needs " + need + ".");
-            kd.Scores = Kernel(KernelsAttention.Scores(group, (uint)kd.HeadDim), 4, 5, "attn scores " + (swa ? "local" : "global"));
-            kd.Out = Kernel(KernelsAttention.OutputPartial(group), 4, 5, "attn out " + (swa ? "local" : "global"));
+            kd.Scores = Kernel(KernelsAttention.Scores(group, (uint)kd.HeadDim, Kv), 4, 5, "attn scores " + (swa ? "local" : "global"));
+            kd.Out = Kernel(KernelsAttention.OutputPartial(group, KvV), 4, 5, "attn out " + (swa ? "local" : "global"));
             return kd;
         }
 
@@ -419,7 +427,7 @@ namespace Phoenix
                 _gpu.Record(_kHeadNorm, new GpuBuffer[] { _k, l.KNorm, _k }, new uint[] { (uint)hd, eps, 1 }, (uint)l.NHeadKv, 1, 1);
                 _gpu.Record(_kRope, new GpuBuffer[] { _q, kd.Cs }, new uint[] { (uint)C.NHead, (uint)hd, half }, Groups(C.NHead * (int)half, Kernels.Wg), 1, 1, false);
                 _gpu.Record(_kRope, new GpuBuffer[] { _k, kd.Cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half }, Groups(l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
-                _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, kd.Params }, new uint[] { (uint)l.KvDim, (uint)l.Ring }, Groups(l.KvDim / 2, Kernels.Wg), 1, 1);
+                _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, kd.Params }, new uint[] { (uint)l.KvDim, (uint)l.Ring }, Groups(KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
 
                 // attention (scale 1)
                 _gpu.RecordIndirect(kd.Scores, new GpuBuffer[] { _q, l.KCache, _scores, kd.Params }, new uint[] { (uint)hd, (uint)l.KvDim, (uint)MaxCtx, Bits(1f), (uint)l.Ring }, kd.Indirect, 0);
@@ -489,8 +497,8 @@ namespace Phoenix
             if (_kMm != null) return;
             _kMm = Kernel(KernelsPrefill.MatMulQ4Q8Tile(_gpu.IntegerDot, 1, MmTok, true), 5, 4, "pf matmul q4_0");
             _kMmAny = Kernel(KernelsPrefill.MatMulQ4Q8(_gpu.IntegerDot, 1), 5, 4, "pf matmul q4_0 (any)");
-            _kKvRows = Kernel(KernelsPrefill.KvStoreRows(), 4, 5, "pf kv store");
-            _kAttnPre = Kernel(KernelsPrefill.Attention(), 4, 8, "pf attention");
+            _kKvRows = Kernel(KernelsKv.StoreRows(Kv, KvV), 4, 5, "pf kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
+            _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 8, "pf attention");
             _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
             _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");
             _kRopeRows = Kernel(KernelsBatch.RopeNeoxRows(), 2, 4, "pf rope");
@@ -572,8 +580,8 @@ namespace Phoenix
                 _gpu.Record(_kHeadNorm, new GpuBuffer[] { _pK, l.KNorm, _pK }, new uint[] { (uint)hd, eps, 1 }, (uint)(T * l.NHeadKv), 1, 1);
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pQ, cs }, new uint[] { (uint)C.NHead, (uint)hd, half, (uint)T }, Groups(T * C.NHead * (int)half, Kernels.Wg), 1, 1, false);
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pK, cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half, (uint)T }, Groups(T * l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
-                for (uint par = 0; par < 2; par++)
-                    _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)p0, (uint)T, par }, Groups(T * l.KvDim / 2, Kernels.Wg), 1, 1);
+                for (uint par = 0; par < KernelsKv.Passes(Kv); par++)
+                    _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
                 _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
                     new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f) }, (uint)T, (uint)C.NHead, 1);
                 RowQuant(_pAtt, null, KernelsQuant.Mode.Plain, T * qDim);

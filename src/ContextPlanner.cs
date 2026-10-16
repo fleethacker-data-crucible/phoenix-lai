@@ -36,7 +36,8 @@ namespace Phoenix
             }
             ModelConfig m = ModelConfig.FromGguf(g);
             long kvDim = (long)m.NHeadKv * m.HeadDim;
-            perToken = gpu ? m.NLayer * kvDim * 2 * 2 + (long)m.NHead * 4 + (long)m.NHead * m.HeadDim * 4 / KernelsAttention.Chunk
+            double perValue = KernelsKv.BytesPerValue(ChatEngine.KvFor(g));   // fp16 2, q8 ~1.06, q4 ~0.56 bytes
+            perToken = gpu ? (long)(m.NLayer * kvDim * 2 * perValue) + (long)m.NHead * 4 + (long)m.NHead * m.HeadDim * 4 / KernelsAttention.Chunk
                            : m.NLayer * kvDim * 2 * 4;   // the CPU path keeps f32
         }
 

@@ -254,6 +254,7 @@ html { color-scheme: dark; }
 .settings .radios input { position: absolute; opacity: 0; pointer-events: none; }
 .settings .radios span { padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--soft); font-size: 13px; transition: border-color .12s, color .12s; }
 .settings .radios label:hover span { border-color: rgba(var(--accent-rgb),.5); color: var(--text); }
+.settings .radios label.disabled { cursor: default; opacity: .35; pointer-events: none; }
 .settings .radios input:checked + span { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb),.1); }
 .settings .radios input:focus-visible + span { outline: 1px solid var(--accent); outline-offset: 2px; }
 .settings .toggle .hint { margin-left: 4px; }

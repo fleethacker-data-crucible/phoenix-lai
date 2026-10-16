@@ -108,6 +108,16 @@ namespace Phoenix
         }
 
         // Loads a local .gguf file. Uses the GPU when Vulkan works, otherwise the CPU reference path.
+        // KV cache format for GPU Llama models (q8 by default: 64/64 top-1 vs fp16 at half the memory). Gemma always
+        // keeps fp16: its values have large outlier channels that 8 / 4-bit blocks lose (measured 54/64), and its
+        // sliding-window cache is small anyway.
+        public static KvType KvCache = KvType.Q8;
+
+        public static KvType KvFor(GgufFile g)
+        {
+            return GemmaConfig.IsGemma(g.GetString("general.architecture")) ? KvType.F16 : KvCache;
+        }
+
         public static ChatEngine Load(string path, int contextLength, bool allowGpu, TextCallback log)
         {
             if (!File.Exists(path)) throw new FileNotFoundException("Model file not found.", path);
@@ -141,7 +151,9 @@ namespace Phoenix
                             else { ctx = 8192; why = "auto context 8192 (the driver does not report free VRAM)"; }
                             if (log != null) log(why);
                         }
-                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, ctx) : new LlamaGpu(gpu, g, ctx);
+                        KvType kv = KvFor(g);
+                        if (log != null) log("KV cache " + KernelsKv.Name(kv) + (GemmaConfig.IsGemma(garch) && KvCache != KvType.F16 ? " (Gemma keeps fp16)" : ""));
+                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, ctx, kv) : new LlamaGpu(gpu, g, ctx, kv);
                         contextLength = ctx;
                     }
                     catch (Exception ex)
