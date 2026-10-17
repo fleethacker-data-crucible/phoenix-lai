@@ -1,1 +1,0 @@
-# llama-completion -m models/Devstral-Small-2-24B-Instruct-2512-UD-IQ2_XXS.gguf -p <prompt> -n 24 -c 512 -ngl 0 --temp 0 -s 1 -no-cnv -fa off

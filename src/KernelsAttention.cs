@@ -1,5 +1,5 @@
 // Decode attention as wide kernels: scores, softmax, chunked weighted V, chunk reduction. Same math and fp16
-// rounding points as Kernels.Attention / LlamaCpu: s = f16(q)·k * scale; p = f16(exp(s - max) / sum); out = sum_t p_t v_t.
+// rounding points as Kernels.Attention: s = f16(q)·k * scale; p = f16(exp(s - max) / sum); out = sum_t p_t v_t.
 // The GQA group size is compiled in. Per-token values come from a small params buffer (not push constants) so a
 // recorded command buffer can be replayed for every token:
 //   params[0] = pos, params[1] = n (keys attended), params[2] = number of key chunks, params[3] = attention temperature (f32 bits),

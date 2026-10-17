@@ -1,4 +1,4 @@
-// Long-prompt prefill benchmark for any GGUF (Gemma or Llama): tok/s at several prompt lengths, per-kernel GPU time. C# 5 only.
+// Long-prompt prefill benchmark (Gemma 4): tok/s at several prompt lengths, per-kernel GPU time. C# 5 only.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -48,7 +48,7 @@ namespace Phoenix.Tests
             using (GpuDevice gpu = GpuDevice.Create())
             {
                 string arch = g.GetString("general.architecture");
-                ILanguageModel m = GemmaConfig.IsGemma(arch) ? (ILanguageModel)new GemmaGpu(gpu, g, max + 64) : new LlamaGpu(gpu, g, max + 64);
+                ILanguageModel m = new GemmaGpu(gpu, g, max + 64);
                 try
                 {
                     GemmaGpu gm = m as GemmaGpu;

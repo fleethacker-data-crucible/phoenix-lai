@@ -21,24 +21,14 @@ namespace Phoenix
         static void KvCost(GgufFile g, bool gpu, out long perToken, out long fixedBytes)
         {
             fixedBytes = 0;
-            string arch = g.GetString("general.architecture");
-            if (GemmaConfig.IsGemma(arch))
+            GemmaConfig c = GemmaConfig.FromGguf(g);
+            perToken = gpu ? (long)c.NHead * 4 : 0;   // attention scores row
+            for (int l = 0; l < c.NLayer; l++)
             {
-                GemmaConfig c = GemmaConfig.FromGguf(g);
-                perToken = gpu ? (long)c.NHead * 4 : 0;   // attention scores row
-                for (int l = 0; l < c.NLayer; l++)
-                {
-                    long kv = (long)c.NHeadKv[l] * c.HeadDim[l] * 2 * 2;   // K and V, fp16
-                    if (gpu && c.Swa[l]) fixedBytes += (c.NSwa + GemmaGpu.SwaSlack) * kv;
-                    else perToken += kv;
-                }
-                return;
+                long kv = (long)c.NHeadKv[l] * c.HeadDim[l] * 2 * 2;   // K and V, fp16
+                if (gpu && c.Swa[l]) fixedBytes += (c.NSwa + GemmaGpu.SwaSlack) * kv;
+                else perToken += kv;
             }
-            ModelConfig m = ModelConfig.FromGguf(g);
-            long kvDim = (long)m.NHeadKv * m.HeadDim;
-            double perValue = KernelsKv.BytesPerValue(ChatEngine.KvFor(g));   // fp16 2, q8 ~1.06, q4 ~0.56 bytes
-            perToken = gpu ? (long)(m.NLayer * kvDim * 2 * perValue) + (long)m.NHead * 4 + (long)m.NHead * m.HeadDim * 4 / KernelsAttention.Chunk
-                           : m.NLayer * kvDim * 2 * 4;   // the CPU path keeps f32
         }
 
         static int Trained(GgufFile g)

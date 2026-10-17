@@ -1,4 +1,4 @@
-// Phase 8 gate: sampler, chat template, chat engine on the 8B model (speed target 30+ tokens/s). C# 5 only.
+// Phase 8 gate: sampler, Gemma 4 chat template, chat engine (two turns, KV-cache reuse, decode speed). C# 5 only.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,16 +7,13 @@ namespace Phoenix.Tests
 {
     public static class Phase8Gate
     {
-        const double TargetTokensPerSecond = 30;
+        const double TargetTokensPerSecond = 20;   // Gemma 4 12B q4_0 on the RX 6700 XT
 
-        public static List<string> Run(string modelsDir, TextWriter output)
+        public static List<string> Run(string modelPath, TextWriter output)
         {
             List<string> fail = new List<string>();
             SamplerTests(fail, output);
-
-            string big = Path.Combine(modelsDir, "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf");
-            if (!File.Exists(big)) big = Path.Combine(modelsDir, "Llama-3.1-8B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(big)) EngineTests(big, fail, output); else fail.Add("8B model missing: " + big);
+            EngineTests(modelPath, fail, output);
             return fail;
         }
 
@@ -69,16 +66,15 @@ namespace Phoenix.Tests
             using (ChatEngine eng = ChatEngine.Load(path, 4096, true, delegate(string m) { output.WriteLine("  " + m); }))
             {
                 output.WriteLine("engine: {0} on {1}", eng.ModelName, eng.Backend);
-                if (!eng.Backend.StartsWith("GPU")) fail.Add("8B model did not load on the GPU");
+                if (!eng.Backend.StartsWith("GPU")) fail.Add("model did not load on the GPU");
 
                 // Template check.
                 List<ChatMessage> msgs = new List<ChatMessage>();
                 msgs.Add(new ChatMessage("system", "You are terse."));
                 msgs.Add(new ChatMessage("user", "Hi"));
                 string rendered = eng.Tokenizer.Decode(eng.Template(msgs), true);
-                string want = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are terse.<|eot_id|>" +
-                              "<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
-                Check(rendered == want, "chat template renders the Llama 3 format", fail);
+                string want = "<bos><|turn>system\nYou are terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";
+                Check(rendered == want, "chat template renders the Gemma 4 format (got " + rendered.Replace("\n", "\\n") + ")", fail);
 
                 SamplerSettings greedy = new SamplerSettings(); greedy.Temperature = 0;
 
@@ -90,7 +86,7 @@ namespace Phoenix.Tests
                 GenerationStats s1 = eng.Generate(msgs, greedy, 32, delegate(string t) { r1.Append(t); }, null);
                 output.WriteLine("  turn 1: \"{0}\" ({1})", r1.ToString().Trim(), s1.StopReason);
                 Check(r1.ToString().Contains("Paris"), "turn 1 answers Paris", fail);
-                Check(s1.StopReason == "end of turn", "turn 1 ends with <|eot_id|>", fail);
+                Check(s1.StopReason == "end of turn", "turn 1 ends with <turn|>", fail);
 
                 // Turn 2: longer reply, reuses the KV cache; measures decode speed.
                 msgs.Add(new ChatMessage("assistant", r1.ToString()));
@@ -103,7 +99,7 @@ namespace Phoenix.Tests
                 output.WriteLine("  text: {0}...", r2.ToString().Replace("\n", " ").Substring(0, Math.Min(140, r2.Length)));
                 Check(s2.ReusedTokens > 20, "turn 2 reuses the cached conversation", fail);
                 Check(s2.GeneratedTokens >= 100, "turn 2 produces a long reply", fail);
-                Check(s2.TokensPerSecond >= TargetTokensPerSecond, "8B decode speed " + s2.TokensPerSecond.ToString("F1") + " tokens/s >= " + TargetTokensPerSecond, fail);
+                Check(s2.TokensPerSecond >= TargetTokensPerSecond, "decode speed " + s2.TokensPerSecond.ToString("F1") + " tokens/s >= " + TargetTokensPerSecond, fail);
             }
         }
 

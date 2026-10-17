@@ -39,7 +39,6 @@ namespace Phoenix
             _listener.Start();
             Log = new ChatLog(logsDir);
             Workspace.EnsureProjectsRoot();
-            ChatEngine.KvCache = ReadKv();
             Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
             // An outdated or missing index is rebuilt in the background (otherwise the docs look empty and the model is
             // never told about them). The GPU embedder submits one layer per job and holds GpuGate, so it cannot collide
@@ -299,31 +298,6 @@ namespace Phoenix
             try { return !File.Exists(DeviceFile) || File.ReadAllText(DeviceFile).Trim() != "cpu"; } catch { return true; }
         }
 
-        // Whether a model can use the q8 / q4 KV cache (read from its header once per file version): Llama-family models
-        // whose KV width is a multiple of 64; Gemma keeps fp16 (ChatEngine.KvFor).
-        static readonly Dictionary<string, bool> _kvqCache = new Dictionary<string, bool>();
-        static bool SupportsQuantKv(string file)
-        {
-            string key = file + "|" + File.GetLastWriteTimeUtc(file).Ticks;
-            lock (_kvqCache)
-            {
-                bool ok;
-                if (_kvqCache.TryGetValue(key, out ok)) return ok;
-                try
-                {
-                    using (GgufFile g = GgufFile.Open(file))
-                    {
-                        string arch = g.GetString("general.architecture");
-                        if (GemmaConfig.IsGemma(arch)) ok = false;
-                        else { ModelConfig m = ModelConfig.FromGguf(g); ok = m.NHeadKv * m.HeadDim % 64 == 0; }
-                    }
-                }
-                catch { ok = false; }
-                _kvqCache[key] = ok;
-                return ok;
-            }
-        }
-
         int _recallBusy;
         volatile bool _recallStop;
         volatile string _recallProgress;
@@ -334,13 +308,6 @@ namespace Phoenix
         int _approvalId;
         readonly Dictionary<int, KeyValuePair<ManualResetEvent, bool>> _approvals = new Dictionary<int, KeyValuePair<ManualResetEvent, bool>>();
         static bool ReadAcceptMode() { try { return File.ReadAllText(ModeFile).Trim() == "accept"; } catch { return false; } }
-
-        // KV cache format for GPU Llama models (/settings: f16, q8, q4), kept across restarts.
-        static string KvFile { get { return Path.Combine(AppDataDir, "kv-cache.txt"); } }
-        static KvType ReadKv()
-        {
-            try { string s = File.ReadAllText(KvFile).Trim(); return s == "f16" ? KvType.F16 : s == "q4" ? KvType.Q4 : KvType.Q8; } catch { return KvType.Q8; }
-        }
 
         static string RecentFile { get { return Path.Combine(AppDataDir, "recent-folders.txt"); } }
 
@@ -543,7 +510,7 @@ namespace Phoenix
                         if (!first) sb.Append(',');
                         first = false;
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576)
-                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false").Append('}');
+                          .Append('}');
                     }
                 }
                 SendJson(res, 200, sb.Append("],\"root\":").Append(Json.Quote(Workspace.ProjectsRoot)).Append("}").ToString());
@@ -619,19 +586,6 @@ namespace Phoenix
                 return;
             }
             if (path == "/api/vram") { SendJson(res, 200, VramProcessesJson()); return; }
-            if (path == "/api/kv" && post)
-            {
-                string kv = Json.GetStr(body, "kv", "q8").ToLowerInvariant();
-                KvType t = kv == "f16" ? KvType.F16 : kv == "q4" ? KvType.Q4 : KvType.Q8;
-                bool changed = t != ChatEngine.KvCache;
-                ChatEngine.KvCache = t;
-                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(KvFile, KernelsKv.Name(t)); } catch { }
-                Log.Text("KV cache: " + KernelsKv.Name(t));
-                ChatEngine cur = _engine;
-                if (changed && cur != null) LoadModel(cur.ModelPath);   // the cache is allocated at load
-                SendJson(res, 200, Info());
-                return;
-            }
             if (path == "/api/recall" && post)
             {
                 // /recall: pre-read every text file of the connected project (Instant Recall), newest first. Runs in the
@@ -789,7 +743,7 @@ namespace Phoenix
             Workspace w = _folderAccess ? _workspace : null;
             ChatEngine er = _engine;
             return "{\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
-                   ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
+                   ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
