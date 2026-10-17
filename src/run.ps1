@@ -1,4 +1,4 @@
-# PhoenixLAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
+# Phoenix LAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
 #   powershell.exe -NoProfile -STA -File src\run.ps1                     # checks, compile, chat in an Edge app window
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Model models\x.gguf -Context 8192
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -CheckOnly          # locality checks only
@@ -113,6 +113,27 @@ function Test-Locality {
         }
     }
     if (-not (Test-Path (Join-Path $src 'ShellGuard.cs'))) { $failures.Add("ShellGuard.cs is missing (the model may never run a shell)") }
+    # 4b. The run guard (warning, 5-minute lockout that survives restarts) must be intact and wired in: the server will not
+    #     start with it removed, unhooked or its lockout made non-persistent.
+    $guardNeeds = [ordered]@{
+        'ShellGuard.cs'   = @('public static string CheckRunRequest(string userText, out string level, out int seconds)', 'static DateTime _suspendedUntil = LoadLockout();',
+                              'SaveLockout(_suspendedUntil);', 'static DateTime LoadLockout()', 'static string Sign(string body)', 'HMACSHA256', 'public const int SuspendMinutes = 5;')
+        'WebServer.cs'    = @('ShellGuard.CheckRunRequest(lastUser, out guardLevel, out guardSeconds)')
+        'Workspace.cs'    = @('ShellGuard.RunAdvice', 'ShellGuard.CheckWrite(f)', 'ShellGuard.Refusal')
+    }
+    foreach ($gf in $guardNeeds.Keys) {
+        $gp = Join-Path $src $gf
+        $gt = if (Test-Path $gp) { [IO.File]::ReadAllText($gp) } else { '' }
+        foreach ($need in $guardNeeds[$gf]) {
+            if ($gt.IndexOf($need, [StringComparison]::Ordinal) -lt 0) { $failures.Add("$gf no longer contains the run guard ('$need')") }
+        }
+    }
+    # The guard reply must come before the model is ever called in Chat().
+    $ws = [IO.File]::ReadAllText((Join-Path $src 'WebServer.cs'))
+    $gAt = $ws.IndexOf('ShellGuard.CheckRunRequest(lastUser', [StringComparison]::Ordinal)
+    $cAt = $ws.IndexOf('void Chat(Dictionary', [StringComparison]::Ordinal)
+    $gEnd = $ws.IndexOf('.Generate(', $cAt, [StringComparison]::Ordinal)
+    if ($gAt -lt 0 -or $cAt -lt 0 -or $gAt -lt $cAt -or ($gEnd -ge 0 -and $gAt -gt $gEnd)) { $failures.Add("WebServer.cs: the run guard must be checked in Chat() before the model runs") }
     # 5. The chat page may not pull anything from the network.
     $html = Join-Path $Root 'html'
     if (Test-Path $html) {

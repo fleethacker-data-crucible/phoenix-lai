@@ -34,7 +34,10 @@ namespace Phoenix
             // Compact on purpose: VS Code's agent sends ~55 tools with long descriptions and full JSON schemas, which as
             // written cost a 12B model minutes of prefill (2026-10-16). One line per tool: name(arg: type, arg?: type) - the
             // first sentence of its description.
-            sb.Append("# Tools\n\nYou can call these tools (\"?\" marks an optional argument):\n");
+            sb.Append("# Tools\n\nYou act on the user's workspace and computer through these tools. When the user asks you to do something ");
+            sb.Append("a tool can do, call the tool: never say you cannot, and never tell the user to do it by hand. File operations no ");
+            sb.Append("tool covers (delete, move, rename, run, build, install) go through the terminal / command tool; the user approves ");
+            sb.Append("each command. (\"?\" marks an optional argument.)\n");
             foreach (object t in tools)
             {
                 Dictionary<string, object> td = t as Dictionary<string, object>;

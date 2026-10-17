@@ -221,7 +221,7 @@ namespace Phoenix
                     else
                     {
                         MessageBox.Show("There is no compatible browsers installed. Please get either Chrome or Edge installed before this program can run.",
-                            "PhoenixLAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            "Phoenix LAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
                 lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
@@ -445,6 +445,7 @@ namespace Phoenix
         }
 
         long _lastRequestTicks = DateTime.UtcNow.Ticks;
+        long _lastWindowTicks = DateTime.UtcNow.Ticks;   // last check-in of an app window (not the VS Code chat)
         int _activeRequests;
         volatile bool _focusRequested;
         readonly Dictionary<string, DateTime> _pages = new Dictionary<string, DateTime>();   // page id -> last poll (UTC)
@@ -457,15 +458,19 @@ namespace Phoenix
                 List<string> stale = new List<string>();
                 foreach (KeyValuePair<string, DateTime> kv in _pages) if (DateTime.UtcNow - kv.Value > TimeSpan.FromSeconds(75)) stale.Add(kv.Key);
                 foreach (string k in stale) _pages.Remove(k);
-                return _pages.Count;
+                // the chat inside VS Code (page ids starting "vs-") is not the app window: a second launch still opens one
+                int n = 0;
+                foreach (string k in _pages.Keys) if (!k.StartsWith("vs-")) n++;
+                return n;
             }
         }
 
         void WaitWhilePagesActive(TimeSpan idle)
         {
             Thread.Sleep(3000);   // give a new window time to load and check in
-            while (Thread.VolatileRead(ref _activeRequests) > 0 || OpenPages() > 0 ||
-                   DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastRequestTicks) < TimeSpan.FromSeconds(5).Ticks)
+            // Only the app window keeps the server up: closing it shuts the server down, even while the VS Code chat or
+            // another API client is connected (they reconnect when it is started again). The 5 s grace covers a reload.
+            while (OpenPages() > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastWindowTicks) < TimeSpan.FromSeconds(5).Ticks)
                 Thread.Sleep(500);
         }
 
@@ -525,6 +530,7 @@ namespace Phoenix
             if (path == "/api/info")
             {
                 if (page != null && page.Length <= 40) lock (_pages) _pages[page] = DateTime.UtcNow;
+                if (page != null && !page.StartsWith("vs-")) Interlocked.Exchange(ref _lastWindowTicks, DateTime.UtcNow.Ticks);
                 string json = Info();
                 if (_focusRequested && page != null) { _focusRequested = false; json = json.Substring(0, json.Length - 1) + ",\"focus\":true}"; }
                 SendJson(res, 200, json);
@@ -599,6 +605,14 @@ namespace Phoenix
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
                 SendJson(res, 200, Info());
+                return;
+            }
+            if (path == "/api/undo" && post)
+            {
+                string msg = RequireWorkspace().Undo(Json.GetStr(body, "path", ""), Json.GetStr(body, "backup", null));
+                Log.Text(msg);
+                Log.Json("undo", "\"msg\":" + Json.Quote(msg));
+                SendJson(res, 200, "{\"msg\":" + Json.Quote(msg) + "}");
                 return;
             }
             if (path == "/api/list") { SendJson(res, 200, "{\"entries\":" + RequireWorkspace().ListJson(q ?? ".") + "}"); return; }
@@ -854,7 +868,7 @@ namespace Phoenix
                 string name;
                 try { using (Process p = Process.GetProcessById(kv.Key)) name = p.ProcessName; } catch { name = "pid " + kv.Key; }
                 if (n++ > 0) sb.Append(',');
-                sb.Append("{\"name\":").Append(Json.Quote(kv.Key == self ? name + " (PhoenixLAI)" : name)).Append(",\"pid\":").Append(kv.Key).Append(",\"bytes\":").Append(kv.Value).Append('}');
+                sb.Append("{\"name\":").Append(Json.Quote(kv.Key == self ? name + " (Phoenix LAI)" : name)).Append(",\"pid\":").Append(kv.Key).Append(",\"bytes\":").Append(kv.Value).Append('}');
             }
             return sb.Append("]}").ToString();
         }
@@ -928,6 +942,22 @@ namespace Phoenix
                     catch { gone = true; } // browser closed or pressed Stop
                 }
             };
+            // Requests to run something: the model answers the first two (it cannot run anything; it gives the command),
+            // the third gets a warning from the server, the fourth suspends the chat for 15 minutes (ShellGuard).
+            string guardLevel; int guardSeconds;
+            string guard = ShellGuard.CheckRunRequest(lastUser, out guardLevel, out guardSeconds);
+            if (guard != null)
+            {
+                Log.Text("#" + rid + " RUN GUARD: " + guard);
+                Log.Json("run_guard", "\"id\":" + rid + ",\"msg\":" + Json.Quote(guard));
+                ChatEngine eg = _engine;
+                write("{\"guard\":{\"level\":" + Json.Quote(guardLevel) + ",\"seconds\":" + guardSeconds + ",\"text\":" + Json.Quote(guard) + "}}");
+                write("{\"t\":" + Json.Quote(guard) + "}");
+                write("{\"done\":true,\"append\":[{\"role\":\"assistant\",\"content\":" + Json.Quote(guard) + "}],\"tokens\":0,\"tps\":0" +
+                      (eg != null ? ",\"ctx_used\":" + eg.UsedTokens + ",\"ctx_size\":" + eg.ContextLength : "") + "}");
+                try { outS.Close(); } catch { }
+                return;
+            }
             // A Stop is only noticed when a write fails, and nothing is written while a long prompt is read: a comment
             // line every second keeps checking (SSE clients ignore lines starting with ':').
             System.Threading.Timer heartbeat = new System.Threading.Timer(delegate
@@ -1042,7 +1072,7 @@ namespace Phoenix
                             if (!nudged && AnnouncesAction(replyText))
                             {
                                 nudged = true;
-                                string go = "Go ahead: do it now with the tags (<list>, <read>, <write>) in your reply.";
+                                string go = "Go ahead: do it now with the tags (<list>, <search>, <read>, <edit>, <write>, <delete>) in your reply.";
                                 Log.Text("#" + rid + " NUDGE: announced a file action without a tag");
                                 msgs.Add(new ChatMessage("user", go));
                                 append.Append(",{\"role\":\"user\",\"content\":").Append(Json.Quote(go)).Append('}');
@@ -1062,7 +1092,7 @@ namespace Phoenix
                             results.Append("- ").Append(a.Message).Append('\n');
                             if (a.Content != null)
                             {
-                                if (a.Op == "read") _engine.RegisterRecall(a.Content);   // Instant Recall for this file text
+                                if (a.Op == "read" && a.To == 0) _engine.RegisterRecall(a.Content);   // Instant Recall for this file text (whole files only)
                                 results.Append("```\n").Append(a.Content).Append("\n```\n");
                                 needsAnswer = true;
                             }
@@ -1160,6 +1190,8 @@ namespace Phoenix
                     int pi = ui > 0 ? msgs.FindLastIndex(ui - 1, delegate(ChatMessage m) { return m.Role == "user"; }) : -1;
                     Stopwatch rsw = Stopwatch.StartNew();
                     hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
+                    if (hits.Count == 0 && libraryNote != null && Rag.IsLibraryQuestion(msgs[ui].Text))
+                        msgs[ui] = new ChatMessage("user", msgs[ui].Text + "\n\n(No sections of my syntax library match this; it has nothing on it.)");
                     if (hits.Count > 0)
                     {
                         msgs[ui] = new ChatMessage("user", Rag.WrapMessage(hits, msgs[ui].Text));
@@ -1228,7 +1260,8 @@ namespace Phoenix
 
         static bool HasCode(string reply)
         {
-            return reply.IndexOf("```", StringComparison.Ordinal) >= 0 || reply.IndexOf("<write", StringComparison.OrdinalIgnoreCase) >= 0;
+            return reply.IndexOf("```", StringComparison.Ordinal) >= 0 || reply.IndexOf("<write", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reply.IndexOf("<replace>", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         // Second pass for a reply with code: the model checks its own code against the syntax-reference sections that
@@ -1308,8 +1341,8 @@ namespace Phoenix
         {
             StringBuilder sb = new StringBuilder();
             foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(reply,
-                "```[^\\n]*\\n([\\s\\S]*?)```|<write[^>]*>([\\s\\S]*?)</write>"))
-                sb.Append(m.Groups[1].Success && m.Groups[1].Length > 0 ? m.Groups[1].Value : m.Groups[2].Value).Append('\n');
+                "```[^\\n]*\\n([\\s\\S]*?)```|<write[^>]*>([\\s\\S]*?)</write>|<replace>()([\\s\\S]*?)</replace>"))
+                sb.Append(m.Groups[1].Success && m.Groups[1].Length > 0 ? m.Groups[1].Value : m.Groups[2].Success && m.Groups[2].Length > 0 ? m.Groups[2].Value : m.Groups[4].Value).Append('\n');
             string code = sb.Length > 0 ? sb.ToString() : reply;
             return code.Length > 3000 ? code.Substring(0, 3000) : code;
         }

@@ -564,10 +564,57 @@ namespace Phoenix
             return Run(prompt, settings, maxTokens, onText, cancel, true);
         }
 
+        // Stash: one saved cache for a long conversation, so a short unrelated request in between (an editor's code
+        // completions, chat titles, summaries) does not cost the next turn a full re-read. VS Code's agent prompt is
+        // ~9k tokens, ~50 s to read on Gemma 12B, and each completion wiped it (2026-10-16). Gemma GPU (fp16 cache) only.
+        public static int StashMinTokens = 2048;
+        KvSnapshot _stash;
+        List<int> _stashIds;
+
+        static int Common(List<int> a, List<int> b)
+        {
+            int n = 0, max = Math.Min(a.Count, b.Count);
+            while (n < max && a[n] == b[n]) n++;
+            return n;
+        }
+
+        void StashSwap(List<int> prompt)
+        {
+            if (!_model.CanRecall) return;
+            int cur = Common(_fed, prompt);
+            int stashed = _stash != null ? Common(_stashIds, prompt) : 0;
+            bool curLong = _fed.Count >= StashMinTokens && cur < _fed.Count / 2;   // about to throw away a long cache
+            try
+            {
+                if (_stash != null && stashed >= StashMinTokens && stashed > cur + 256)
+                {
+                    // the stashed conversation continues: put it back (and stash what it replaces if that is long too)
+                    KvSnapshot keep = curLong ? _model.CaptureKv(0, _fed.Count) : null;
+                    List<int> keepIds = keep != null ? new List<int>(_fed) : null;
+                    _model.SpliceKv(_stash, 0);
+                    _fed.Clear();
+                    _fed.AddRange(_stashIds);
+                    _stash = keep; _stashIds = keepIds;
+                }
+                else if (curLong)
+                {
+                    _stash = _model.CaptureKv(0, _fed.Count);
+                    _stashIds = new List<int>(_fed);
+                }
+            }
+            catch (Exception)
+            {
+                // e.g. not enough memory for the snapshot: fall back to re-reading
+                _stash = null; _stashIds = null;
+                _fed.Clear(); _model.Reset();
+            }
+        }
+
         GenerationStats Run(List<int> prompt, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel, bool chat)
         {
             GenerationStats st = new GenerationStats();
 
+            StashSwap(prompt);
             // Reuse the cached prefix.
             int reuse = 0;
             while (reuse < _fed.Count && reuse < prompt.Count - 1 && _fed[reuse] == prompt[reuse]) reuse++;

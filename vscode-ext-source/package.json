@@ -1,20 +1,37 @@
 {
   "name": "phoenixlai",
-  "displayName": "PhoenixLAI",
-  "description": "The local PhoenixLAI studio in VS Code's Chat panel (Ask, Edit, Agent) plus inline code completion. Loopback only (127.0.0.1:1234), no settings, no dependencies.",
-  "version": "1.0.0",
+  "displayName": "Phoenix",
+  "description": "The local Phoenix server's chat in VS Code (create, edit, delete files in your project, Instant Recall, docs search) plus inline code completion. Loopback only, no settings, no dependencies.",
+  "version": "2.5.0",
   "publisher": "phoenixlai",
   "license": "UNLICENSED",
   "private": true,
   "icon": "icon.png",
-  "engines": { "vscode": "^1.104.0" },
+  "engines": { "vscode": "^1.90.0" },
   "categories": ["AI", "Chat"],
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
   "extensionKind": ["ui"],
   "contributes": {
-    "languageModelChatProviders": [
-      { "vendor": "phoenixlai", "displayName": "PhoenixLAI" }
-    ]
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "phoenixlai", "title": "Phoenix", "icon": "media/triangle.svg" }
+      ]
+    },
+    "views": {
+      "phoenixlai": [
+        { "type": "webview", "id": "phoenixlai.chat", "name": "Chat" }
+      ]
+    },
+    "commands": [
+      { "command": "phoenixlai.reconnect", "title": "Phoenix: Reconnect", "icon": "$(refresh)" },
+      { "command": "phoenixlai.connectFolder", "title": "Phoenix: Use This Folder" },
+      { "command": "phoenixlai.createRules", "title": "Phoenix: Create Rules File (RULES.md)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "phoenixlai.reconnect", "when": "view == phoenixlai.chat", "group": "navigation" }
+      ]
+    }
   }
 }

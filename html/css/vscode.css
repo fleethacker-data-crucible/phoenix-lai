@@ -1,0 +1,109 @@
+/* vscode.html only: the chat inside VS Code. Colours and fonts come from VS Code's theme (js/vscode-theme.js); the
+   studio window's decorations (grid background, logo, banner, status line) are left out so it blends into the editor. */
+html.vscode #bg, html.vscode #bgLogo, html.vscode #banner, html.vscode #status { display: none !important; }
+html.vscode body { background: var(--bg); }
+html.vscode .empty .logo { display: none; }
+html.vscode .window, html.vscode .modal .window { box-shadow: none; }
+html.vscode.vscode-light { --grid: rgba(0,0,0,.04); --grid-strong: rgba(0,0,0,.07); }
+
+/* Composer: a rounded box pinned to the bottom, input on top and a toolbar below (js/vscode-ui.js). */
+/* no status line or banner here, so the chat may use that space: it ends just above the composer */
+html.vscode { --statusbar: 0px; --banner: 0px; }
+html.vscode #chat { padding-bottom: calc(var(--composer-h, 96px) - 16px); }   /* the last turn adds its own 22px margin */
+html.vscode .promptline { position: fixed; left: 10px; right: 10px; bottom: 6px; z-index: 5; display: block;
+  padding: 11px 12px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); cursor: text; }
+html.vscode .promptline:focus-within { border-color: rgba(var(--accent-rgb),.55); }
+html.vscode .promptline > .chev, html.vscode #promptInfo { display: none; }
+html.vscode .typebox { min-height: 22px; max-height: 40vh; overflow-y: auto; }
+/* a normal text cursor here (the studio window draws a block cursor through #mirror, which stays for sizing only) */
+html.vscode #mirror { visibility: hidden; }
+html.vscode #input { color: var(--text); caret-color: #e8c15a; }
+html.vscode #input::selection { color: var(--text); }
+html.vscode .promptline.empty .typebox::before { content: "Ask Phoenix to edit…"; position: absolute; left: 0; top: 0; color: var(--dim);
+  font: var(--chat-size)/1.6 var(--chat); pointer-events: none; }
+
+.pbar { display: flex; align-items: center; gap: 6px; margin-top: 10px; font: 12.5px/1 var(--sans); }
+.pbar .grow { flex: 1; }
+.pbar button { display: inline-flex; align-items: center; justify-content: center; height: 26px; min-width: 26px; padding: 0 7px;
+  border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: var(--soft); font: inherit; cursor: pointer; }
+.pbar button:hover { color: var(--text); background: rgba(128,128,128,.12); }
+.pbar #pbNew { padding: 0; width: 26px; }   /* an SVG plus: exactly centred, unlike the font's "+" glyph */
+.pbar #pbCmd, .pbar #pbSettings { padding: 0; width: 26px; }
+.pbar .chip { border-color: transparent; background: rgba(128,128,128,.14); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; line-height: 24px; }
+.pbar .mode { border-color: transparent; }
+.pbar .ctx { padding: 0 4px; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pbar .ctx::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--ok); }
+.pbar .ctx.gold::before { background: #e8c15a; }
+.pbar .ctx.bad::before { background: var(--err); }
+.pbar .ctx:empty { display: none; }
+/* The send key is always Phoenix gold, whatever the VS Code theme. */
+.pbar .send { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: #e8c15a; color: #1b1608; }
+.pbar .send:hover { background: #f5d272; color: #1b1608; }
+.pbar .send:disabled { opacity: .4; cursor: default; background: #e8c15a; }
+
+/* Messages the VS Code way: your message in a rounded box on the right, replies as plain text. */
+html.vscode .user::before { display: none; }
+html.vscode .user { display: block; width: fit-content; max-width: 85%; margin: 0 0 12px auto; padding: 6px 10px; color: var(--text);
+  background: rgba(128,128,128,.12); border: 1px solid var(--line); border-radius: 6px; }
+html.vscode .reply { line-height: 1.55; }
+
+/* Activity lines instead of code: "Editing x…" while the model writes, "Edited x" when done (click to open). */
+html.vscode .act { display: flex; align-items: center; gap: 7px; margin: 6px 0; padding: 4px 8px; width: fit-content; max-width: 100%;
+  border-radius: 5px; background: rgba(128,128,128,.10); color: var(--soft); font-size: .92em; cursor: pointer; }
+html.vscode .act b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.vscode .act .x { color: var(--dim); margin-left: 4px; }
+html.vscode .act.list, html.vscode .act.del { cursor: default; }
+html.vscode .act:not(.list):not(.del):hover b { text-decoration: underline; }
+html.vscode .act .ic { width: 12px; height: 12px; flex: none; border-radius: 50%; background: var(--dim); }
+html.vscode .act.edit.done .ic, html.vscode .act.read .ic { background: var(--ok); }
+html.vscode .act.del .ic { background: var(--err); }
+html.vscode .act.edit.busy .ic { background: none; border: 2px solid rgba(var(--accent-rgb),.3); border-top-color: var(--accent); animation: phx-spin .8s linear infinite; }
+@keyframes phx-spin { to { transform: rotate(360deg); } }
+/* tool results already show as activity lines; only failures stay visible */
+html.vscode .tool:not(.fail) { display: none; }
+
+/* Settings as a tall, narrow panel that fills the sidebar: one column, no category tabs, a slim header. */
+html.vscode .modal { inset: 0; align-items: stretch; }
+html.vscode .window.settings { width: 100%; max-height: none; height: 100%; border: 0; border-radius: 0; }
+html.vscode .settings header { padding: 4px 8px 4px 12px; }
+html.vscode .settings header h2 { font-size: 13px; }
+html.vscode .settings .x { font-size: 12px; padding: 2px 4px; }
+html.vscode .settings .cats { display: none; }
+html.vscode .settings .body { padding: 0 12px 12px; }
+html.vscode .settings .section { margin: 12px 0 6px; }
+html.vscode .settings .grid2 { grid-template-columns: 1fr; gap: 10px; }
+html.vscode .settings footer { padding: 8px 12px; }
+
+/* Line the chat up with the composer (10px from each side), so approval bars are exactly as wide as the box below. */
+html.vscode .wrap { width: calc(100% - 20px); }
+html.vscode #chat { padding-left: 0; padding-right: 0; }
+/* Approval bar: the question on top, Accept / Deny below it, left-aligned and the same width. */
+html.vscode .approve { flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-radius: 8px; }
+html.vscode .approve .q { flex: 0 0 100%; }
+html.vscode .approve button { width: 84px; padding: 0; height: 26px; border-radius: 6px; }
+
+/* No blinking block cursor in VS Code (replies, code, prompt); the input keeps its normal text cursor. */
+html.vscode .caret { display: none !important; }
+
+/* The approval bar pops up just above the composer, over the chat, instead of taking space in the conversation. */
+html.vscode .approve { position: fixed; left: 10px; right: 10px; bottom: calc(var(--composer-h, 96px) + 12px); z-index: 6; margin: 0;
+  background: var(--panel-solid); box-shadow: 0 -6px 18px rgba(0,0,0,.35); }
+
+/* Code in a reply: a one-line chip, open it to see the code. */
+html.vscode details.fold { margin: 6px 0; }
+html.vscode details.fold > summary { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 5px; cursor: pointer;
+  list-style: none; background: rgba(128,128,128,.10); color: var(--dim); font-size: .9em; }
+html.vscode details.fold > summary::-webkit-details-marker { display: none; }
+html.vscode details.fold > summary::before { content: "‹›"; color: var(--accent); font-weight: 600; }
+html.vscode details.fold[open] > summary { margin-bottom: 6px; }
+
+/* Editor context chip above the input (open file / selection sent with the message); dimmed and struck when left out. */
+html.vscode #pbFile { display: inline-block; max-width: 100%; margin: -3px 0 8px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+  background: rgba(var(--accent-rgb),.10); color: var(--soft); font: 11.5px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.vscode #pbFile::before { content: "◆ "; color: var(--accent); }
+html.vscode #pbFile.off { opacity: .45; text-decoration: line-through; }
+/* Undo button after each file change */
+html.vscode .undo { display: inline-block; margin: 2px 0 8px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 5px;
+  background: transparent; color: var(--dim); font: 11.5px var(--sans); cursor: pointer; }
+html.vscode .undo:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+html.vscode .undo:disabled { cursor: default; border-color: transparent; padding-left: 0; }

@@ -304,3 +304,16 @@ html { color-scheme: dark; }
 .approve button:disabled { display: none; }
 .approve.accepted { border-color: #4caf50; } .approve.accepted .q { color: #4caf50; }
 .approve.denied { border-color: #e5534b; } .approve.denied .q { color: #e5534b; }
+
+/* Run guard: big red banner over everything, the WARNING flashing. */
+#guardBanner { position: fixed; left: 50%; top: 18%; transform: translate(-50%, -12px) scale(.96); z-index: 50; width: min(560px, calc(100% - 24px));
+  padding: 18px 22px 16px; border: 2px solid #ff3b30; border-radius: 10px; background: #2a0606; color: #ffd9d6; text-align: center;
+  box-shadow: 0 0 0 4px rgba(255,59,48,.18), 0 18px 60px rgba(0,0,0,.6); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
+#guardBanner.show { opacity: 1; transform: translate(-50%, 0) scale(1); pointer-events: auto; }
+#guardBanner .gb-title { font: 800 30px/1.1 var(--sans); letter-spacing: 4px; color: #ff3b30; animation: gb-flash .7s steps(1) infinite; }
+#guardBanner .gb-text { margin-top: 10px; font: 14px/1.5 var(--sans); }
+#guardBanner .gb-count { margin-top: 10px; font: 700 15px var(--mono); color: #fff; }
+#guardBanner .gb-count:empty { display: none; }
+#guardBanner .gb-x { position: absolute; top: 6px; right: 8px; border: 0; background: transparent; color: #ff8a80; font-size: 14px; cursor: pointer; }
+#guardBanner.locked { background: #3a0505; }
+@keyframes gb-flash { 50% { color: #fff; text-shadow: 0 0 14px #ff3b30; } }
