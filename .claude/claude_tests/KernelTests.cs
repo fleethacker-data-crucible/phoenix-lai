@@ -90,7 +90,7 @@ namespace Phoenix.Tests
             float[] q = Rand(r, nHead * headDim, 1), kc = Rand(r, maxCtx * kvDim, 1), vc = Rand(r, maxCtx * kvDim, 1);
             for (int i = 0; i < kc.Length; i++) { kc[i] = Half.Round(kc[i]); vc[i] = Half.Round(vc[i]); }
 
-            // CPU: same as LlamaCpu.Forward attention.
+            // CPU reference attention (ggml f16 rounding).
             float[] want = new float[nHead * headDim];
             for (int h = 0; h < nHead; h++)
             {

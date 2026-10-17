@@ -20,7 +20,7 @@ namespace Phoenix.Tests
 
                 CompareWithLog(g, File.ReadAllLines(logPath, Encoding.UTF8), fail, output);
                 CheckLayout(g, fail, output);
-                CheckLlamaShapes(g, fail, output);
+                CheckGemmaShapes(g, fail, output);
             }
             return fail;
         }
@@ -144,46 +144,30 @@ namespace Phoenix.Tests
             output.WriteLine("layout: {0} tensors, {1:N0} bytes of weights, data section {2:N0} bytes", byOffset.Count, total, dataLen);
         }
 
-        // --- 3. tensor shapes agree with the hyperparameters ---
+        // --- 3. tensor shapes agree with the hyperparameters (Gemma 4) ---
 
-        static void CheckLlamaShapes(GgufFile g, List<string> fail, TextWriter output)
+        static void CheckGemmaShapes(GgufFile g, List<string> fail, TextWriter output)
         {
-            string arch = g.GetString("general.architecture");
-            if (arch != "llama") { output.WriteLine("shapes: skipped (arch {0})", arch); return; }
-
-            long nEmbd = g.GetInt("llama.embedding_length");
-            long nFf = g.GetInt("llama.feed_forward_length");
-            long nLayer = g.GetInt("llama.block_count");
-            long nHead = g.GetInt("llama.attention.head_count");
-            long nHeadKv = g.GetInt("llama.attention.head_count_kv");
-            long headDim = g.Has("llama.attention.key_length") ? g.GetInt("llama.attention.key_length") : nEmbd / nHead;
-            long nVocab = g.Has("llama.vocab_size") ? g.GetInt("llama.vocab_size") : g.GetArray<string>("tokenizer.ggml.tokens").Length;
-
+            GemmaConfig c = GemmaConfig.FromGguf(g);
             int checkedCount = 0;
-            Shape(g, fail, ref checkedCount, "token_embd.weight", nEmbd, nVocab);
-            Shape(g, fail, ref checkedCount, "output_norm.weight", nEmbd);
-            if (g.TensorsByName.ContainsKey("output.weight")) Shape(g, fail, ref checkedCount, "output.weight", nEmbd, nVocab);
-
-            for (int i = 0; i < nLayer; i++)
+            long nVocab = g.GetArray<string>("tokenizer.ggml.tokens").Length;
+            Shape(g, fail, ref checkedCount, "token_embd.weight", c.NEmbd, nVocab);
+            Shape(g, fail, ref checkedCount, "output_norm.weight", c.NEmbd);
+            for (int i = 0; i < c.NLayer; i++)
             {
                 string p = "blk." + i + ".";
-                Shape(g, fail, ref checkedCount, p + "attn_norm.weight", nEmbd);
-                Shape(g, fail, ref checkedCount, p + "attn_q.weight", nEmbd, nHead * headDim);
-                Shape(g, fail, ref checkedCount, p + "attn_k.weight", nEmbd, nHeadKv * headDim);
-                Shape(g, fail, ref checkedCount, p + "attn_v.weight", nEmbd, nHeadKv * headDim);
-                Shape(g, fail, ref checkedCount, p + "attn_output.weight", nHead * headDim, nEmbd);
-                Shape(g, fail, ref checkedCount, p + "ffn_norm.weight", nEmbd);
-                Shape(g, fail, ref checkedCount, p + "ffn_gate.weight", nEmbd, nFf);
-                Shape(g, fail, ref checkedCount, p + "ffn_up.weight", nEmbd, nFf);
-                Shape(g, fail, ref checkedCount, p + "ffn_down.weight", nFf, nEmbd);
+                long q = (long)c.NHead * c.HeadDim[i], kv = (long)c.NHeadKv[i] * c.HeadDim[i];
+                Shape(g, fail, ref checkedCount, p + "attn_norm.weight", c.NEmbd);
+                Shape(g, fail, ref checkedCount, p + "attn_q.weight", c.NEmbd, q);
+                Shape(g, fail, ref checkedCount, p + "attn_k.weight", c.NEmbd, kv);
+                if (g.TensorsByName.ContainsKey(p + "attn_v.weight")) Shape(g, fail, ref checkedCount, p + "attn_v.weight", c.NEmbd, kv);
+                Shape(g, fail, ref checkedCount, p + "attn_output.weight", q, c.NEmbd);
+                Shape(g, fail, ref checkedCount, p + "ffn_gate.weight", c.NEmbd, c.NFf[i]);
+                Shape(g, fail, ref checkedCount, p + "ffn_up.weight", c.NEmbd, c.NFf[i]);
+                Shape(g, fail, ref checkedCount, p + "ffn_down.weight", c.NFf[i], c.NEmbd);
             }
-
-            // rope_freqs (Llama 3.1+ long-context scaling) is the only other tensor allowed.
-            int extra = g.Tensors.Count - checkedCount;
-            if (g.TensorsByName.ContainsKey("rope_freqs.weight")) { Shape(g, fail, ref checkedCount, "rope_freqs.weight", headDim / 2); extra--; }
-            if (extra != 0) fail.Add(extra + " tensors not accounted for by the Llama layout");
-            output.WriteLine("shapes: {0} tensors match hyperparameters (embd {1}, ff {2}, layers {3}, heads {4}/{5}, vocab {6})",
-                checkedCount, nEmbd, nFf, nLayer, nHead, nHeadKv, nVocab);
+            output.WriteLine("shapes: {0} tensors match hyperparameters (embd {1}, layers {2}, heads {3}, vocab {4})",
+                checkedCount, c.NEmbd, c.NLayer, c.NHead, nVocab);
         }
 
         static void Shape(GgufFile g, List<string> fail, ref int count, string name, params long[] dims)

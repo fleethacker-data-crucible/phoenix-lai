@@ -35,10 +35,10 @@ PhoenixLAI (Local LLM Studio): C# (.NET Framework 4.8, compiled in memory by Pow
 - Root holds only `PhoenixLAI_App.lnk`, `CLAUDE.md`, `.gitignore` and folders (`src`, `html`, `models`, `logs`, `docs`, `vscode-ext-source`, `vscode-ext`). Studio scripts live in `src\`.
 
 ## Modules
-`Gguf` (memory-mapped parse) · `Tokenizer` (BPE/SentencePiece) · `Vulkan` (DllImport bindings) · `Kernels` (SPIR-V: dequant+matvec, RMSNorm, RoPE, softmax, attention, SiLU, add/mul) · `CpuRef` (scalar/parallel ground truth + fallback) · `Model` (forward pass, KV cache in VRAM) · `Sampler` · `Engine` (chat template, KV reuse) · `WebServer` + `Workspace` + `ChatLog` (loopback chat API, folder tools, session logs) · `Rag` (docs\ library: `/index` builds the incremental BM25 index `docs\.index\rag.bin`, memory-mapped; top chunks go into the newest user message) · `html\chat.html` (UI).
+`Gguf` (memory-mapped parse) · `Tokenizer` (BPE/SentencePiece) · `Vulkan` (DllImport bindings) · `Kernels` (SPIR-V: dequant+matvec, RMSNorm, RoPE, softmax, attention, SiLU, add/mul) · `CpuRef` (scalar/parallel ground truth + fallback) · `GemmaGpu` / `GemmaCpu` (Gemma 4 forward pass, KV cache in VRAM) · `Sampler` · `Engine` (Gemma 4 chat template, KV reuse) · `WebServer` + `Workspace` + `ChatLog` (loopback chat API, folder tools, session logs) · `Rag` (docs\ library: `/index` builds the incremental BM25 index `docs\.index\rag.bin`, memory-mapped; top chunks go into the newest user message) · `html\chat.html` (UI).
 
 ## Workflow
 - Work phase by phase (see plan roadmap, phases 1–8). Don't start a phase until the previous gate test passes.
 - `CpuRef` is ground truth for each op (kernel tests); end to end, the GPU must match llama.cpp's logprobs as closely as `CpuRef` does.
-- Tests, benchmarks and llama.cpp reference outputs live in `.claude\claude_tests\` (gates: `powershell.exe -NoProfile -STA -File .claude\claude_tests\gate.ps1 -Phase N`; references in `ref\outputs\`, regenerated with `ref\make-refs.ps1`), plus self-checks (round-trips, GPU vs `CpuRef`).
-- Use a 1B Q8_0 Llama model until phase 7. Llama-family only.
+- Tests, benchmarks and llama.cpp reference outputs live in `.claude\claude_tests\` (gates 2–9: `powershell.exe -NoProfile -STA -File .claude\claude_tests\gate.ps1 -Phase N`, default model `models\gemma-4-12b-it-qat-q4_0.gguf`; references in `ref\outputs\<model>\`, regenerated with `ref\make-refs.ps1` and `ref\make-gemma-logprobs.ps1`; prefill speed: `pfbench.ps1`), plus self-checks (round-trips, GPU vs `CpuRef`).
+- **Gemma 4 only** (chat: `gemma-4-12b-it-qat-q4_0.gguf`; docs search: `embeddinggemma-2-Q8_0.gguf`). Llama / Mistral support was removed 2026-10-17; other architectures are refused at load.

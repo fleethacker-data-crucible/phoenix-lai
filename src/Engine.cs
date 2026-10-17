@@ -1,4 +1,4 @@
-// Chat engine: model loading (GPU with CPU fallback), Llama 3 chat template, KV-cache reuse across turns,
+// Chat engine: model loading (GPU with CPU fallback), Gemma 4 chat template, KV-cache reuse across turns,
 // sampling and streaming. C# 5 only.
 using System;
 using System.Collections.Generic;
@@ -61,24 +61,14 @@ namespace Phoenix
         readonly GpuDevice _gpu;
         readonly ILanguageModel _model;
         readonly List<int> _fed = new List<int>();   // tokens whose K/V are in the cache, by position
-        // Chat template family, detected from the vocabulary.
-        readonly bool _mistral, _gemma;
-        readonly int _turn, _turnEnd, _channel, _channelEnd;   // Gemma 4 (<|turn>role ... <turn|>)
-        readonly int _eot, _startHeader, _endHeader;           // Llama 3
-        readonly int _inst, _instEnd, _sys, _sysEnd;            // Mistral ([INST] ... [/INST])
+        readonly int _turn, _turnEnd, _channel, _channelEnd;   // Gemma 4 chat template (<|turn>role ... <turn|>)
+        readonly int _eot;                                      // end of turn (<turn|>)
 
         ChatEngine(string path, GgufFile g, GpuDevice gpu, ILanguageModel model, string backend, int ctx)
         {
             ModelPath = path; _gguf = g; _gpu = gpu; _model = model; Backend = backend; ContextLength = ctx;
             ModelName = g.Has("general.name") ? g.GetString("general.name") : Path.GetFileNameWithoutExtension(path);
             Tokenizer = new Tokenizer(g);
-            _eot = TokenId("<|eot_id|>");
-            _startHeader = TokenId("<|start_header_id|>");
-            _endHeader = TokenId("<|end_header_id|>");
-            _inst = TokenId("[INST]");
-            _instEnd = TokenId("[/INST]");
-            _sys = TokenId("[SYSTEM_PROMPT]");
-            _sysEnd = TokenId("[/SYSTEM_PROMPT]");
             _turn = TokenId("<|turn>");
             _turnEnd = TokenId("<turn|>");
             _channel = TokenId("<|channel>");
@@ -91,11 +81,9 @@ namespace Phoenix
                 int id = TokenId(name);
                 if (id >= 0) _banned.Add(id);
             }
-            _gemma = _turn >= 0 && _turnEnd >= 0;
-            if (_gemma) _eot = _turnEnd;
-            _mistral = !_gemma && _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
-            if (!_gemma && !_mistral && (_startHeader < 0 || _endHeader < 0))
-                throw new NotSupportedException("Model has no supported chat template (Llama 3, Mistral or Gemma 4).");
+            if (_turn < 0 || _turnEnd < 0 || _channel < 0 || _channelEnd < 0)
+                throw new NotSupportedException("Model has no Gemma 4 chat template (PhoenixLAI runs Gemma 4 models).");
+            _eot = _turnEnd;
         }
 
         int TokenId(string text)
@@ -136,15 +124,9 @@ namespace Phoenix
         }
 
         // Loads a local .gguf file. Uses the GPU when Vulkan works, otherwise the CPU reference path.
-        // KV cache format for GPU Llama models (q8 by default: 64/64 top-1 vs fp16 at half the memory). Gemma always
-        // keeps fp16: its values have large outlier channels that 8 / 4-bit blocks lose (measured 54/64), and its
-        // sliding-window cache is small anyway.
-        public static KvType KvCache = KvType.Q8;
-
-        public static KvType KvFor(GgufFile g)
-        {
-            return GemmaConfig.IsGemma(g.GetString("general.architecture")) ? KvType.F16 : KvCache;
-        }
+        // KV cache format: Gemma keeps fp16 (its values have large outlier channels that 8 / 4-bit blocks lose: 54/64
+        // top-1), and its sliding-window cache is small anyway.
+        public static KvType KvFor(GgufFile g) { return KvType.F16; }
 
         public static ChatEngine Load(string path, int contextLength, bool allowGpu, TextCallback log)
         {
@@ -165,6 +147,7 @@ namespace Phoenix
                     try
                     {
                         string garch = g.GetString("general.architecture");
+                        if (!GemmaConfig.IsGemma(garch)) throw new NotSupportedException("Not a Gemma model (" + garch + "); PhoenixLAI runs Gemma 4.");
                         if (garch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
                         gpu = GpuDevice.Create();
                         int ctx = contextLength;
@@ -179,9 +162,7 @@ namespace Phoenix
                             else { ctx = 8192; why = "auto context 8192 (the driver does not report free VRAM)"; }
                             if (log != null) log(why);
                         }
-                        KvType kv = KvFor(g);
-                        if (log != null) log("KV cache " + KernelsKv.Name(kv) + (GemmaConfig.IsGemma(garch) && KvCache != KvType.F16 ? " (Gemma keeps fp16)" : ""));
-                        model = GemmaConfig.IsGemma(garch) ? (ILanguageModel)new GemmaGpu(gpu, g, ctx, kv) : new LlamaGpu(gpu, g, ctx, kv);
+                        model = new GemmaGpu(gpu, g, ctx, KvFor(g));
                         contextLength = ctx;
                     }
                     catch (Exception ex)
@@ -199,6 +180,7 @@ namespace Phoenix
                 else
                 {
                     string arch = g.GetString("general.architecture");
+                    if (!GemmaConfig.IsGemma(arch)) throw new NotSupportedException("Not a Gemma model (" + arch + "); PhoenixLAI runs Gemma 4.");
                     if (arch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
                     if (contextLength <= 0 || allowGpu)   // auto, or a GPU context that fell back here: size it for RAM
                     {
@@ -208,7 +190,7 @@ namespace Phoenix
                         if (requested > 0) contextLength = Math.Min(requested, contextLength);
                         if (log != null) log(why);
                     }
-                    model = GemmaConfig.IsGemma(arch) ? (ILanguageModel)new GemmaCpu(g, contextLength) : new LlamaCpu(g, contextLength);
+                    model = new GemmaCpu(g, contextLength);
                     backend = "CPU";
                 }
                 return new ChatEngine(path, g, gpu, model, backend, contextLength);
@@ -285,7 +267,7 @@ namespace Phoenix
         {
             lock (GpuGate.Lock)
             {
-                if (text == null || text.Length < 300 || !_model.CanRecall || !_gemma) return false;
+                if (text == null || text.Length < 300 || !_model.CanRecall) return false;
                 RegisterRecall(text);
                 List<int> ids;
                 if (!_segIds.TryGetValue(text, out ids) || ids.Count < RecallMinTokens || ids.Count + 16 > ContextLength) return false;
@@ -425,59 +407,11 @@ namespace Phoenix
             while (_sampledOrder.Count > 32) _sampled.Remove(_sampledOrder.Dequeue());
         }
 
-        // Llama 3 instruct template; ends with an open assistant header.
+        // Prompt token ids for a conversation (Gemma 4 template); ends with an open model turn.
         public List<int> Template(IList<ChatMessage> messages)
         {
             _spans = new List<Span>();
-            if (_gemma) return GemmaTemplate(messages);
-            if (_mistral) return MistralTemplate(messages);
-            List<int> ids = new List<int>();
-            ids.Add(Tokenizer.BosId);
-            foreach (ChatMessage m in messages)
-            {
-                ids.Add(_startHeader);
-                ids.AddRange(Tokenizer.Encode(m.Role, false, false));
-                ids.Add(_endHeader);
-                if (m.Role == "assistant")
-                {
-                    // as generated: "\n\n" then the sampled tokens (KV cache reuse, see ReplyIds)
-                    ids.AddRange(Tokenizer.Encode("\n\n", false, false));
-                    ids.AddRange(ReplyIds(m.Text));
-                }
-                else ids.AddRange(EncodeBody("\n\n", m.Text.Trim(), ids.Count));
-                ids.Add(_eot);
-            }
-            ids.Add(_startHeader);
-            ids.AddRange(Tokenizer.Encode("assistant", false, false));
-            ids.Add(_endHeader);
-            ids.AddRange(Tokenizer.Encode("\n\n", false, false));
-            return ids;
-        }
-
-        // Mistral template (Devstral / Mistral Small): <s>[SYSTEM_PROMPT]sys[/SYSTEM_PROMPT][INST]user[/INST]reply</s>...
-        // Message text is encoded without special-token parsing, so user text cannot inject control tokens.
-        List<int> MistralTemplate(IList<ChatMessage> messages)
-        {
-            List<int> ids = new List<int>();
-            ids.Add(Tokenizer.BosId);
-            foreach (ChatMessage m in messages)
-            {
-                string text = m.Text.Trim();
-                if (m.Role == "system")
-                {
-                    if (_sys < 0) { ids.Add(_inst); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_instEnd); continue; }
-                    ids.Add(_sys); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_sysEnd);
-                }
-                else if (m.Role == "user")
-                {
-                    ids.Add(_inst); ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(_instEnd);
-                }
-                else
-                {
-                    ids.AddRange(Tokenizer.Encode(text, false, false)); ids.Add(Tokenizer.EosId);
-                }
-            }
-            return ids;
+            return GemmaTemplate(messages);
         }
 
         // Runs a short throwaway generation so every GPU pipeline is created and the first real prompt starts at full
@@ -514,12 +448,11 @@ namespace Phoenix
         }
 
         // Fill-in-the-middle (code completion): the prefix/suffix prompt in the model's FIM format when its vocabulary has
-        // one (<|fim_prefix|>.. or CodeLlama <PRE>..), with no chat template; otherwise an instructed completion through
+        // one (<|fim_prefix|>..), with no chat template; otherwise an instructed completion through
         // the chat template. The tail of the prefix and the head of the suffix are kept when they are too long.
         public GenerationStats GenerateFim(string prefix, string suffix, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
         {
             int pre = TokenId("<|fim_prefix|>"), suf = TokenId("<|fim_suffix|>"), mid = TokenId("<|fim_middle|>");
-            if (pre < 0 || suf < 0 || mid < 0) { pre = TokenId("<PRE>"); suf = TokenId("<SUF>"); mid = TokenId("<MID>"); }
             bool fim = pre >= 0 && suf >= 0 && mid >= 0 && suffix != null;
             if (!fim)
             {
@@ -606,7 +539,7 @@ namespace Phoenix
                     st.RecalledTokens += sp.Len;
                     _recallOrder.Remove(sp.Key); _recallOrder.Add(sp.Key);
                 }
-                else if (sp.Len >= RecallMinTokens && _gemma)
+                else if (sp.Len >= RecallMinTokens)
                 {
                     // First read of this file: read it on its own (after just the turn header), save that snapshot, then
                     // rebuild the conversation up to here and splice the file in. A snapshot taken inside the conversation

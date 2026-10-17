@@ -25,7 +25,7 @@ namespace Phoenix.Tests
             using (GpuDevice gpu = GpuDevice.Create())
             {
                 Stopwatch load = Stopwatch.StartNew();
-                using (LlamaGpu m = new LlamaGpu(gpu, g, Math.Max(1024, pp + tg + 16)))
+                using (GemmaGpu m = new GemmaGpu(gpu, g, Math.Max(1024, pp + tg + 16)))
                 {
                     load.Stop();
                     res.LoadSeconds = load.Elapsed.TotalSeconds;

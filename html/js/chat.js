@@ -454,19 +454,6 @@ async function openSettings() {
   let b = { browser: 'auto', installed: true };
   try { b = await api('/api/browser'); } catch (e) {}
   openedBrowser = b.browser;
-  radios('sKv', [{ value: 'q8', label: 'q8 (default)' }, { value: 'q4', label: 'q4' }, { value: 'f16', label: 'f16' }], info.kv || 'q8');
-  // q8 / q4 only for models (and the GPU mode) that support them: otherwise greyed out, shown as f16, preference kept.
-  const kvFor = name => {
-    const m = models.find(x => x.name === name), ok = m ? m.kvq !== false : true, gpu = info.device !== 'cpu';
-    $('sKv').querySelectorAll('input').forEach(inp => {
-      const off = inp.value !== 'f16' && (!ok || !gpu);
-      inp.disabled = off; inp.parentElement.classList.toggle('disabled', off);
-      if (!ok || !gpu) inp.checked = inp.value === 'f16'; else inp.checked = inp.value === (info.kv || 'q8');
-    });
-    $('kvNote').textContent = !gpu ? 'CPU mode keeps the cache in f32.' : !ok ? 'This model keeps an f16 cache (q8 / q4 lose accuracy on it).' : '';
-  };
-  kvFor((document.querySelector('input[name=model]:checked') || {}).value || info.file);
-  $('modelList').onchange = e => { if (e.target.name === 'model') kvFor(e.target.value); };
   radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
   $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
     : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
@@ -503,9 +490,6 @@ $('applySettings').addEventListener('click', async () => {
   Object.assign(settings, vals); settings.system = $('sSystem').value; save();
   try {
     await api('/api/rag', { enabled: $('sRag').checked });
-    const kvIn = document.querySelector('#sKv input:checked');
-    const kv = kvIn && !document.querySelector('#sKv input[value=q8]').disabled ? kvIn.value : null;   // greyed out: keep the preference
-    if (kv && kv !== info.kv) { systemLine('KV cache ' + kv + (info.file ? ': reloading ' + info.file + '…' : '.')); info = await api('/api/kv', { kv }); }
     const br = radioValue('sBrowser');
     if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
   } catch (e) {}
