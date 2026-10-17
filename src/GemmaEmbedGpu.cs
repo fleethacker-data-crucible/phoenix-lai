@@ -24,7 +24,9 @@ namespace Phoenix
 
         readonly Layer[] _layers;
         readonly GpuBuffer _outputNorm, _output, _pleProj, _pleProjNorm;
-        readonly GpuKernel _kMm, _kNorm, _kHeadNorm, _kRope, _kAttn, _kGelu, _kScale, _kCopy;
+        readonly GpuKernel _kMm, _kNorm, _kHeadNorm, _kRope, _kGelu, _kScale, _kCopy;
+        readonly Dictionary<uint, GpuKernel> _kAttn = new Dictionary<uint, GpuKernel>();   // by head size
+        readonly Dictionary<uint, uint> _attnTq = new Dictionary<uint, uint>();
         readonly int _maxQ, _maxKv, _maxFf;
 
         // Sequence buffers, (re)allocated for the longest sequence seen.
@@ -43,7 +45,16 @@ namespace Phoenix
                 _kNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "row norm");
                 _kHeadNorm = Kernel(KernelsGemma.HeadNorm(), 3, 3, "head norm");
                 _kRope = Kernel(KernelsBatch.RopeNeoxRows(), 2, 4, "rope rows");
-                _kAttn = Kernel(KernelsBatch.AttentionBi(), 4, 5, "attention bi");
+                foreach (int hd in C.HeadDim)
+                {
+                    uint h = (uint)hd, tq, kc;
+                    if (_kAttn.ContainsKey(h)) continue;
+                    KernelsBatch.AttnTile(h, _gpu.MaxSharedMemory, out tq, out kc);
+                    if (h % (2 * kc) != 0 || (_gpu.MaxSharedMemory != 0 && KernelsBatch.AttnSharedBytes(h, tq, kc) > _gpu.MaxSharedMemory))
+                        throw new NotSupportedException("Head size " + h + " does not fit the embedder's attention kernel.");
+                    _kAttn[h] = Kernel(KernelsBatch.AttentionBi(h, tq, kc), 4, 5, "attention bi " + h);
+                    _attnTq[h] = tq;
+                }
                 _kGelu = Kernel(KernelsBatch.GeluMulRows(), 2, 4, "gelu*u rows");
                 _kScale = Kernel(KernelsBatch.Scale(), 1, 2, "scale");
                 _kCopy = Kernel(KernelsBatch.Copy(), 2, 1, "copy");
@@ -203,7 +214,7 @@ namespace Phoenix
                 uint half = (uint)(l.NRot / 2);
                 _gpu.Record(_kRope, new GpuBuffer[] { _q, cs }, new uint[] { (uint)C.NHead, (uint)hd, half, (uint)n }, Groups((long)n * C.NHead * half, Kernels.Wg), 1, 1, false);
                 _gpu.Record(_kRope, new GpuBuffer[] { _k, cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half, (uint)n }, Groups((long)n * l.NHeadKv * half, Kernels.Wg), 1, 1);
-                _gpu.Record(_kAttn, new GpuBuffer[] { _q, _k, _v, _attn }, new uint[] { (uint)n, (uint)hd, (uint)C.NHead, (uint)l.NHeadKv, l.Swa ? (uint)(C.NSwa / 2) : 0u }, (uint)n, (uint)C.NHead, 1);
+                _gpu.Record(_kAttn[(uint)hd], new GpuBuffer[] { _q, _k, _v, _attn }, new uint[] { (uint)n, (uint)hd, (uint)C.NHead, (uint)l.NHeadKv, l.Swa ? (uint)(C.NSwa / 2) : 0u }, Groups(n, _attnTq[(uint)hd]), (uint)C.NHead, 1);
                 Mm(l.Wo, _attn, _tmp, d, l.QDim, n);
                 _gpu.Record(_kNorm, new GpuBuffer[] { _x, _tmp, l.PostAttnNorm }, new uint[] { (uint)d, eps, 1, Bits(1f) }, (uint)n, 1, 1);
                 _gpu.Record(_kNorm, new GpuBuffer[] { _x, _xb, l.FfnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)n, 1, 1);
