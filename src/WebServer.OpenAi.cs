@@ -1,9 +1,12 @@
 // OpenAI-compatible API server, the same paths and port LM Studio uses (http://localhost:1234/v1), for VS Code extensions
 // (Continue, Cline, Roo, ...) and other local tools. C# 5 only. Loopback only: bound to 127.0.0.1 / localhost, never makes
-// outgoing connections. The API gives plain model access: no folder tools, no RAG, and no commands (ShellGuard).
+// outgoing connections. The API gives plain model access: no folder tools, no RAG, and no commands (ShellGuard); tool
+// calls are only described to the model and returned to the client, which decides whether to run them.
 //   GET  /v1/models                 models in models\ (chat and embedding)
 //   POST /v1/chat/completions       messages -> reply (stream: true gives server-sent events)
-//   POST /v1/completions            prompt -> reply (the prompt is sent as one user message through the chat template)
+//   POST /v1/completions            prompt -> reply (the prompt is sent as one user message through the chat template);
+//                                   with "suffix" it is code completion: fill-in-the-middle, no chat template
+//   Chat requests with "tools" get OpenAI tool_calls back (ApiTools.cs); the server never runs a tool itself.
 //   POST /v1/embeddings             input (string or array) -> vectors (EmbeddingGemma)
 using System;
 using System.Collections.Generic;
@@ -123,7 +126,11 @@ namespace Phoenix
                     if (!first) sb.Append(',');
                     first = false;
                     sb.Append("{\"id\":").Append(Json.Quote(id)).Append(",\"object\":\"model\",\"type\":")
-                      .Append(IsEmbeddingFile(id) ? "\"embeddings\"" : "\"llm\"").Append(",\"owned_by\":\"organization_owner\"}");
+                      .Append(IsEmbeddingFile(id) ? "\"embeddings\"" : "\"llm\"");
+                    ChatEngine e = _engine;   // LM Studio's field: the loaded model's context window
+                    if (e != null && string.Equals(Path.GetFileNameWithoutExtension(e.ModelPath), id, StringComparison.OrdinalIgnoreCase))
+                        sb.Append(",\"state\":\"loaded\",\"max_context_length\":").Append(e.ContextLength);
+                    sb.Append(",\"owned_by\":\"organization_owner\"}");
                 }
             return sb.Append("]}").ToString();
         }
@@ -168,6 +175,11 @@ namespace Phoenix
         {
             if (o == null) throw new ArgumentException("JSON body required");
             List<ChatMessage> msgs = new List<ChatMessage>();
+            string toolPrompt = chat ? ApiTools.Prompt(o) : null;
+            HashSet<string> toolNames = toolPrompt != null ? ApiTools.Names(o) : null;
+            Dictionary<string, string> callNames = new Dictionary<string, string>();
+            bool fim = !chat && o.ContainsKey("suffix");
+            string fimPrefix = null, fimSuffix = null;
             if (chat)
             {
                 List<object> list = o.ContainsKey("messages") ? o["messages"] as List<object> : null;
@@ -178,14 +190,42 @@ namespace Phoenix
                     if (mm == null) continue;
                     string role = Json.GetStr(mm, "role", "user"), text = ContentText(mm.ContainsKey("content") ? mm["content"] : null);
                     if (role == "developer") role = "system";
-                    else if (role == "tool" || role == "function") { role = "user"; text = "Tool result:\n" + text; }
+                    else if (role == "tool" || role == "function") { role = "user"; text = ApiTools.ResultText(mm, text, callNames); }
+                    else if (role == "assistant")
+                    {
+                        List<object> tc = mm.ContainsKey("tool_calls") ? mm["tool_calls"] as List<object> : null;
+                        if (tc != null)
+                            foreach (object c in tc)
+                            {
+                                Dictionary<string, object> cd = c as Dictionary<string, object>;
+                                Dictionary<string, object> fd = cd != null && cd.ContainsKey("function") ? cd["function"] as Dictionary<string, object> : null;
+                                string cid = Json.GetStr(cd, "id", null), cname = Json.GetStr(fd, "name", null);
+                                if (cid != null && cname != null) callNames[cid] = cname;
+                            }
+                        text = ApiTools.AssistantText(mm, text);
+                    }
                     if (role != "system" && role != "user" && role != "assistant") continue;
                     // The templates expect one leading system message: later ones are merged into it.
                     int si = msgs.FindIndex(delegate(ChatMessage x) { return x.Role == "system"; });
                     if (role == "system" && si >= 0) { msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + text); continue; }
                     if (role == "system") { msgs.Insert(0, new ChatMessage("system", text)); continue; }
+                    // Templates expect user / assistant turns to alternate (several tool results in a row are one turn).
+                    if (msgs.Count > 0 && msgs[msgs.Count - 1].Role == role) { msgs[msgs.Count - 1] = new ChatMessage(role, msgs[msgs.Count - 1].Text + "\n\n" + text); continue; }
                     msgs.Add(new ChatMessage(role, text));
                 }
+                if (toolPrompt != null)
+                {
+                    int si = msgs.FindIndex(delegate(ChatMessage x) { return x.Role == "system"; });
+                    if (si >= 0) msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + toolPrompt);
+                    else msgs.Insert(0, new ChatMessage("system", toolPrompt));
+                }
+            }
+            else if (fim)
+            {
+                object p = o["prompt"];
+                List<object> pl = p as List<object>;
+                fimPrefix = pl != null && pl.Count > 0 ? ContentText(pl[0]) : ContentText(p);
+                fimSuffix = Json.GetStr(o, "suffix", "");
             }
             else
             {
@@ -193,7 +233,7 @@ namespace Phoenix
                 List<object> pl = p as List<object>;
                 msgs.Add(new ChatMessage("user", pl != null && pl.Count > 0 ? ContentText(pl[0]) : ContentText(p)));
             }
-            if (msgs.Count == 0 || msgs[msgs.Count - 1].Role == "assistant" && msgs.Count == 1) throw new ArgumentException("no user message");
+            if (!fim && (msgs.Count == 0 || msgs[msgs.Count - 1].Role == "assistant" && msgs.Count == 1)) throw new ArgumentException("no user message");
 
             SamplerSettings s = new SamplerSettings();
             s.Temperature = (float)Json.GetNum(o, "temperature", 0.7);
@@ -221,7 +261,8 @@ namespace Phoenix
             long created = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
             string obj = chat ? "chat.completion" : "text_completion";
             int rid = Interlocked.Increment(ref _requestId);
-            Log.Text("#" + rid + " API " + (chat ? "chat" : "completion") + " (" + msgs.Count + " messages, stream " + stream + ")");
+            Log.Text("#" + rid + " API " + (chat ? "chat" : fim ? "code completion" : "completion") + " (" + (fim ? fimPrefix.Length + "+" + fimSuffix.Length + " chars" : msgs.Count + " messages") +
+                (toolNames != null ? ", " + toolNames.Count + " tools" : "") + ", stream " + stream + ")");
 
             lock (_engineLock)
             {
@@ -260,9 +301,10 @@ namespace Phoenix
                 Action flush = delegate()
                 {
                     int safe = stopped ? text.Length : Math.Max(sent, text.Length - Math.Max(0, maxStop - 1));
+                    if (toolNames != null && !stopped) safe = Math.Max(sent, Math.Min(safe, ApiTools.SafeLength(text)));   // a tool call is never streamed as text
                     if (stream && safe > sent) { string d = text.ToString(sent, safe - sent); sse(chunk(d, null)); sent = safe; }
                 };
-                GenerationStats st = eng.Generate(msgs, s, maxTokens, delegate(string piece)
+                TextCallback onPiece = delegate(string piece)
                 {
                     if (stopped) return;
                     text.Append(piece);
@@ -272,15 +314,41 @@ namespace Phoenix
                         if (at >= 0) { text.Length = at; stopped = true; break; }
                     }
                     flush();
-                }, delegate { return gone || stopped; });
+                };
+                CancelCheck cancel = delegate { return gone || stopped; };
+                // While a long prompt is read: log its size once, and on a stream send an SSE comment after each chunk.
+                // A client that has hung up (VS Code's Stop) then makes the write fail, which cancels the prefill.
+                bool logged = false;
+                eng.PrefillProgress = delegate(int done, int total)
+                {
+                    if (!logged && total >= 2048) { logged = true; Log.Text("#" + rid + " API reading " + total + " prompt tokens"); }
+                    if (stream && !gone) { try { byte[] b = Encoding.UTF8.GetBytes(": reading " + done + "/" + total + "\n\n"); outS.Write(b, 0, b.Length); outS.Flush(); } catch { gone = true; } }
+                };
+                GenerationStats st;
+                try { st = fim ? eng.GenerateFim(fimPrefix, fimSuffix, s, maxTokens, onPiece, cancel) : eng.Generate(msgs, s, maxTokens, onPiece, cancel); }
+                finally { eng.PrefillProgress = null; }
+                if (gone) Log.Text("#" + rid + " API client hung up (" + st.StopReason + ")");
+                List<ApiToolCall> calls = null;
+                if (toolNames != null)
+                {
+                    string content;
+                    calls = ApiTools.Parse(text.ToString(), toolNames, out content);
+                    if (calls.Count > 0) { text.Length = 0; text.Append(content); if (sent > text.Length) sent = text.Length; }
+                    else calls = null;
+                }
                 stopped = true; flush();
-                string finishReason = st.StopReason == "max tokens" || st.StopReason == "context full" ? "length" : "stop";
+                string finishReason = calls != null ? "tool_calls" : st.StopReason == "max tokens" || st.StopReason == "context full" ? "length" : "stop";
                 int promptTokens = st.PromptTokens + st.ReusedTokens;
                 string usage = "{\"prompt_tokens\":" + promptTokens + ",\"completion_tokens\":" + st.GeneratedTokens + ",\"total_tokens\":" + (promptTokens + st.GeneratedTokens) + "}";
                 Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture, "#{0} API done: {1} prompt ({2} cached), {3} generated at {4:F1} tok/s, {5}",
                     rid, promptTokens, st.ReusedTokens, st.GeneratedTokens, st.TokensPerSecond, finishReason));
+                if (calls != null) Log.Text("#" + rid + " API tool calls: " + string.Join(", ", calls.ConvertAll(delegate(ApiToolCall c) { return c.Name; }).ToArray()));
                 if (stream)
                 {
+                    if (calls != null)
+                        sse("{\"id\":\"" + id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created + ",\"model\":" + Json.Quote(modelId) +
+                            ",\"system_fingerprint\":\"phoenix\",\"choices\":[{\"index\":0,\"delta\":{" + (sent == 0 ? "\"role\":\"assistant\"," : "") +
+                            "\"tool_calls\":" + ApiTools.CallsJson(calls, true) + "},\"logprobs\":null,\"finish_reason\":null}]}");
                     sse(chunk(null, finishReason));
                     if (usageInStream)
                         sse("{\"id\":\"" + id + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created + ",\"model\":" + Json.Quote(modelId) + ",\"choices\":[],\"usage\":" + usage + "}");
@@ -289,7 +357,8 @@ namespace Phoenix
                     return;
                 }
                 string choiceFull = chat
-                    ? "{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":" + Json.Quote(text.ToString()) + "},\"logprobs\":null,\"finish_reason\":\"" + finishReason + "\"}"
+                    ? "{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":" + (calls != null && text.Length == 0 ? "null" : Json.Quote(text.ToString())) +
+                      (calls != null ? ",\"tool_calls\":" + ApiTools.CallsJson(calls, false) : "") + "},\"logprobs\":null,\"finish_reason\":\"" + finishReason + "\"}"
                     : "{\"index\":0,\"text\":" + Json.Quote(text.ToString()) + ",\"logprobs\":null,\"finish_reason\":\"" + finishReason + "\"}";
                 SendJson(res, 200, "{\"id\":\"" + id + "\",\"object\":\"" + obj + "\",\"created\":" + created + ",\"model\":" + Json.Quote(modelId) +
                     ",\"system_fingerprint\":\"phoenix\",\"choices\":[" + choiceFull + "],\"usage\":" + usage + "}");
