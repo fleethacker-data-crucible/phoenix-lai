@@ -27,7 +27,7 @@ namespace Phoenix
                 _tok = new Tokenizer(_g);
                 // GPU (per-layer submissions, GpuGate) with the CPU as fallback.
                 try { _gpuModel = new GemmaEmbedGpu(_g, null); Backend = "GPU"; MemoryTrim.Trim(); }
-                catch { _gpuModel = null; }
+                catch (Exception ex) { _gpuModel = null; Dbg.Note("embedder", "GPU start failed (" + ex.Message + "); docs search runs on the CPU, much slower"); }
                 if (_gpuModel == null) { _model = new GemmaCpu(_g, MaxTokens + 8); Backend = "CPU"; }
                 Dim = _gpuModel != null ? _gpuModel.C.NEmbdOut : _model.C.NEmbdOut;
                 ModelPath = path;
@@ -65,8 +65,9 @@ namespace Phoenix
                 if (_gpuModel != null)
                 {
                     try { return _gpuModel.Embed(ids); }
-                    catch (GpuDeviceLostException)
+                    catch (GpuDeviceLostException ex)
                     {
+                        Dbg.Note("embedder", "GPU device lost (" + ex.Message + "); continuing on the CPU, which is much slower");
                         // The GPU was reset: continue on the CPU (results are equivalent).
                         try { _gpuModel.Dispose(); } catch { }
                         _gpuModel = null;

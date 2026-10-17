@@ -38,6 +38,7 @@ namespace Phoenix
             _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             _listener.Start();
             Log = new ChatLog(logsDir);
+            Dbg.Attach(Log, AppDataDir);
             Workspace.EnsureProjectsRoot();
             ChatEngine.KvCache = ReadKv();
             Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
@@ -478,11 +479,21 @@ namespace Phoenix
         {
             Interlocked.Increment(ref _activeRequests);
             Interlocked.Exchange(ref _lastRequestTicks, DateTime.UtcNow.Ticks);
+            Stopwatch dsw = Dbg.On ? Stopwatch.StartNew() : null;
             try { HandleRequest(ctx); }
             finally
             {
                 Interlocked.Exchange(ref _lastRequestTicks, DateTime.UtcNow.Ticks);
                 Interlocked.Decrement(ref _activeRequests);
+                if (dsw != null)
+                {
+                    // the pages poll /api/info and /api/vram every second or two: those only when slow or failing
+                    string p = ctx.Request.Url.AbsolutePath; int code = 0;
+                    try { code = ctx.Response.StatusCode; } catch { }
+                    bool poll = p == "/api/info" || p == "/api/vram";
+                    if (!poll || code != 200 || dsw.ElapsedMilliseconds > 250)
+                        Dbg.Msg("http", ctx.Request.HttpMethod + " " + ctx.Request.Url.PathAndQuery + " -> " + code + " in " + dsw.ElapsedMilliseconds + " ms");
+                }
             }
         }
 
@@ -618,7 +629,7 @@ namespace Phoenix
             if (path == "/api/list") { SendJson(res, 200, "{\"entries\":" + RequireWorkspace().ListJson(q ?? ".") + "}"); return; }
             if (path == "/api/ls") { Log.Text("/ls " + (q ?? ".")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().List(q ?? ".")) + "}"); return; }
             if (path == "/api/cat") { Log.Text("/cat " + (q ?? "")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().Read(q ?? "")) + "}"); return; }
-            if (path == "/api/chat" && post) { Chat(body, res); return; }
+            if (path == "/api/chat" && post) { Dbg.Source = page != null && page.StartsWith("vs-") ? "vscode" : "window"; Chat(body, res); return; }
             if (path == "/api/browser")
             {
                 if (post)
@@ -657,6 +668,7 @@ namespace Phoenix
                 Thread t = new Thread(delegate()
                 {
                     int done = 0, saved = 0; Stopwatch rsw = Stopwatch.StartNew();
+                    IDisposable awake = StayAwake.Scope("Instant Recall");   // displays must not power down mid-load (StayAwake)
                     try
                     {
                         List<string> files = new List<string>(Directory.GetFiles(wsR.Root, "*", SearchOption.AllDirectories));
@@ -673,21 +685,30 @@ namespace Phoenix
                             {
                                 ChatEngine e = _engine;
                                 if (e == null || _recallStop) break;
+                                Stopwatch fsw = Stopwatch.StartNew();
                                 if (e.PreRead(text, delegate { return _recallStop; })) saved++;
+                                Dbg.Msg("recall", "pre-read " + wsR.Relative(f) + " (" + text.Length + " chars) in " + fsw.ElapsedMilliseconds + " ms");
                             }
                             done++;
                         }
                         Log.Text("recall: pre-read " + saved + " new file(s) of " + done + " in " + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + " ms" + (_recallStop ? " (stopped by a chat)" : ""));
                     }
                     catch (Exception ex) { Log.Text("recall: FAILED " + ex.Message); }
-                    finally { _recallProgress = null; _recallStop = false; _recallBusy = 0; }
+                    finally { awake.Dispose(); _recallProgress = null; _recallStop = false; _recallBusy = 0; }
                 });
                 t.IsBackground = true; t.Priority = ThreadPriority.BelowNormal; t.Start();
                 Log.Text("recall: pre-reading " + wsR.Display);
+                Dbg.Msg("recall", "background pre-read thread started");
                 SendJson(res, 200, "{\"started\":true}");
                 return;
             }
             if (path == "/api/pretype" && post) { StartPretype(body); SendJson(res, 200, "{}"); return; }
+            if (path == "/api/debug" && post)
+            {
+                Dbg.Set(body != null && body.ContainsKey("on") && body["on"] is bool && (bool)body["on"]);
+                SendJson(res, 200, "{\"debug\":" + (Dbg.On ? "true" : "false") + "}");
+                return;
+            }
             if (path == "/api/mode" && post)
             {
                 _acceptMode = Json.GetStr(body, "mode", "auto").ToLowerInvariant() == "accept";
@@ -802,7 +823,7 @@ namespace Phoenix
             ChatEngine e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
             ChatEngine er = _engine;
-            return "{\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
+            return "{\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
                    ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
@@ -1235,6 +1256,7 @@ namespace Phoenix
             {
                 try
                 {
+                    Dbg.Source = "answer-while-typing";
                     if (!Monitor.TryEnter(_engineLock, 50)) return;   // a chat or load is running: no draft
                     try
                     {

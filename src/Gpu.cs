@@ -118,6 +118,7 @@ namespace Phoenix
 
         // GPU timestamp profiling: per-kernel-name total milliseconds across submits.
         public bool Profiling;
+        long _dbgSubmits; double _dbgMs;   // debug mode: GPU jobs submitted and time spent waiting on them
         public float TimestampPeriodNs;
         public readonly Dictionary<string, double> ProfileMs = new Dictionary<string, double>();
         public readonly Dictionary<string, int> ProfileCount = new Dictionary<string, int>();
@@ -366,6 +367,23 @@ namespace Phoenix
                         if (res == 0) FallbackBytes += req.size;
                     }
                 }
+                if (res == VkErrorOutOfDeviceMemory && hostVisible && (_memFlags[type] & VkConst.MemoryDeviceLocal) != 0)
+                {
+                    // Upload buffers prefer VRAM the CPU can write directly; without Resizable BAR that window is only
+                    // 256 MB and fills up (2026-10-17: the docs embedder then failed to start on the GPU). Fall back to
+                    // plain host memory, which the GPU reads over PCIe.
+                    for (int t = 0; t < _memFlags.Length; t++)
+                    {
+                        if ((req.memoryTypeBits & (1u << t)) == 0) continue;
+                        uint f = _memFlags[t];
+                        if ((f & required) != required || (f & VkConst.MemoryDeviceLocal) != 0) continue;
+                        mai.memoryTypeIndex = (uint)t;
+                        res = Vk.vkAllocateMemory(Device, &mai, IntPtr.Zero, &mem);
+                        if (res == 0) { Dbg.Msg("gpu", "upload window (VRAM the CPU can write) is full: " + req.size + " bytes went to host memory instead"); type = t; }
+                        break;
+                    }
+                }
+                if (res != 0) Dbg.Note("gpu", "GPU memory allocation of " + req.size + " bytes failed (VkResult " + res + ", " + (hostVisible ? "host-visible" : "device-local") + ")");
                 Vk.Check(res, "vkAllocateMemory(" + req.size + " bytes, type " + type + ")");
                 b.Memory = mem;
                 b.DeviceLocal = (_memFlags[type] & VkConst.MemoryDeviceLocal) != 0;
@@ -703,7 +721,16 @@ namespace Phoenix
                 VkConst.PipelineStageHost, VkConst.AccessHostRead);
             Vk.Check(Vk.vkEndCommandBuffer(Cmd), "vkEndCommandBuffer");
             _recording = false;
+            long t0 = Dbg.On ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             Submit();
+            if (Dbg.On)
+            {
+                // one line per slow job (the ~2 s Windows GPU timeout is the danger zone), and a running count
+                double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _dbgSubmits++; _dbgMs += ms;
+                if (ms > 250) Dbg.Msg("gpu", "slow GPU job: " + ms.ToString("F0") + " ms" + (ms > 1500 ? " (near the Windows GPU timeout)" : ""));
+                if (_dbgSubmits % 2000 == 0) Dbg.Msg("gpu", _dbgSubmits + " GPU jobs so far, " + (_dbgMs / 1000).ToString("F1") + " s busy");
+            }
             if (Profiling && _queryLabels.Count > 0) CollectProfile();
         }
 

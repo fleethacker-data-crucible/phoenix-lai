@@ -356,6 +356,13 @@ const COMMANDS = [
       info = await api('/api/mode', { mode: m }); refresh();
       systemLine(m === 'accept' ? 'Mode: accept. The model will ask before every file list, read or write (docs/RAG excluded).' : 'Mode: auto. File actions run without asking.');
     } },
+  { name: '/debug', use: '/debug on|off', desc: 'debug logging: every step the server takes and every error, in the session log (logs\)', arg: true,
+    run: async a => {
+      const v = (a || '').trim().toLowerCase();
+      if (v !== 'on' && v !== 'off') { systemLine('Debug logging is ' + (info.debug ? 'on' : 'off') + '. Use /debug on or /debug off.'); return; }
+      try { await api('/api/debug', { on: v === 'on' }); await refresh(); systemLine('Debug logging ' + (v === 'on' ? 'on: every step and every error goes to the session log in logs\.' : 'off.')); }
+      catch (e) { systemLine('Could not change debug logging: ' + e.message); }
+    } },
   { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
     options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'turned off for now (GPU only)' }],
     run: async arg => {
@@ -613,7 +620,7 @@ async function send() {
   try {
     const body = { messages, temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p,
                    repeat_penalty: settings.repeat_penalty, max_tokens: settings.max_tokens };
-    const res = await fetch('/api/chat', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch('/api/chat?page=' + PAGE_ID, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '';
     for (;;) {
