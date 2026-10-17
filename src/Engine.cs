@@ -34,6 +34,7 @@ namespace Phoenix
     {
         public string Role;   // "system", "user", "assistant"
         public string Text;
+        public List<byte[]> Images;   // image files (PNG / JPEG ...) shown before the text of a user message; null: none
         public ChatMessage(string role, string text) { Role = role; Text = text; }
     }
 
@@ -94,8 +95,76 @@ namespace Phoenix
             _gemma = _turn >= 0 && _turnEnd >= 0;
             if (_gemma) _eot = _turnEnd;
             _mistral = !_gemma && _startHeader < 0 && _inst >= 0 && _instEnd >= 0;
+            string tmpl = g.Has("tokenizer.chat_template") ? g.GetString("tokenizer.chat_template") : null;
+            _emptyThought = tmpl == null || tmpl.Contains("'<|channel>thought\\n<channel|>'");
+            // Vision: the Gemma 4 model's projector file next to it (loaded on the first image, once).
+            _boi = TokenId("<|image>"); _eoi = TokenId("<image|>");
+            GemmaGpu gg = model as GemmaGpu; GemmaCpu gc = model as GemmaCpu;
+            if (_gemma && _boi >= 0 && _eoi >= 0 && (gg != null || gc != null))
+            {
+                try { MmprojPath = VisionEncoder.FindFor(path, gg != null ? gg.C.NEmbd : gc.C.NEmbd); } catch { MmprojPath = null; }
+                if (gg != null) gg.ImageRow = ImageRow; else gc.ImageRow = ImageRow;
+            }
             if (!_gemma && !_mistral && (_startHeader < 0 || _endHeader < 0))
                 throw new NotSupportedException("Model has no supported chat template (Llama 3, Mistral or Gemma 4).");
+        }
+
+        // ---- images ----
+        public readonly string MmprojPath;   // the vision projector found for this model (null: text only)
+        public bool HasVision { get { return MmprojPath != null; } }
+        readonly int _boi, _eoi;
+        VisionEncoder _vision;
+        readonly Dictionary<string, int> _imgByHash = new Dictionary<string, int>();
+        readonly Dictionary<int, float[][]> _imgRows = new Dictionary<int, float[][]>();
+        readonly List<int> _imgOrder = new List<int>();   // least recently used first
+        int _imgNext = 1;
+        const int ImageKeep = 64;                         // encoded images kept in RAM (a 280-token 12B image is ~4 MB)
+        public string LastVisionInfo;                     // for the log: size, tokens, time of the last encoding
+
+        float[] ImageRow(int tok)
+        {
+            float[][] rows;
+            if (!_imgRows.TryGetValue(ImageTokens.Image(tok), out rows)) throw new InvalidOperationException("Unknown image token.");
+            return rows[ImageTokens.Index(tok)];
+        }
+
+        // The soft-token ids of an image file, encoding it (and loading the vision tower) the first time it is seen.
+        List<int> ImageIds(byte[] file)
+        {
+            if (MmprojPath == null) throw new NotSupportedException("This model has no vision projector (mmproj) in the models folder, so it cannot read images.");
+            string key;
+            using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create()) key = Convert.ToBase64String(sha.ComputeHash(file));
+            int img;
+            if (!_imgByHash.TryGetValue(key, out img))
+            {
+                Stopwatch sw = Stopwatch.StartNew();
+                if (_vision == null)
+                {
+                    _vision = new VisionEncoder(MmprojPath, _gpu);
+                    GemmaGpu gg = _model as GemmaGpu;
+                    if (gg != null) gg.BidiImages = _vision.Kind == "gemma4uv";   // 12B: image tokens see each other both ways
+                    Dbg.Msg("engine", "vision tower " + Path.GetFileName(MmprojPath) + " (" + _vision.Kind + ") loaded on the " + _vision.Backend + " in " + sw.ElapsedMilliseconds + " ms");
+                }
+                RgbImage pic = RgbImage.Decode(file);
+                long t0 = sw.ElapsedMilliseconds;
+                float[][] rows = _vision.Encode(pic);
+                img = _imgNext++;
+                _imgByHash[key] = img; _imgRows[img] = rows;
+                LastVisionInfo = pic.W + "x" + pic.H + " image -> " + rows.Length + " tokens in " + (sw.ElapsedMilliseconds - t0) + " ms";
+                Dbg.Msg("engine", LastVisionInfo);
+                while (_imgOrder.Count >= ImageKeep)
+                {
+                    int old = _imgOrder[0]; _imgOrder.RemoveAt(0); _imgRows.Remove(old);
+                    string ok = null; foreach (KeyValuePair<string, int> kv in _imgByHash) if (kv.Value == old) { ok = kv.Key; break; }
+                    if (ok != null) _imgByHash.Remove(ok);
+                }
+            }
+            _imgOrder.Remove(img); _imgOrder.Add(img);
+            List<int> ids = new List<int>();
+            ids.Add(_boi);
+            for (int i = 0; i < _imgRows[img].Length; i++) ids.Add(ImageTokens.Make(img, i));
+            ids.Add(_eoi);
+            return ids;
         }
 
         int TokenId(string text)
@@ -118,10 +187,20 @@ namespace Phoenix
                     // A model turn is written exactly as it was generated (header, empty thought channel, the sampled
                     // tokens), so the KV cache of the reply is reused instead of re-reading it on the next request.
                     ids.AddRange(Tokenizer.Encode("model\n", false, false));
-                    ids.Add(_channel);
-                    ids.AddRange(Tokenizer.Encode("thought\n", false, false));
-                    ids.Add(_channelEnd);
+                    if (_emptyThought)
+                    {
+                        ids.Add(_channel);
+                        ids.AddRange(Tokenizer.Encode("thought\n", false, false));
+                        ids.Add(_channelEnd);
+                    }
                     ids.AddRange(ReplyIds(m.Text));
+                }
+                else if (m.Images != null && m.Images.Count > 0)
+                {
+                    // images first, then the text (Google's guidance), as <|image> soft tokens <image|>
+                    ids.AddRange(Tokenizer.Encode(m.Role + "\n", false, false));
+                    foreach (byte[] im in m.Images) ids.AddRange(ImageIds(im));
+                    ids.AddRange(EncodeBody("", m.Text.Trim(), ids.Count));
                 }
                 else ids.AddRange(EncodeBody(m.Role + "\n", m.Text.Trim(), ids.Count));
                 ids.Add(_turnEnd);
@@ -129,11 +208,19 @@ namespace Phoenix
             }
             ids.Add(_turn);
             ids.AddRange(Tokenizer.Encode("model\n", false, false));
-            ids.Add(_channel);
-            ids.AddRange(Tokenizer.Encode("thought\n", false, false));
-            ids.Add(_channelEnd);
+            if (_emptyThought)
+            {
+                ids.Add(_channel);
+                ids.AddRange(Tokenizer.Encode("thought\n", false, false));
+                ids.Add(_channelEnd);
+            }
             return ids;
         }
+
+        // Whether the model's own template closes the prompt with an empty thought channel when thinking is off: the 12B's
+        // does ('<|channel>thought\n<channel|>' after "<|turn>model\n"); E2B / E4B's end at "<|turn>model\n" (with the
+        // empty channel they planned out loud before answering). No template: keep the channel.
+        readonly bool _emptyThought;
 
         // Loads a local .gguf file. Uses the GPU when Vulkan works, otherwise the CPU reference path.
         // KV cache format for GPU Llama models (q8 by default: 64/64 top-1 vs fp16 at half the memory). Gemma always
@@ -379,6 +466,7 @@ namespace Phoenix
         {
             List<int> d = DraftFrom(h, h, room);
             if (d == null && Hint != null && Hint.Count > 0) d = DraftFrom(h, Hint, room);
+            if (d != null && d.Exists(delegate(int t) { return t < 0; })) d = null;   // never guess image tokens
             return d;
         }
 
@@ -623,6 +711,7 @@ namespace Phoenix
             int reuse = 0;
             while (reuse < _fed.Count && reuse < prompt.Count - 1 && _fed[reuse] == prompt[reuse]) reuse++;
             if (reuse > 0 && reuse < _model.MinReuse(_fed.Count)) reuse = 0;   // ring cache no longer holds what that would need
+            reuse = ImageTokens.ReuseStart(prompt, reuse);   // never resume reading in the middle of an image
             _fed.RemoveRange(reuse, _fed.Count - reuse);
             st.ReusedTokens = reuse;
             Dbg.Msg("engine", "prompt " + prompt.Count + " tokens: " + reuse + " reused from the cache, " + (prompt.Count - reuse) + " to read (context " + ContextLength + ")");
@@ -639,10 +728,10 @@ namespace Phoenix
             {
                 Span sp = si < spans.Count ? spans[si] : null;
                 int end = sp != null ? sp.Start : prompt.Count;
-                for (int i = pos; i < end; i += chunk)
+                for (int i = pos, n; i < end; i += n)
                 {
                     if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
-                    int n = Math.Min(chunk, end - i);
+                    n = ImageTokens.Fit(prompt, i, chunk, end);   // an image is read in one piece
                     long pf0 = Dbg.On ? sw.ElapsedMilliseconds : 0;
                     logits = _model.Prefill(prompt, i, n);
                     if (Dbg.On) Dbg.Msg("engine", "read prompt tokens " + i + ".." + (i + n) + " in " + (sw.ElapsedMilliseconds - pf0) + " ms");
@@ -668,10 +757,10 @@ namespace Phoenix
                     // Resolve()); read alone, it is neutral and reusable by any later chat.
                     KvSnapshot fresh = ReadAlone(sp.Key, _segIds[sp.Key], cancel);
                     if (fresh == null) { st.StopReason = "stopped"; return st; }
-                    for (int i = 0; i < sp.Start; i += chunk)
+                    for (int i = 0, n; i < sp.Start; i += n)
                     {
                         if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
-                        int n = Math.Min(chunk, sp.Start - i);
+                        n = ImageTokens.Fit(prompt, i, chunk, sp.Start);
                         logits = _model.Prefill(prompt, i, n);
                         for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
                     }
@@ -781,6 +870,7 @@ namespace Phoenix
 
         public void Dispose()
         {
+            if (_vision != null) { _vision.Dispose(); _vision = null; }
             _model.Dispose();
             if (_gpu != null) _gpu.Dispose();
             _gguf.Dispose();

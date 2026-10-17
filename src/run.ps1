@@ -1,4 +1,4 @@
-# Phoenix LAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
+﻿# Phoenix LAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
 #   powershell.exe -NoProfile -STA -File src\run.ps1                     # checks, compile, chat in an Edge app window
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Model models\x.gguf -Context 8192
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -CheckOnly          # locality checks only
@@ -164,21 +164,6 @@ $References | ForEach-Object { [void]$cp.ReferencedAssemblies.Add($_) }
 $paths = @(Get-ChildItem $src -Recurse -Filter *.cs | ForEach-Object { $_.FullName })
 Add-Type -Path $paths -CompilerParameters $cp
 
-# Default model: the last one loaded (models\last-model.txt), else an 8B, else the largest .gguf.
-if (-not $Model) {
-    $modelsDir = Join-Path $Root 'models'
-    $last = Join-Path $modelsDir 'last-model.txt'
-    if (Test-Path $last) {
-        $name = (Get-Content $last -TotalCount 1).Trim()
-        if ($name -and (Test-Path (Join-Path $modelsDir $name))) { $Model = Join-Path $modelsDir $name }
-    }
-    if (-not $Model) {
-        $all = @(Get-ChildItem $modelsDir -Filter *.gguf -ErrorAction SilentlyContinue | Sort-Object Length -Descending)
-        $pick = $all | Where-Object { $_.Name -match '8B' } | Select-Object -First 1
-        if (-not $pick) { $pick = $all | Select-Object -First 1 }
-        if ($pick) { $Model = $pick.FullName }
-    }
-}
-# No model is fine: the chat opens and one can be picked from Settings.
+# No model loads at startup (unless -Model is given): the chat opens on "Select model" and one is picked from the drop-down.
 $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
 exit ([Phoenix.WebServer]::Run($Root, $modelPath, $Context))

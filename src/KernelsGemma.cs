@@ -58,6 +58,71 @@ namespace Phoenix
             return k.Finish();
         }
 
+        // y[i] = min(max(x[i], lo), hi) (Gemma 4 vision "clippable linear" input / output clamps; x and y may be the same).
+        // bindings: 0 x, 1 y. push: n, lo(bits), hi(bits)
+        public static uint[] Clamp()
+        {
+            KB k = new KB(Kernels.Wg);
+            KB.Buf x = k.Buffer(0, k.F32, true), y = k.Buffer(1, k.F32, false);
+            k.Push(3);
+            k.Begin();
+            uint i = k.GlobalId();
+            k.If(k.ULt(i, k.PushU(0)), delegate { k.St(y, i, k.S.Glsl(k.F32, Spv.GlslFMin, k.FMax(k.Ld(x, i), k.PushF(1)), k.PushF(2))); });
+            return k.Finish();
+        }
+
+        // g[i] = gelu_quick(g[i]) * u[i] = g * sigmoid(1.702 g) * u (llama.cpp's vision activation when the mmproj does not say
+        // "use_gelu"; only for comparing against llama.cpp). bindings: 0 g, 1 u. push: n
+        public static uint[] GeluQuickMul()
+        {
+            KB k = new KB(Kernels.Wg);
+            KB.Buf g = k.Buffer(0, k.F32, false), u = k.Buffer(1, k.F32, true);
+            k.Push(1);
+            k.Begin();
+            uint i = k.GlobalId();
+            k.If(k.ULt(i, k.PushU(0)), delegate
+            {
+                uint x = k.Ld(g, i);
+                uint sg = k.FDiv(k.CF(1f), k.FAdd(k.CF(1f), k.Exp(k.FMul(x, k.CF(-1.702f)))));
+                k.St(g, i, k.FMul(k.FMul(x, sg), k.Ld(u, i)));
+            });
+            return k.Finish();
+        }
+
+        // E2B/E4B per-layer inputs (GemmaCpu.TokenPerLayerInputs) for T tokens; one workgroup per (token t, layer l),
+        // group id t * nl + l: out[l][t][i] = (rmsnorm(proj[t][l*pl + i] * s) * w[i] + tok[t][l*pl + i]) * c.
+        // tok rows come pre-scaled by sqrt(pl). bindings: 0 proj, 1 tok, 2 w, 3 out. push: pl, nl, T, eps, s, c (bits)
+        public static uint[] PleInputs()
+        {
+            KB k = new KB(Kernels.NormWg);
+            KB.Buf proj = k.Buffer(0, k.F32, true), tok = k.Buffer(1, k.F32, true), w = k.Buffer(2, k.F32, true), outB = k.Buffer(3, k.F32, false);
+            k.Push(6);
+            KB.Shared sh = k.SharedArray(k.F32, Kernels.NormWg);
+            k.Begin();
+            uint i = k.Local(k.U32), acc = k.Local(k.F32);
+            uint pl = k.PushU(0), nl = k.PushU(1), T = k.PushU(2), eps = k.PushF(3), s = k.PushF(4), c = k.PushF(5);
+            uint lid = k.LocalId(), gid = k.GroupX();
+            uint t = k.UDiv(gid, nl), l = k.UMod(gid, nl);
+            uint inOff = k.IMul(gid, pl);                            // [t][l*pl] == (t*nl + l) * pl
+            uint outOff = k.IMul(k.IAdd(k.IMul(l, T), t), pl);       // [l][t]
+            k.Set(acc, k.CF(0));
+            k.For(i, lid, pl, k.C(Kernels.NormWg), delegate
+            {
+                uint v = k.FMul(k.Ld(proj, k.IAdd(inOff, k.Get(i, k.U32))), s);
+                k.Set(acc, k.FAdd(k.Get(acc, k.F32), k.FMul(v, v)));
+            });
+            k.St(sh, lid, k.Get(acc, k.F32));
+            k.Reduce(sh, lid, Kernels.NormWg, k.FAdd);
+            uint scale = k.FDiv(k.CF(1f), k.Sqrt(k.FAdd(k.FDiv(k.Ld(sh, k.C(0)), k.ToF(pl)), eps)));
+            k.For(i, lid, pl, k.C(Kernels.NormWg), delegate
+            {
+                uint j = k.Get(i, k.U32), at = k.IAdd(inOff, j);
+                uint nv = k.FMul(k.FMul(k.FMul(k.Ld(proj, at), s), scale), k.Ld(w, j));
+                k.St(outB, k.IAdd(outOff, j), k.FMul(k.FAdd(nv, k.Ld(tok, at)), c));
+            });
+            return k.Finish();
+        }
+
         // x = (x + rmsnorm(y) * w) * s  — Gemma's post-attention / post-FFN norm with the residual add and the layer
         // output scale (s = 1 except after the FFN). Single workgroup. bindings: 0 x, 1 y, 2 w. push: n, eps(bits), s(bits)
         public static uint[] NormAdd()

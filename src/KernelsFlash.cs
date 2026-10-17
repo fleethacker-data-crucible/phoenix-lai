@@ -28,7 +28,7 @@ namespace Phoenix
             uint dpt = hdMax / KC;                 // output dims per thread: KC threads per query row
             KB k = new KB(Wg);
             KB.Buf q = k.Buffer(0, k.F32, true), kc = k.Buffer(1, k.U32, true), vc = k.Buffer(2, k.U32, true), ob = k.Buffer(3, k.F32, false);
-            k.Push(9);
+            k.Push(11);
             KB.Shared qs = k.SharedArray(k.U32, TQ * hdMax / 2);      // f16(q) pairs [qi][d]
             KB.Shared ks = k.SharedArray(k.U32, KC * hdMax / 2);      // K block, fp16 pairs [ki][d]
             KB.Shared vs = k.SharedArray(k.U32, KC * hdMax / 2);      // V block, fp16 pairs [ki][d]
@@ -40,6 +40,8 @@ namespace Phoenix
             for (int e = 0; e < dpt; e++) o[e] = k.Local(k.F32);
             uint hd = k.PushU(0), kvDim = k.PushU(1), ring = k.PushU(2), nHead = k.PushU(3), nKv = k.PushU(4);
             uint p0 = k.PushU(5), window = k.PushU(6), scale = k.PushF(7), T = k.PushU(8);
+            // [b0, b1): positions of an image whose tokens see each other both ways (b1 = 0: none)
+            uint b0 = k.PushU(9), b1 = k.PushU(10);
             uint tile = k.GroupX(), h = k.GroupY(), lid = k.LocalId();
             uint t0 = k.IMul(tile, k.C(TQ));
             uint kvh = k.UDiv(h, k.UDiv(nHead, nKv));
@@ -51,7 +53,8 @@ namespace Phoenix
             uint pFirst = k.IAdd(p0, t0), pLast = k.IAdd(p0, tLast);
             uint loTile = k.Select(k.U32, k.S.Value(Op.LogicalAnd, k.Bool, hasWin, k.S.Value(Op.UGreaterThanEqual, k.Bool, pFirst, window)),
                                    k.IAdd(k.S.Value(Op.ISub, k.U32, pFirst, window), k.C(1)), k.C(0));
-            uint endTile = k.IAdd(pLast, k.C(1));
+            uint tileInImg = k.S.Value(Op.LogicalAnd, k.Bool, k.S.Value(Op.UGreaterThanEqual, k.Bool, pLast, b0), k.ULt(pFirst, b1));
+            uint endTile = k.S.Glsl(k.U32, Spv.GlslUMax, k.IAdd(pLast, k.C(1)), k.Select(k.U32, tileInImg, b1, k.C(0)));
 
             // queries -> shared (f16-rounded, as the decode path)
             uint half = k.Shr(hd, k.C(1));
@@ -73,6 +76,8 @@ namespace Phoenix
             uint myLo = k.Select(k.U32, k.S.Value(Op.LogicalAnd, k.Bool, hasWin, k.S.Value(Op.UGreaterThanEqual, k.Bool, myP, window)),
                                  k.IAdd(k.S.Value(Op.ISub, k.U32, myP, window), k.C(1)), k.C(0));
             uint myValid = k.ULt(myT, T);
+            uint myInImg = k.S.Value(Op.LogicalAnd, k.Bool, k.S.Value(Op.UGreaterThanEqual, k.Bool, myP, b0), k.ULt(myP, b1));
+            uint myHi = k.Select(k.U32, myInImg, k.S.Glsl(k.U32, Spv.GlslUMax, myP, k.S.Value(Op.ISub, k.U32, b1, k.C(1))), myP);
             k.For(c0v, loTile, endTile, k.C(KC), delegate
             {
                 uint c0 = k.Get(c0v, k.U32);
@@ -106,7 +111,7 @@ namespace Phoenix
                     k.Set(acc, k.FAdd(k.Get(acc, k.F32), dot));
                 });
                 uint inRange = k.S.Value(Op.LogicalAnd, k.Bool, myValid,
-                    k.S.Value(Op.LogicalAnd, k.Bool, k.S.Value(Op.UGreaterThanEqual, k.Bool, key2, myLo), k.S.Value(Op.ULessThanEqual, k.Bool, key2, myP)));
+                    k.S.Value(Op.LogicalAnd, k.Bool, k.S.Value(Op.UGreaterThanEqual, k.Bool, key2, myLo), k.S.Value(Op.ULessThanEqual, k.Bool, key2, myHi)));
                 k.St(sc, lid, k.Select(k.F32, inRange, k.FMul(k.Get(acc, k.F32), scale), k.CF(float.NegativeInfinity)));
                 k.Barrier();
                 // row update: new max, probabilities, sum, correction for the running output

@@ -1,11 +1,18 @@
 const $ = id => document.getElementById(id);
-// promptInfo is kept as a reference: while a reply streams the prompt line is out of the page, so $() can't find it.
-const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine'), promptInfo = $('promptInfo');
+// promptLine is kept as a reference: while a reply streams it is out of the page, so $() can't find it.
+const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
 const mirror = $('mirror');
-let history = [], info = {}, models = [], controller = null, filesAt = '.';
+let history = [], info = {}, controller = null, filesAt = '.';
 const DEFAULT_SYSTEM = 'You are a concise, expert assistant running locally.';
 const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048, system: DEFAULT_SYSTEM, pretype: true, typeEffect: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
+// Settings per model (sampling, reply limit, system prompt, context, KV cache), kept under settings.models by file name.
+// Anything not set for a model falls back to these defaults.
+function ms(name) {
+  const d = { temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p, repeat_penalty: settings.repeat_penalty,
+              max_tokens: settings.max_tokens, system: settings.system, context: 0, kv: 'q8' };
+  return Object.assign(d, (settings.models || {})[name] || {});
+}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
 
 const ICON_DIR = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
@@ -32,94 +39,55 @@ chatEl.addEventListener('click', e => {
 
 function scrollDown() { if (glide) glide.delete(chatEl); chatEl.scrollTop = chatEl.scrollHeight; }
 
-// Status line: one centered row of icon + value items separated by "|". Empty items are left out.
+// Icons for the status items (top bar and left panel).
 const SICON = {
   ram: '<rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 7v10M11 7v10M15 7v10M6 17v3M10 17v3M14 17v3M18 17v3"/>',
-  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
-  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11 7"/>',
-  changes: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   speed: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
-  model: '<path d="m12 2 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/>',
   gpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>',
   ctx: '<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
-  rules: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
   rag: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>'
 };
 let lastTps = '', ctxUsed = 0;
-// Generation speed shown in the status bar: the average over the last 25 replies, recalculated after each one.
+// Generation speed shown in the top bar: the average over the last 25 replies, recalculated after each one.
 const tpsHistory = [];
 function recordTps(tps) {
   if (!(tps > 0)) return;
   tpsHistory.push(tps); if (tpsHistory.length > 25) tpsHistory.shift();
   lastTps = (tpsHistory.reduce((a, b) => a + b, 0) / tpsHistory.length).toFixed(1);
 }
-function statusItem(icon, text, lower, cls) {
-  return '<span class="item' + (lower ? ' lower' : '') + (cls ? ' ' + cls : '') + '"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+function statusItem(icon, text, lower) {
+  return '<span class="item' + (lower ? ' lower' : '') + '"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
          'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + SICON[icon] + '</svg>' + esc(text) + '</span>';
 }
 function drawStatus(offline) {
-  // Bottom bar: system state (git, rules, RAG, memory, GPU). Under the prompt: what this chat uses (folder, speed,
-  // context, model), so the bottom bar keeps room.
-  const items = [], near = [];
-  if (offline) items.push(statusItem('model', 'server offline'));
-  else {
-    // Folder: green = connected, orange = access on but nothing connected, grey = folder access off.
-    if (info.folderAccess === false) near.push(statusItem('folder', 'folder access off', false, 'off'));
-    else near.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'gold'));
-    const g = info.git;
-    if (g) {
-      items.push(statusItem('branch', (g.branch || 'detached') + (g.commit ? ' @' + g.commit : '')));
-      if (g.changed !== null && g.changed !== undefined) items.push(statusItem('changes', g.changed ? g.changed + ' changed' : 'clean'));
-    }
-    if (info.rules && info.rules.length) items.push(statusItem('rules', 'rules: ' + info.rules.join(' + ')));
+  // Top bar: model drop-down, then speed | tokens | rag | memory. Left panel: the video card. All plain grey.
+  const tm = $('topModel'); if (tm) tm.textContent = offline ? 'server offline' : info.file ? String(info.file).split(/[\\/]/).pop().replace(/\.gguf$/i, '') : 'Select model';
+  const top = [], hw = [];
+  if (!offline) {
+    if (lastTps) top.push(statusItem('speed', lastTps + ' t/s avg'));
+    if (info.file) top.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens'));
     const rg = info.rag;
-    // RAG: grey = off, green = indexed with vectors (hybrid search working), orange = indexing, not indexed,
-    // keyword-only (no embedding model) or an error.
     if (rg) {
       const docs = rg.chunks ? rg.files + ' docs · ' + rg.chunks + ' chunks' : 'not indexed';
-      if (!rg.enabled) items.push(statusItem('rag', 'rag off' + (rg.chunks ? ': ' + docs : ''), false, 'off'));
-      else if (rg.indexing) items.push(statusItem('rag', 'indexing: ' + rg.indexing, false, 'warn'));
-      else if (rg.error) items.push(statusItem('rag', 'rag error: ' + rg.error, false, 'warn'));
-      else if (!rg.chunks) items.push(statusItem('rag', 'rag: not indexed (/index)', false, 'warn'));
-      else if (!rg.vectors) items.push(statusItem('rag', 'rag: ' + docs + ' · keywords only', false, 'warn'));
-      else items.push(statusItem('rag', 'rag: ' + docs + ' · hybrid', false, 'ok'));
-    }
-    if (info.recall && (info.recall.busy || info.recall.files)) near.push(statusItem('rag', info.recall.busy ? 'recall: ' + info.recall.busy : 'recall: ' + info.recall.files + ' files', false, info.recall.busy ? 'gold' : 'ok'));
-    if (info.mode === 'accept') near.push(statusItem('rules', 'mode: accept', false, 'gold'));
-    if (lastTps) near.push(statusItem('speed', lastTps + ' t/s avg', false, 'ok'));
-    // Context: green < 70% used, gold < 90%, red beyond.
-    if (info.file) {
-      const f = info.context ? ctxUsed / info.context : 0;
-      near.push(statusItem('ctx', ctxUsed.toLocaleString() + '/' + (info.context || 0).toLocaleString() + ' tokens', false, f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad'));
+      top.push(statusItem('rag', !rg.enabled ? 'rag off' + (rg.chunks ? ': ' + docs : '') : rg.indexing ? 'indexing: ' + rg.indexing
+        : rg.error ? 'rag error: ' + rg.error : !rg.chunks ? 'rag: not indexed (/index)' : 'rag: ' + docs + (rg.vectors ? ' · hybrid' : ' · keywords only')));
     }
     // Memory the model lives in: VRAM in GPU mode, system RAM in CPU mode, as "this app uses / this app could have"
-    // (both live: the right side drops when other programs take memory). Gold while a model loads, green when
-    // loaded, red after a failed load, grey with no model.
+    // (both live: the right side drops when other programs take memory).
     const gb = b => (b / 1073741824).toFixed(1);
     const cpu = info.device === 'cpu', mem = cpu ? 'ram' : 'vram', micon = cpu ? 'ram' : 'gpu';
-    if (info.loading) items.push(statusItem(micon, mem + ': loading…', false, 'gold'));
-    else if (info.loadError) items.push(statusItem(micon, mem + ': load failed', false, 'bad'));
-    else if (cpu && info.ram && info.file) items.push(statusItem(micon, 'ram ' + gb(info.ram.used) + '/' + gb(info.ram.avail) + ' GB', false, 'ok'));
-    else if (!cpu && info.vram) items.push(statusItem(micon, 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB', false, 'ok'));
-    else items.push(statusItem(micon, mem + ': no model', false, 'off'));
-    // Model: gold while loading, green when loaded in memory, red after a failed load, grey with none.
-    const mname = f => f.replace(/\.gguf$/i, '');
-    if (info.loading) near.push(statusItem('model', 'loading ' + mname(info.loading) + '…', true, 'gold'));
-    else if (info.file) near.push(statusItem('model', mname(info.file), true, 'ok'));
-    else if (info.loadError) near.push(statusItem('model', 'model error', true, 'bad'));
-    else near.push(statusItem('model', 'no model', true, 'off'));
-    // Video card (GPU mode only): gold while detecting (model loading), green when the model runs on it, red on an
-    // error or an unwanted CPU fallback, grey when idle.
+    if (info.loading) top.push(statusItem(micon, mem + ': loading…'));
+    else if (info.loadError) top.push(statusItem(micon, mem + ': load failed'));
+    else if (cpu && info.ram && info.file) top.push(statusItem(micon, 'ram ' + gb(info.ram.used) + '/' + gb(info.ram.avail) + ' GB'));
+    else if (!cpu && info.vram) top.push(statusItem(micon, 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB'));
+    else top.push(statusItem(micon, mem + ': no model'));
+    // Video card (GPU mode only; in CPU mode the RAM item says it all).
     const onGpu = info.backend && /^GPU/.test(info.backend);
-    if (cpu) { /* nothing: the RAM item says it all */ }
-    else if (info.loading) items.push(statusItem('gpu', 'detecting gpu…', true, 'gold'));
-    else if (info.loadError) items.push(statusItem('gpu', 'gpu error', true, 'bad'));
-    else if (onGpu) items.push(statusItem('gpu', info.backend.replace(/^GPU: /, ''), true, 'ok'));
-    else if (info.backend) items.push(statusItem('gpu', 'gpu unavailable: on cpu', true, 'bad'));
-    else items.push(statusItem('gpu', 'gpu idle', true, 'off'));
+    if (!cpu) hw.push(statusItem('gpu', info.loading ? 'detecting gpu…' : info.loadError ? 'gpu error' : onGpu ? info.backend.replace(/^GPU: /, '')
+      : info.backend ? 'gpu unavailable: on cpu' : 'gpu idle', true));
   }
-  $('status').innerHTML = items.join('<span class="sep">|</span>');
-  promptInfo.innerHTML = near.join('<span class="sep">|</span>');
+  const sh = $('sideHw'); if (sh) sh.innerHTML = hw.map(t => '<div>' + t + '</div>').join('');
+  const ts = $('topSpeed'); if (ts) ts.innerHTML = top.join('<span class="sep">|</span>');
 }
 // This window's id: the server counts open windows by it, so launching the app again reuses this window.
 const PAGE_ID = (window.PHX_VSCODE ? 'vs-' : '') + Math.random().toString(36).slice(2, 12);   // vs-: the VS Code chat, not an app window
@@ -135,7 +103,6 @@ async function refresh() {
   try { info = await api('/api/info?page=' + PAGE_ID); } catch (e) { drawStatus(true); return; }
   if (info.focus) bringForward();
   drawStatus(false);
-  const ver = $('ver'); if (ver && info.version) ver.textContent = 'v.' + info.version;
   if (info.version) document.title = 'Phoenix LAI v.' + info.version;
   if (info.loading || (info.rag && info.rag.indexing)) setTimeout(refresh, 700);
 }
@@ -209,15 +176,12 @@ async function setFolder(arg) {
 function welcome() {
   promptLine.remove();
   chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI">' +
-    // The empty .sub line keeps the hint where it always was; the version hangs below it without moving anything.
-    '<div class="sub">&nbsp;</div>' +
-    '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.' +
-    '<div class="ver" id="ver">' + (info.version ? 'v.' + esc(info.version) : '') + '</div></div></div>';
-  placePrompt();
+    '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.</div></div>';   // version: in the title bar
+  placePrompt(); centerEmpty();
 }
 // The prompt always sits at the end of the conversation.
-function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); scrollDown(); }
-function newChat() { if (controller) controller.abort(); history = []; ctxUsed = 0; forgetChat(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
+function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); syncComposer(); scrollDown(); }
+function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
 
 // The conversation survives a reload (F5) of this window: what is on screen, the history sent to the model and the
 // speed/context numbers are kept in sessionStorage (per window, gone when it closes). Only /new starts over.
@@ -225,7 +189,13 @@ const SAVE_KEY = 'phx.chat';
 function saveChat() {
   try {
     const keep = promptLine.isConnected; if (keep) promptLine.remove();
-    sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html: chatEl.innerHTML, history, ctxUsed, tps: tpsHistory }));
+    try { sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html: chatEl.innerHTML, history, ctxUsed, tps: tpsHistory })); }
+    catch (e) {
+      // pictures can outgrow the window's storage: keep the chat without them (the model forgets them after a reload)
+      const lite = history.map(m => m.images ? { role: m.role, content: m.content } : m);
+      const html = chatEl.innerHTML.replace(/<img src="data:[^"]*"/g, '<img class="gone" alt="picture"');
+      sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html, history: lite, ctxUsed, tps: tpsHistory }));
+    }
     if (keep) chatEl.appendChild(promptLine);
   } catch (e) {}
 }
@@ -240,7 +210,7 @@ function restoreChat() {
     chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
     history = s.history || []; ctxUsed = s.ctxUsed || 0;
     (s.tps || []).forEach(t => recordTps(t));
-    placePrompt();
+    placePrompt(); centerEmpty(); scrollDown();
     return true;
   } catch (e) { return false; }
 }
@@ -283,7 +253,7 @@ function askApproval(a) {
 // ---------- chat ----------
 // Notices keep the welcome screen (and the prompt's place under it); they sit just above the prompt.
 function systemLine(text) {
-  const d = document.createElement('div'); d.className = 'meta'; d.style.marginBottom = '18px'; d.style.whiteSpace = 'pre-wrap'; d.textContent = text;
+  const d = document.createElement('div'); d.className = 'meta sysline'; d.textContent = text;
   chatEl.insertBefore(d, promptLine.isConnected ? promptLine : null); scrollDown();
   saveChat();
 }
@@ -305,15 +275,26 @@ async function loadRecentFolders() { try { recentFolders = (await api('/api/rece
 loadRecentFolders();
 // Chat models in the models folder (embedding models, used for docs search, can't chat). Refreshed when needed.
 let chatModels = [];
-async function loadModelList() { try { chatModels = (await api('/api/models')).models.filter(m => !/embed/i.test(m.name)); } catch (e) {} }
+// A model's display name: its .gguf file name (the name inside the file is often just a build folder).
+function fileLabel(f) { return String(f || '').split(/[\\/]/).pop().replace(/\.gguf$/i, ''); }
+// Size in billions of parameters from the file name ("E4B" = 4, "12B" = 12, "26B" = 26); unknown sizes sort last.
+function modelSize(name) { const m = /(?:^|[-_.])E?(\d+(?:\.\d+)?)B(?=[-_.]|$)/i.exec(name); return m ? parseFloat(m[1]) : 1e9; }
+// mmproj files are image/audio projectors for a chat model, not models you can chat with.
+async function loadModelList() {
+  try {
+    chatModels = (await api('/api/models')).models.filter(m => !/embed|mmproj/i.test(m.name))
+      .sort((a, b) => modelSize(a.name) - modelSize(b.name) || a.name.localeCompare(b.name));
+  } catch (e) {}
+}
 loadModelList();
 async function loadModel(name, ctx) {
   systemLine('Loading ' + name + (ctx ? ', context ' + ctx : '') + '…');
   setTimeout(refresh, 300);
   const t0 = performance.now();
-  try { info = await api('/api/load', { name, context: ctx === undefined ? (info.contextAuto ? 0 : info.context) : ctx }); }
+  const cfg = ms(name);
+  try { info = await api('/api/load', { name, context: ctx === undefined ? cfg.context : ctx, kv: cfg.kv }); }
   catch (e) { systemLine('Could not load: ' + e.message); return false; }
-  systemLine('Loaded ' + info.model + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + Number(info.context).toLocaleString() + (info.contextAuto ? ' (auto)' : '') + '.');
+  systemLine('Loaded ' + fileLabel(info.file || name) + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + Number(info.context).toLocaleString() + (info.contextAuto ? ' (auto)' : '') + '.');
   if (info.memWarning) systemLine('⚠ ' + info.memWarning);
   history = []; ctxUsed = 0; refresh();
   return true;
@@ -325,6 +306,10 @@ const COMMANDS = [
       .concat(info.folderAccess === false ? [] : [{ value: 'close', desc: 'disconnect the current folder' }].concat(recentFolders.map((f, i) => ({ value: f, desc: f === info.folder ? 'connected' : i === 0 ? 'last used' : '' })))),
     run: arg => setFolder(arg) },
   { name: '/help', use: '/help', desc: 'list all commands with full syntax', run: () => systemLine('Commands:\n' + COMMANDS.map(c => '  ' + c.use + '  —  ' + c.desc).join('\n') + '\nKeys: Esc stops a reply · Ctrl+C copies selected text.') },
+  { name: '/image', use: '/image', desc: 'attach pictures to the next message (or paste / drop them; models with a vision file)', run: () => {
+      if (!info.vision) { systemLine(info.file ? 'This model cannot read pictures: it needs its vision file (…mmproj.gguf) in the models folder.' : 'Load a model first.'); return; }
+      imgPick.click();
+    } },
   { name: '/index', use: '/index', desc: 'reindex new and changed files in docs\\', run: () => reindex() },
   { name: '/model', use: '/model <name>', desc: 'switch model (Tab completes names from the models folder)', arg: true,
     options: () => chatModels.map(m => ({ value: m.name.replace(/\.gguf$/i, ''), desc: (m.mb / 1024).toFixed(1) + ' GB' + (m.name === info.file ? ' · loaded' : '') })),
@@ -335,6 +320,7 @@ const COMMANDS = [
       const m = chatModels.find(x => x.name.toLowerCase().replace(/\.gguf$/, '') === a) || chatModels.find(x => x.name.toLowerCase().includes(a));
       if (!m) { systemLine('No model matches "' + arg + '". Type /model and a space to see the list.'); return; }
       if (m.name === info.file) { systemLine(m.name.replace(/\.gguf$/i, '') + ' is already loaded.'); return; }
+      if (m.unsupported) { systemLine(m.name.replace(/\.gguf$/i, '') + ' is not supported: ' + m.unsupported); return; }
       await loadModel(m.name);
     } },
   { name: '/new', use: '/new', desc: 'start a new chat', run: () => newChat() },
@@ -371,7 +357,7 @@ const COMMANDS = [
       if (info.model) systemLine('Switching to ' + d.toUpperCase() + ' and reloading ' + info.file + '…');
       try { info = await api('/api/device', { device: d }); } catch (e) { systemLine('Could not switch: ' + e.message); return; }
       ctxUsed = 0; await refresh();
-      systemLine('Now on ' + d.toUpperCase() + (info.backend ? ': ' + info.model + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
+      systemLine('Now on ' + d.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
     } },
   { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
     run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
@@ -411,7 +397,8 @@ const SIZES = [12, 13, 14, 15, 16, 18];
 const ACCENTS = ['#e8c15a', '#f08a3c', '#e85a5a', '#e85aa8', '#a77bf0', '#5a8ce8', '#4fc3e8', '#3cc8a0', '#7ad35a', '#d8d8e0'];
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function applyLook() {
-  document.documentElement.classList.toggle('no-banner', !settings.banner);   // banner kept, off by default
+  document.documentElement.classList.toggle('no-banner', !settings.banner);
+  document.documentElement.classList.toggle('grid', !!settings.grid);   // grid background + faint logo, else solid   // banner kept, off by default
   const acc = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : ACCENTS[0], rgb = hexRgb(acc), root = document.documentElement.style;
   root.setProperty('--accent', acc);
   root.setProperty('--accent-rgb', rgb.join(','));
@@ -440,41 +427,21 @@ $('sAccent').addEventListener('click', e => { const b = e.target.closest('button
 const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
 let openedBrowser = 'edge', lookBefore = null;
 async function openSettings() {
-  $('sContext').value = info.contextAuto ? '' : (info.context || '');
-  $('sContext').placeholder = 'auto' + (info.contextAuto && info.context ? ' (now ' + info.context.toLocaleString() + ')' : ''); $('sMax').value = settings.max_tokens; $('sTemp').value = settings.temperature;
-  $('sTopK').value = settings.top_k; $('sTopP').value = settings.top_p; $('sRepeat').value = settings.repeat_penalty; $('sSystem').value = settings.system;
   const rg = info.rag || {};
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
-  $('loadNote').textContent = '';
-  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner };
+  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid };
   $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
   $('sTypeEffect').checked = settings.typeEffect !== false; $('sTypeEffect').onchange = () => { settings.typeEffect = $('sTypeEffect').checked; save(); };
   $('sBanner').checked = !!settings.banner;
+  $('sGrid').checked = !!settings.grid;
+  $('sGrid').onchange = () => { settings.grid = $('sGrid').checked; applyLook(); };
   $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
   radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
   drawSwatches();
-  // Chat models only: embedding models (used for docs search) can't hold a conversation.
-  try { models = (await api('/api/models')).models.filter(m => !/embed/i.test(m.name)); } catch (e) { models = []; }
-  $('modelList').innerHTML = models.map(m => '<label class="' + (m.name === info.file ? 'current' : '') + '"><input type="radio" name="model" value="' + esc(m.name) + '"' +
-    (m.name === info.file ? ' checked' : '') + '><span class="name">' + esc(m.name.replace(/\.gguf$/i, '').toLowerCase()) + '</span><span class="mb">' + (m.mb / 1024).toFixed(1) + ' GB</span></label>').join('') ||
-    '<div class="note">No .gguf files in the models folder.</div>';
   let b = { browser: 'auto', installed: true };
   try { b = await api('/api/browser'); } catch (e) {}
   openedBrowser = b.browser;
-  radios('sKv', [{ value: 'q8', label: 'q8 (default)' }, { value: 'q4', label: 'q4' }, { value: 'f16', label: 'f16' }], info.kv || 'q8');
-  // q8 / q4 only for models (and the GPU mode) that support them: otherwise greyed out, shown as f16, preference kept.
-  const kvFor = name => {
-    const m = models.find(x => x.name === name), ok = m ? m.kvq !== false : true, gpu = info.device !== 'cpu';
-    $('sKv').querySelectorAll('input').forEach(inp => {
-      const off = inp.value !== 'f16' && (!ok || !gpu);
-      inp.disabled = off; inp.parentElement.classList.toggle('disabled', off);
-      if (!ok || !gpu) inp.checked = inp.value === 'f16'; else inp.checked = inp.value === (info.kv || 'q8');
-    });
-    $('kvNote').textContent = !gpu ? 'CPU mode keeps the cache in f32.' : !ok ? 'This model keeps an f16 cache (q8 / q4 lose accuracy on it).' : '';
-  };
-  kvFor((document.querySelector('input[name=model]:checked') || {}).value || info.file);
-  $('modelList').onchange = e => { if (e.target.name === 'model') kvFor(e.target.value); };
   radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
   $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
     : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
@@ -482,7 +449,7 @@ async function openSettings() {
   $('settingsBody').scrollTop = 0;
 }
 function closeSettings(applied) {
-  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; applyLook(); }   // undo the preview
+  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; applyLook(); }   // undo the preview
   $('settingsModal').classList.remove('show');
 }
 // Category bar: jump to a section.
@@ -493,7 +460,7 @@ $('settingsCats').addEventListener('click', e => {
 });
 // Highlight the category being looked at.
 $('settingsBody').addEventListener('scroll', () => {
-  const body = $('settingsBody'); let cur = 'catModel';
+  const body = $('settingsBody'); let cur = 'catDocs';
   for (const sec of body.querySelectorAll('section')) if (sec.offsetTop - body.offsetTop - 30 <= body.scrollTop) cur = sec.id;
   if (body.scrollTop + body.clientHeight >= body.scrollHeight - 4) cur = 'catApp';
   document.querySelectorAll('#settingsCats button').forEach(x => x.classList.toggle('on', x.dataset.cat === cur));
@@ -501,33 +468,20 @@ $('settingsBody').addEventListener('scroll', () => {
 $('closeSettings').addEventListener('click', () => closeSettings(false));
 $('settingsNew').addEventListener('click', () => { closeSettings(true); save(); newChat(); });
 $('applySettings').addEventListener('click', async () => {
-  const num = (id, min, max, isInt) => { const v = Number($(id).value); return isFinite(v) && v >= min && v <= max && (!isInt || v === Math.floor(v)) ? v : null; };
-  const vals = { max_tokens: num('sMax', 1, 32768, true), temperature: num('sTemp', 0, 2), top_k: num('sTopK', 0, 1000, true), top_p: num('sTopP', 0, 1), repeat_penalty: num('sRepeat', 1, 2) };
-  // empty or "auto" = automatic context (largest that fits the free VRAM / RAM); 0 is sent for it
-  const ctxText = $('sContext').value.trim().toLowerCase();
-  const ctx = ctxText === '' || ctxText === 'auto' || ctxText === '0' ? 0 : num('sContext', 256, 131072, true);
-  const bad = Object.keys(vals).filter(k => vals[k] === null).concat(ctx === null ? ['context'] : []);
-  if (bad.length) { $('loadNote').textContent = 'Check: ' + bad.join(', ').replace(/_/g, ' ') + '.'; return; }
-  Object.assign(settings, vals); settings.system = $('sSystem').value; save();
   try {
+    save();
     await api('/api/rag', { enabled: $('sRag').checked });
-    const kvIn = document.querySelector('#sKv input:checked');
-    const kv = kvIn && !document.querySelector('#sKv input[value=q8]').disabled ? kvIn.value : null;   // greyed out: keep the preference
-    if (kv && kv !== info.kv) { systemLine('KV cache ' + kv + (info.file ? ': reloading ' + info.file + '…' : '.')); info = await api('/api/kv', { kv }); }
     const br = radioValue('sBrowser');
     if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
   } catch (e) {}
-  const sel = document.querySelector('input[name=model]:checked');
   closeSettings(true);
-  const ctxChanged = ctx === 0 ? !info.contextAuto : (info.contextAuto || ctx !== info.context);
-  if (sel && (sel.value !== info.file || ctxChanged)) await loadModel(sel.value, ctx);
   refresh();
 });
 $('settingsModal').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('applySettings').click(); } });
 
 async function send() {
   const text = input.value.trim();
-  if (!text || controller) return;
+  if ((!text && !pendingImages.length) || controller) return;
   if (text.startsWith('/')) {
     input.value = ''; autosize();
     let handled = false;
@@ -537,12 +491,19 @@ async function send() {
   }
   if (!info.file) { systemLine('No model loaded — use /model to pick one.'); return; }
   input.value = ''; autosize();
-  const empty = $('empty'); if (empty) empty.remove();
-  // The prompt line (with its status row) stays in place at the bottom: the turn goes in above it.
+  // The message box stays fixed at the bottom: the turn goes in above it.
 
   const turn = document.createElement('div'); turn.className = 'turn';
   turn.innerHTML = '<div class="user"></div>';
-  turn.querySelector('.user').textContent = text;
+  const images = pendingImages; pendingImages = []; drawTray();
+  // the text on the › line, the pictures under it (aligned with the text)
+  const ubody = document.createElement('div'); ubody.className = 'ubody'; ubody.textContent = text;
+  if (images.length) {
+    const box = document.createElement('div'); box.className = 'uimgs';
+    images.forEach(src => { const im = document.createElement('img'); im.src = src; box.appendChild(im); });
+    ubody.appendChild(box);
+  }
+  turn.querySelector('.user').appendChild(ubody);
   chatEl.insertBefore(turn, promptLine.isConnected ? promptLine : null);
   input.focus();
   let out = document.createElement('div'); out.className = 'reply'; turn.appendChild(out);
@@ -612,14 +573,16 @@ async function send() {
   };
 
   // vscode.html adds the editor's context (open file, selection) to what the model sees; the chat shows only your text
-  history.push({ role: 'user', content: text + (window.phxContext ? window.phxContext() : '') });
-  const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history] : [...history];
+  history.push(images.length ? { role: 'user', content: text + (window.phxContext ? window.phxContext() : ''), images }
+                             : { role: 'user', content: text + (window.phxContext ? window.phxContext() : '') });
+  const cfg = ms(info.file);
+  const messages = cfg.system ? [{ role: 'system', content: cfg.system }, ...history] : [...history];
   controller = new AbortController();
   let appended = false, t0 = performance.now(), firstAt = 0, wrote = false, prog = null;
   const edited = [];   // files the model wrote or edited this turn (vscode.html checks them for errors)
   try {
-    const body = { messages, temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p,
-                   repeat_penalty: settings.repeat_penalty, max_tokens: settings.max_tokens };
+    const body = { messages, temperature: cfg.temperature, top_k: cfg.top_k, top_p: cfg.top_p,
+                   repeat_penalty: cfg.repeat_penalty, max_tokens: cfg.max_tokens };
     const res = await fetch('/api/chat?page=' + PAGE_ID, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '';
@@ -696,16 +659,80 @@ async function send() {
 function drawPrompt() {
   const v = input.value, at = input.selectionEnd == null ? v.length : input.selectionEnd;
   const caret = '<span class="caret"></span>';
-  if (!v) { mirror.innerHTML = caret; return; }
+  if (!v) { mirror.innerHTML = caret + '<span class="ph">Ask anything</span>'; return; }
   // A zero-width space keeps a trailing newline from collapsing.
   mirror.innerHTML = esc(v.slice(0, at)) + caret + esc(v.slice(at)) + (v.endsWith('\n') ? '\u200b' : '');
 }
 // Restart the blink on every keystroke so the cursor is always visible while typing.
 function restartBlink() { const c = mirror.querySelector('.caret'); if (c) { c.style.animation = 'none'; void c.offsetWidth; c.style.animation = ''; } }
-function autosize() { drawPrompt(); restartBlink(); }
+function autosize() { drawPrompt(); restartBlink(); syncComposer(); }
 ['input', 'keyup', 'click', 'select', 'focus'].forEach(ev => input.addEventListener(ev, autosize));
 document.addEventListener('selectionchange', () => { if (document.activeElement === input) drawPrompt(); });
 drawPrompt();
+
+// Pictures (models with a vision file): paste or drop one anywhere, or /image to pick files. They wait as thumbnails on
+// the message box's first line (click one to remove it; Backspace in an empty box removes the last) and go with the
+// next message. Only the picture data is sent, inline; nothing is uploaded anywhere else.
+var pendingImages = [];   // var: newChat may run before this line on a restored page
+const imgTray = document.createElement('div'); imgTray.className = 'imgtray'; imgTray.style.display = 'none';
+promptLine.prepend(imgTray);
+const imgPick = document.createElement('input'); imgPick.type = 'file'; imgPick.accept = 'image/*'; imgPick.multiple = true; imgPick.hidden = true;
+document.body.appendChild(imgPick);
+imgPick.addEventListener('change', () => { [...imgPick.files].forEach(addImageFile); imgPick.value = ''; });
+function drawTray() {
+  imgTray.innerHTML = '';
+  pendingImages.forEach((src, i) => {
+    const im = document.createElement('img'); im.src = src; im.title = 'Click to remove';
+    im.addEventListener('click', e => { e.stopPropagation(); pendingImages.splice(i, 1); drawTray(); input.focus(); });
+    imgTray.appendChild(im);
+  });
+  imgTray.style.display = pendingImages.length ? '' : 'none';
+  // thumbnails start exactly where the text does (after the ›)
+  const tb = promptLine.querySelector('.typebox');
+  imgTray.style.paddingLeft = Math.max(0, tb.getBoundingClientRect().left - promptLine.getBoundingClientRect().left - promptLine.clientLeft - parseFloat(getComputedStyle(promptLine).paddingLeft)) + 'px';
+  syncComposer();
+}
+// PNG / JPEG / GIF / BMP go as they are; other formats (WebP ...) and very large pictures become a PNG of at most
+// 2048 px on the long side (the model looks at ~1056 px at most).
+function imageData(file) {
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onerror = () => fail(r.error);
+    r.onload = () => {
+      const url = r.result, im = new Image();
+      im.onerror = () => fail(new Error('That file is not a picture this window can read.'));
+      im.onload = () => {
+        const s = Math.min(1, 2048 / Math.max(im.width, im.height));
+        if (s >= 1 && /^image\/(png|jpeg|gif|bmp)$/.test(file.type)) { ok(url); return; }
+        const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.width * s)); c.height = Math.max(1, Math.round(im.height * s));
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        ok(c.toDataURL('image/png'));
+      };
+      im.src = url;
+    };
+    r.readAsDataURL(file);
+  });
+}
+async function addImageFile(file) {
+  if (!file || !/^image\//.test(file.type)) return;
+  if (!info.file) { systemLine('Load a model first.'); return; }
+  if (!info.vision) { systemLine('This model cannot read pictures: it needs its vision file (…mmproj.gguf) in the models folder.'); return; }
+  if (pendingImages.length >= 8) { systemLine('At most 8 pictures per message.'); return; }
+  try { pendingImages.push(await imageData(file)); drawTray(); input.focus(); } catch (e) { systemLine(e.message); }
+}
+document.addEventListener('paste', e => {
+  const f = [...((e.clipboardData || {}).files || [])].filter(x => /^image\//.test(x.type));
+  if (!f.length || document.querySelector('.modal.show')) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  f.forEach(addImageFile);
+}, true);
+document.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+document.addEventListener('drop', e => {
+  const f = e.dataTransfer ? [...e.dataTransfer.files].filter(x => /^image\//.test(x.type)) : [];
+  if (!f.length) return;
+  e.preventDefault();
+  f.forEach(addImageFile);
+});
 
 // Start typing anywhere and it goes into the prompt (unless a window or another field has focus).
 document.addEventListener('keydown', e => {
@@ -780,7 +807,8 @@ function schedulePretype() {
     const text = input.value.trim();
     if (controller || !info.file || text.length < 8 || text.startsWith('/') || text === lastPretyped) return;
     lastPretyped = text;
-    const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history, { role: 'user', content: text }] : [...history, { role: 'user', content: text }];
+    const sys = ms(info.file).system;
+    const messages = sys ? [{ role: 'system', content: sys }, ...history, { role: 'user', content: text }] : [...history, { role: 'user', content: text }];
     fetch('/api/pretype', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }) }).catch(() => {});
   }, 1200);
 }
@@ -795,6 +823,7 @@ input.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey && input.value.toLowerCase().trim() !== c.name && (!c.option || cmdNavigated)) { e.preventDefault(); completeCmd(c); if (!c.run) return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cmdBox.classList.remove('show'); send(); }
+  if (e.key === 'Backspace' && !input.value && pendingImages.length) { e.preventDefault(); pendingImages.pop(); drawTray(); }
 });
 
 // Keep the › exactly level with the words, whatever the chat font: measure the ink of "›" and of lowercase "x" on a canvas
@@ -806,6 +835,10 @@ function alignChevrons() {
   ctx.font = getComputedStyle(mirror).fontSize + ' ' + getComputedStyle(mirror).fontFamily;
   const x = ctx.measureText('x'), textMid = (x.actualBoundingBoxAscent - x.actualBoundingBoxDescent) / 2;
   document.documentElement.style.setProperty('--chev-shift', (chevMid - textMid).toFixed(2) + 'px');
+  // Message box: centre the › on the block cursor instead. The cursor is 1.05em tall, its bottom on the text-bottom
+  // (baseline + descent), lifted 4px in all (#mirror -2px, .caret -2px; see chat.css).
+  const size = parseFloat(getComputedStyle(mirror).fontSize), caretMid = x.fontBoundingBoxDescent - 0.525 * size - 4;
+  document.documentElement.style.setProperty('--pchev-shift', (chevMid + caretMid).toFixed(2) + 'px');
 }
 applyLook();
 document.fonts.ready.then(alignChevrons);
@@ -964,3 +997,100 @@ function showGuard(g) {
     guardTimer = setTimeout(() => el.classList.remove('show'), 12000);
   }
 }
+
+// Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
+if ($('side')) {
+  function runCmd(t) { input.value = t; send(); }
+  $('navNew').onclick = () => newChat();
+  $('navSettings').onclick = () => openSettings();
+  // Model drop-down: the chat models in the models folder; picking one loads it.
+  const modelMenu = $('modelMenu');
+  $('modelPick').onclick = async e => {
+    e.stopPropagation();
+    if (modelMenu.classList.toggle('show')) {
+      await loadModelList();
+      // models the server cannot run are greyed out (hover says why) and cannot be picked
+      modelMenu.innerHTML = chatModels.length ? chatModels.map(m => '<button data-m="' + esc(m.name) + '"' +
+        (m.unsupported ? ' class="off" title="' + esc('Not supported: ' + m.unsupported) + '"' : m.name === info.file ? ' class="on"'
+          : m.tooBig ? ' class="big" title="' + esc('Will not fit in the memory free now: ' + m.tooBig) + '"' : '') + '>' +
+        '<span>' + esc(m.name.replace(/\.gguf$/i, '')) + '</span><span class="mgear" title="Settings for this model">' + GEAR_ICON + '</span></button>').join('')
+        : '<div class="none">No .gguf files in the models folder.</div>';
+    }
+  };
+  modelMenu.onclick = e => { const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
+    if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; } if (b.dataset.m !== info.file && !controller) loadModel(b.dataset.m); };
+  $('navFiles').onclick = () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); };
+  $('navHelp').onclick = () => { if (promptLine.isConnected) runCmd('/help'); };
+  document.addEventListener('click', e => { if (!e.target.closest('.mpick')) modelMenu.classList.remove('show'); });
+}
+
+// The message box is fixed to the bottom: keep the conversation's bottom padding in step with its height.
+function syncComposer() { if (promptLine.offsetHeight) chatEl.style.setProperty('--composer', promptLine.offsetHeight + 'px'); }
+new ResizeObserver(syncComposer).observe(promptLine);
+syncComposer();
+
+// Per-model settings window (gear next to a model in the drop-down): context, KV cache, sampling, reply limit and
+// system prompt for that one model, saved in settings.models[name].
+const GEAR_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+let mmName = null;
+function fillModelSettings(c) {
+  const m = chatModels.find(x => x.name === mmName), quant = (m ? m.kvq !== false : true) && info.device !== 'cpu';
+  $('mContext').value = c.context ? c.context : '';
+  $('mContext').placeholder = 'auto' + (mmName === info.file && info.contextAuto && info.context ? ' (now ' + info.context.toLocaleString() + ')' : '');
+  // Only the cache types this model and engine support: q8 / q4 need a GPU and a model that keeps them accurate.
+  const kvs = quant ? [{ value: 'q8', label: 'q8 (default)' }, { value: 'q4', label: 'q4' }, { value: 'f16', label: 'f16' }]
+                    : [{ value: 'f16', label: info.device === 'cpu' ? 'f32' : 'f16' }];
+  radios('mKv', kvs, quant ? c.kv : 'f16');
+  $('mKvHint').textContent = quant ? 'memory per context token on the GPU: q8 = half of f16, q4 = a quarter · reloads the model'
+    : info.device === 'cpu' ? 'CPU mode keeps the cache in f32' : 'this model keeps an f16 cache (q8 / q4 lose accuracy on it)';
+  $('mMax').value = c.max_tokens; $('mTemp').value = c.temperature; $('mTopK').value = c.top_k; $('mTopP').value = c.top_p;
+  $('mRepeat').value = c.repeat_penalty; $('mSystem').value = c.system;
+  requestAnimationFrame(fitSystem);
+  $('mNote').textContent = '';
+}
+function fitSystem() { const t = $('mSystem'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; }   // +2: its border
+$('mSystem').addEventListener('input', fitSystem);
+function openModelSettings(name) {
+  mmName = name;
+  $('mmTitle').textContent = name.replace(/\.gguf$/i, '').toLowerCase();
+  fillModelSettings(ms(name));
+  $('modelModal').classList.add('show');
+  $('modelModal').querySelector('.body').scrollTop = 0;
+}
+function closeModelSettings() { $('modelModal').classList.remove('show'); if (promptLine.isConnected) input.focus(); }
+$('closeModel').onclick = closeModelSettings;
+$('mReset').onclick = () => { const all = settings.models || {}, keep = all[mmName]; delete all[mmName]; fillModelSettings(ms(mmName)); if (keep) all[mmName] = keep; };   // shown only; saved with save
+$('mSave').onclick = async () => {
+  const num = (id, min, max, isInt) => { const v = Number($(id).value); return isFinite(v) && v >= min && v <= max && (!isInt || v === Math.floor(v)) ? v : null; };
+  const ctxText = $('mContext').value.trim().toLowerCase();
+  const c = { max_tokens: num('mMax', 1, 32768, true), temperature: num('mTemp', 0, 2), top_k: num('mTopK', 0, 1000, true), top_p: num('mTopP', 0, 1),
+              repeat_penalty: num('mRepeat', 1, 2), context: ctxText === '' || ctxText === 'auto' || ctxText === '0' ? 0 : num('mContext', 256, 131072, true) };
+  const bad = Object.keys(c).filter(k => c[k] === null);
+  if (bad.length) { $('mNote').textContent = 'Check: ' + bad.join(', ').replace(/_/g, ' ') + '.'; return; }
+  const kvIn = $('mKv').querySelector('input:checked'), before = ms(mmName);
+  c.kv = kvIn && $('mKv').querySelector('input[value=q8]') ? kvIn.value : before.kv;   // only f16 offered: keep the preference
+  c.system = $('mSystem').value;
+  settings.models = settings.models || {}; settings.models[mmName] = c; save();
+  closeModelSettings();
+  // The loaded model picks up a new context or KV cache only on a reload.
+  if (mmName === info.file && (c.context !== before.context || c.kv !== before.kv) && !controller) await loadModel(mmName);
+};
+$('modelModal').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('mSave').click(); }
+  else if (e.key === 'Escape') { e.stopPropagation(); closeModelSettings(); }
+});
+
+// Welcome logo: pinned at the centre of the chat area (a fixed top margin). Messages build up from the bottom underneath
+// it and, once they reach it, push it up and out of view like any other line.
+function centerEmpty() {
+  const e = $('empty'); if (!e) return;
+  const cs = getComputedStyle(chatEl), room = chatEl.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  // Keep the newest line where it is: if the view was at the bottom, it stays at the bottom after the change.
+  const atBottom = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 4;
+  e.style.marginTop = Math.max(0, (room - e.offsetHeight) / 2) + 'px';
+  if (atBottom) scrollDown();
+}
+window.addEventListener('resize', centerEmpty);
+new ResizeObserver(centerEmpty).observe(promptLine);
+document.addEventListener('load', e => { if (e.target.closest && e.target.closest('#empty')) centerEmpty(); }, true);
+centerEmpty();

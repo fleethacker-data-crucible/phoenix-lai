@@ -22,6 +22,7 @@ namespace Phoenix
         ChatEngine _engine;
         Workspace _workspace;
         string _loading;
+        string _loadedSig;   // what the loaded engine was loaded with (LoadModel skips an identical reload)
         string _loadError;
         string _memWarning;  // set after a load that left Windows almost out of commit memory   // last model load / GPU failure, shown red in the status bar; cleared by the next good load
         public int ContextLength = 0;   // 0 = auto (ContextPlanner picks it at load); the loaded model's is _engine.ContextLength
@@ -325,6 +326,100 @@ namespace Phoenix
             }
         }
 
+        // Why the engine cannot run a model ("" when it can), read from its header once per file version: the same
+        // config checks a load does (e.g. the Gemma 4 26B mixture-of-experts model is refused).
+        static readonly Dictionary<string, string> _unsupportedCache = new Dictionary<string, string>();
+        static string Unsupported(string file)
+        {
+            string key = file + "|" + File.GetLastWriteTimeUtc(file).Ticks;
+            lock (_unsupportedCache)
+            {
+                string why;
+                if (_unsupportedCache.TryGetValue(key, out why)) return why;
+                try
+                {
+                    using (GgufFile g = GgufFile.Open(file))
+                    {
+                        string arch = g.GetString("general.architecture");
+                        bool gemma = GemmaConfig.IsGemma(arch);
+                        if (gemma) GemmaConfig.FromGguf(g); else ModelConfig.FromGguf(g);
+                        // every weight must be in a format the engine runs (Gemma: the GPU path's formats)
+                        GgmlType[] ok = gemma
+                            ? new GgmlType[] { GgmlType.F32, GgmlType.F16, GgmlType.BF16, GgmlType.Q4_0, GgmlType.Q8_0, GgmlType.Q4_K, GgmlType.Q5_K, GgmlType.Q6_K }
+                            : new GgmlType[] { GgmlType.F32, GgmlType.F16, GgmlType.BF16, GgmlType.Q4_0, GgmlType.Q8_0, GgmlType.Q3_K, GgmlType.Q4_K, GgmlType.Q5_K, GgmlType.Q6_K, GgmlType.IQ2_XXS, GgmlType.IQ2_S, GgmlType.IQ3_S };
+                        why = "";
+                        foreach (GgufTensor t in g.Tensors)
+                            if (Array.IndexOf(ok, t.Type) < 0) { why = t.Name + " is " + GgmlTypes.Name(t.Type) + ", a weight format the server cannot run."; break; }
+                    }
+                }
+                catch (Exception ex) { why = ex.Message; }
+                _unsupportedCache[key] = why;
+                return why;
+            }
+        }
+
+        // The least memory a load of the file needs (ContextPlanner.MinBytes), per file version and device.
+        static readonly Dictionary<string, long[]> _needCache = new Dictionary<string, long[]>();
+        static long[] Need(string file, bool gpu)
+        {
+            string key = file + "|" + File.GetLastWriteTimeUtc(file).Ticks + "|" + gpu;
+            lock (_needCache)
+            {
+                long[] r;
+                if (_needCache.TryGetValue(key, out r)) return r;
+                long commit;
+                using (GgufFile g = GgufFile.Open(file)) r = new long[] { ContextPlanner.MinBytes(g, file, gpu, out commit), commit };
+                _needCache[key] = r;
+                return r;
+            }
+        }
+
+        // Total VRAM this process may use (read once from the driver; 0 = unknown).
+        static long _vramTotal = -1;
+        static long VramTotal()
+        {
+            if (_vramTotal >= 0) return _vramTotal;
+            long t = 0;
+            try { using (GpuDevice d = GpuDevice.Create()) { ulong u, b; if (d.MemoryBudget(out u, out b)) t = (long)b; } } catch { }
+            return _vramTotal = t;
+        }
+
+        // Dedicated VRAM held by other programs (what a model switch cannot free); -1 when Windows does not report it.
+        static long OtherVram()
+        {
+            try
+            {
+                int self = Process.GetCurrentProcess().Id;
+                long sum = 0;
+                InstanceDataCollection data = new PerformanceCounterCategory("GPU Process Memory").ReadCategory()["Dedicated Usage"];
+                foreach (InstanceData d in data.Values)
+                {
+                    string inst = d.InstanceName;
+                    int us = inst.IndexOf('_', 4), pid;
+                    if (!inst.StartsWith("pid_") || us < 0 || !int.TryParse(inst.Substring(4, us - 4), out pid) || pid == self) continue;
+                    sum += d.RawValue;
+                }
+                return sum;
+            }
+            catch { return -1; }
+        }
+
+        // Memory free for a model to load now: VRAM not held by other programs (GPU) or available RAM (CPU), and Windows
+        // commit; what the loaded model holds counts as free, since loading another one releases it first.
+        void FreeForModel(out long mem, out long commit)
+        {
+            ChatEngine e = _engine;
+            long[] cur = null;
+            if (e != null) try { cur = Need(e.ModelPath, _useGpu); } catch { }
+            commit = MemoryTrim.AvailableCommit() + (cur != null ? cur[1] - (3072L << 20) : 0);
+            if (_useGpu)
+            {
+                long total = VramTotal(), other = OtherVram();
+                mem = total > 0 && other >= 0 ? total - other : long.MaxValue;
+            }
+            else mem = MemoryTrim.AvailableRam();
+        }
+
         int _recallBusy;
         volatile bool _recallStop;
         volatile string _recallProgress;
@@ -378,22 +473,79 @@ namespace Phoenix
                    ",\"fallback\":" + (used != null && !ok ? Json.Quote(used) : "null") + "}";
         }
 
+        // A message's text: "content" as a string, or the joined "text" parts of an OpenAI-style content array.
+        public static string TextOf(Dictionary<string, object> m)
+        {
+            object v;
+            if (m == null || !m.TryGetValue("content", out v)) return "";
+            if (v is string) return (string)v;
+            StringBuilder sb = new StringBuilder();
+            if (v is List<object>)
+                foreach (object o in (List<object>)v)
+                {
+                    Dictionary<string, object> part = o as Dictionary<string, object>;
+                    if (part != null && Json.GetStr(part, "type", "") == "text") { if (sb.Length > 0) sb.Append('\n'); sb.Append(Json.GetStr(part, "text", "")); }
+                }
+            return sb.ToString();
+        }
+
+        // Images of a message: "images": ["data:image/png;base64,...", ...] (the chat page), or OpenAI-style content parts
+        // {"type": "image_url", "image_url": {"url": "data:..."}}. Only inline data: URIs; nothing is ever downloaded.
+        public static List<byte[]> ParseImages(Dictionary<string, object> m)
+        {
+            List<string> urls = new List<string>();
+            object v;
+            if (m.TryGetValue("images", out v) && v is List<object>)
+                foreach (object o in (List<object>)v) if (o is string) urls.Add((string)o);
+            if (m.TryGetValue("content", out v) && v is List<object>)
+                foreach (object o in (List<object>)v)
+                {
+                    Dictionary<string, object> part = o as Dictionary<string, object>;
+                    if (part == null || Json.GetStr(part, "type", "") != "image_url") continue;
+                    object iu;
+                    if (part.TryGetValue("image_url", out iu))
+                    {
+                        if (iu is string) urls.Add((string)iu);
+                        else if (iu is Dictionary<string, object>) urls.Add(Json.GetStr((Dictionary<string, object>)iu, "url", ""));
+                    }
+                }
+            if (urls.Count == 0) return null;
+            List<byte[]> r = new List<byte[]>();
+            foreach (string u in urls)
+            {
+                int comma = u.IndexOf(',');
+                if (!u.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || comma < 0 || u.IndexOf(";base64", 0, comma, StringComparison.OrdinalIgnoreCase) < 0)
+                    throw new ArgumentException("Images must be sent inline (data:image/...;base64); links are never fetched.");
+                byte[] b = Convert.FromBase64String(u.Substring(comma + 1));
+                if (b.Length > (40 << 20)) throw new ArgumentException("Image larger than 40 MB.");
+                r.Add(b);
+            }
+            if (r.Count > 8) throw new ArgumentException("At most 8 images per message.");
+            return r;
+        }
+
         // Loads a model from models\ (by file name) or a full local path; replaces the current one.
         public void LoadModel(string nameOrPath)
         {
             string path = Path.IsPathRooted(nameOrPath) ? nameOrPath : Path.Combine(_modelsDir, nameOrPath);
             path = Path.GetFullPath(path);
             if (!path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) throw new FileNotFoundException("Model not found: " + nameOrPath);
+            // Never load the same model twice: a request that would load exactly what is already loaded (same file,
+            // context, KV cache, device), e.g. a second click or a request queued behind a load in progress, is a no-op.
+            string sig = path.ToLowerInvariant() + "|" + ContextLength + "|" + KernelsKv.Name(ChatEngine.KvCache) + "|" + _useGpu;
             lock (_engineLock)
             {
+                if (_engine != null && _loadedSig == sig) { Log.Text(Path.GetFileName(path) + " is already loaded"); return; }
                 _loading = Path.GetFileName(path);
                 Stopwatch sw = Stopwatch.StartNew();
                 Log.Text("loading model " + _loading + " (context " + (ContextLength > 0 ? ContextLength.ToString() : "auto") + ")");
                 try
                 {
-                    if (_engine != null) { _engine.Dispose(); _engine = null; }
+                    if (_engine != null) { _engine.Dispose(); _engine = null; MemoryTrim.Trim(); }   // free the old one first
+                    _loadedSig = null;
                     _loadError = null;
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
+                    _loadedSig = sig;
                     if (_workspace != null) _engine.RecallDir = Path.Combine(_workspace.Root, ".phoenix", "recall");
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
@@ -554,13 +706,29 @@ namespace Phoenix
                 if (Directory.Exists(_modelsDir))
                 {
                     List<string> files = new List<string>(Directory.GetFiles(_modelsDir, "*.gguf"));
+                    long freeMem = -1, freeCommit = 0;
+                    try { FreeForModel(out freeMem, out freeCommit); } catch { freeMem = -1; }
                     files.Sort(StringComparer.OrdinalIgnoreCase);
                     foreach (string f in files)
                     {
                         if (!first) sb.Append(',');
                         first = false;
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576)
-                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false").Append('}');
+                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false");
+                        string why = Unsupported(f);
+                        if (why.Length > 0) sb.Append(",\"unsupported\":").Append(Json.Quote(why));
+                        else if (freeMem >= 0)
+                            try
+                            {
+                                // runnable but too big for the memory free now (smallest context): the page shows it red
+                                long[] need = Need(f, _useGpu);
+                                if (need[0] > freeMem || need[1] > freeCommit)
+                                    sb.Append(",\"tooBig\":").Append(Json.Quote(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                                        need[0] > freeMem ? "needs {0:F1} GB of {2}, {1:F1} GB free" : "needs {0:F1} GB of Windows commit, {1:F1} GB free",
+                                        (need[0] > freeMem ? need[0] : need[1]) / 1073741824.0, (need[0] > freeMem ? freeMem : freeCommit) / 1073741824.0, _useGpu ? "VRAM" : "RAM")));
+                            }
+                            catch { }
+                        sb.Append('}');
                     }
                 }
                 SendJson(res, 200, sb.Append("],\"root\":").Append(Json.Quote(Workspace.ProjectsRoot)).Append("}").ToString());
@@ -573,6 +741,14 @@ namespace Phoenix
                 // context: tokens, or 0 / missing = auto
                 int ctx = (int)Json.GetNum(body, "context", ContextLength);
                 ContextLength = ctx >= 256 ? ctx : 0;
+                // kv: optional per-model KV cache type (the chat page keeps settings per model)
+                string kvs = Json.GetStr(body, "kv", null);
+                if (kvs != null)
+                {
+                    kvs = kvs.ToLowerInvariant();
+                    ChatEngine.KvCache = kvs == "f16" ? KvType.F16 : kvs == "q4" ? KvType.Q4 : KvType.Q8;
+                    try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(KvFile, KernelsKv.Name(ChatEngine.KvCache)); } catch { }
+                }
                 LoadModel(name);
                 SendJson(res, 200, Info());
                 return;
@@ -827,6 +1003,7 @@ namespace Phoenix
                    ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
+                   ",\"vision\":" + (e != null && e.HasVision ? "true" : "false") +
                    ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
                    ",\"loading\":" + (_loading != null ? Json.Quote(_loading) : "null") +
                    ",\"loadError\":" + (_loadError != null ? Json.Quote(_loadError) : "null") +
@@ -918,10 +1095,15 @@ namespace Phoenix
             foreach (object m in (List<object>)o["messages"])
             {
                 Dictionary<string, object> mm = m as Dictionary<string, object>;
-                string role = Json.GetStr(mm, "role", "user"), content = Json.GetStr(mm, "content", "");
+                string role = Json.GetStr(mm, "role", "user"), content = TextOf(mm);
                 if (role != "system" && role != "user" && role != "assistant") continue;
-                msgs.Add(new ChatMessage(role, content));
+                ChatMessage cm = new ChatMessage(role, content);
+                if (role == "user") cm.Images = ParseImages(mm);
+                msgs.Add(cm);
             }
+            bool anyImage = msgs.Exists(delegate(ChatMessage x) { return x.Images != null; });
+            if (anyImage && (_engine == null || !_engine.HasVision))
+                throw new ArgumentException("The loaded model cannot read images: it needs its vision file (mmproj) in the models folder. Gemma 4 E2B, E4B and 12B have one.");
             SamplerSettings s = new SamplerSettings();
             s.Temperature = (float)Json.GetNum(o, "temperature", 0.7);
             s.TopK = (int)Json.GetNum(o, "top_k", 40);
@@ -1212,10 +1394,12 @@ namespace Phoenix
                     Stopwatch rsw = Stopwatch.StartNew();
                     hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
                     if (hits.Count == 0 && libraryNote != null && Rag.IsLibraryQuestion(msgs[ui].Text))
-                        msgs[ui] = new ChatMessage("user", msgs[ui].Text + "\n\n(No sections of my syntax library match this; it has nothing on it.)");
+                    { List<byte[]> keep = msgs[ui].Images; msgs[ui] = new ChatMessage("user", msgs[ui].Text + "\n\n(No sections of my syntax library match this; it has nothing on it.)"); msgs[ui].Images = keep; }
                     if (hits.Count > 0)
                     {
+                        List<byte[]> keepImg = msgs[ui].Images;
                         msgs[ui] = new ChatMessage("user", Rag.WrapMessage(hits, msgs[ui].Text));
+                        msgs[ui].Images = keepImg;
                         if (log)
                         {
                             List<string> srcs = new List<string>();

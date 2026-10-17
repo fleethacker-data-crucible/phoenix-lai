@@ -556,7 +556,7 @@ namespace Phoenix
             uint hdMax = ((uint)HeadDim + 31) & ~31u;
             KernelsFlash.Tile(hdMax, _gpu.MaxSharedMemory, out _flashTq, out _flashKc);
             _flash = GemmaGpu.UseFlash && _flashTq == 16 && (_gpu.MaxSharedMemory == 0 || KernelsFlash.SharedBytes(hdMax, _flashTq, _flashKc) <= _gpu.MaxSharedMemory);
-            _kAttnPre = _flash ? Kernel(KernelsFlash.Attention(Kv, KvV, hdMax, _flashTq, _flashKc), 4, 9, "pf attention (tiled)") : Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 8, "pf attention");
+            _kAttnPre = _flash ? Kernel(KernelsFlash.Attention(Kv, KvV, hdMax, _flashTq, _flashKc), 4, 11, "pf attention (tiled)") : Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 10, "pf attention");
             _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
             ulong T = (ulong)PrefillChunk, d = (ulong)NEmbd, qDim = (ulong)(NHead * HeadDim);
             ulong maxIn = (ulong)Math.Max(Math.Max(NEmbd, NHead * HeadDim), NFf);
@@ -616,8 +616,8 @@ namespace Phoenix
                 for (uint par = 0; par < KernelsKv.Passes(Kv); par++)
                     _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)_kvDim, (uint)Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(_kvDim), Kernels.Wg), 1, 1);
                 _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
-                    _flash ? new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale), (uint)T }
-                           : new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale) },
+                    _flash ? new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale), (uint)T, 0u, 0u }
+                           : new uint[] { (uint)HeadDim, (uint)_kvDim, (uint)Ring, (uint)NHead, (uint)NHeadKv, (uint)p0, 0u, Bits(scale), 0u, 0u },
                     _flash ? Groups(T, _flashTq) : (uint)T, (uint)NHead, 1);
                 RowQuantK(KernelsQuant.Mode.Plain, _pAtt, null, T * qDim);
                 Mm(l.Wo, _pX, T, true, true);                      // x += Wo·attn

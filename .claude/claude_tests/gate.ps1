@@ -37,6 +37,8 @@ switch ($Phase) {
     7 { $fail = [Phoenix.Tests.Phase7Gate]::Run((Join-Path $root 'models'), (Join-Path $here 'ref\outputs'), $out) }
     8 { $fail = [Phoenix.Tests.Phase8Gate]::Run((Join-Path $root 'models'), $out) }
     9 { $fail = [Phoenix.Tests.Phase9Gate]::Run((Join-Path $root 'models'), (Join-Path $here 'ref\outputs'), (Join-Path $here 'ref\samples.txt'), $out) }
+    11 { $fail = [Phoenix.Tests.GemmaGate]::RunVision($Model, $env:GEMMA_MMPROJ, (Join-Path $here 'ref\outputs'), [bool]$env:GEMMA_GATE_CPU, $out) }
+    10 { $fail =[Phoenix.Tests.GemmaGate]::Run($Model, (Join-Path $here 'ref\outputs'), [bool]$env:GEMMA_GATE_CPU, $out) }
     default { Write-Host "No gate for phase $Phase."; exit 2 }
 }
 
