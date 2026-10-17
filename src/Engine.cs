@@ -521,6 +521,7 @@ namespace Phoenix
             int pre = TokenId("<|fim_prefix|>"), suf = TokenId("<|fim_suffix|>"), mid = TokenId("<|fim_middle|>");
             if (pre < 0 || suf < 0 || mid < 0) { pre = TokenId("<PRE>"); suf = TokenId("<SUF>"); mid = TokenId("<MID>"); }
             bool fim = pre >= 0 && suf >= 0 && mid >= 0 && suffix != null;
+            if (Dbg.On) Dbg.Msg("engine", "code completion (" + (fim ? "FIM tokens" : "instructed") + ") for " + (Dbg.Source ?? "?") + "\n----- before cursor -----\n" + (prefix ?? "") + "\n----- after cursor -----\n" + (suffix ?? ""));
             if (!fim)
             {
                 // Instruct models without FIM tokens: ask through the chat template (raw continuation measured poor on
@@ -560,6 +561,7 @@ namespace Phoenix
                 msgs.RemoveAt(drop);
                 prompt = Template(msgs);
             }
+            Dbg.Prompt(msgs);   // debug mode: exactly what the model reads (after any old turns were dropped to fit)
             if (prompt.Count >= ContextLength) throw new InvalidOperationException("The message is too long for the context window (" + ContextLength + " tokens).");
             return Run(prompt, settings, maxTokens, onText, cancel, true);
         }
@@ -591,6 +593,7 @@ namespace Phoenix
                     // the stashed conversation continues: put it back (and stash what it replaces if that is long too)
                     KvSnapshot keep = curLong ? _model.CaptureKv(0, _fed.Count) : null;
                     List<int> keepIds = keep != null ? new List<int>(_fed) : null;
+                    Dbg.Msg("engine", "stash: restoring the saved conversation cache (" + _stashIds.Count + " tokens)");
                     _model.SpliceKv(_stash, 0);
                     _fed.Clear();
                     _fed.AddRange(_stashIds);
@@ -599,6 +602,7 @@ namespace Phoenix
                 else if (curLong)
                 {
                     _stash = _model.CaptureKv(0, _fed.Count);
+                    Dbg.Msg("engine", "stash: saved the conversation cache (" + _fed.Count + " tokens, " + (_stash.Bytes >> 20) + " MB) before a different prompt");
                     _stashIds = new List<int>(_fed);
                 }
             }
@@ -621,6 +625,7 @@ namespace Phoenix
             if (reuse > 0 && reuse < _model.MinReuse(_fed.Count)) reuse = 0;   // ring cache no longer holds what that would need
             _fed.RemoveRange(reuse, _fed.Count - reuse);
             st.ReusedTokens = reuse;
+            Dbg.Msg("engine", "prompt " + prompt.Count + " tokens: " + reuse + " reused from the cache, " + (prompt.Count - reuse) + " to read (context " + ContextLength + ")");
             st.PromptTokens = prompt.Count - reuse;
 
             Stopwatch sw = Stopwatch.StartNew();
@@ -638,7 +643,9 @@ namespace Phoenix
                 {
                     if (cancel != null && cancel()) { st.StopReason = "stopped"; return st; }
                     int n = Math.Min(chunk, end - i);
+                    long pf0 = Dbg.On ? sw.ElapsedMilliseconds : 0;
                     logits = _model.Prefill(prompt, i, n);
+                    if (Dbg.On) Dbg.Msg("engine", "read prompt tokens " + i + ".." + (i + n) + " in " + (sw.ElapsedMilliseconds - pf0) + " ms");
                     for (int j = 0; j < n; j++) _fed.Add(prompt[i + j]);
                     if (PrefillProgress != null) PrefillProgress(i + n - reuse, prompt.Count - reuse);
                 }
@@ -766,7 +773,9 @@ namespace Phoenix
                 _fed.Add(next);
             }
             st.GenerateSeconds = sw.Elapsed.TotalSeconds;
+            Dbg.Msg("engine", "generated " + st.GeneratedTokens + " tokens in " + (int)(st.GenerateSeconds * 1000) + " ms (" + st.StopReason + "; guesses kept " + st.AcceptedTokens + "/" + st.DraftedTokens + ")");
             if (chat) { RememberReply(emitted.ToString(), sampledIds); LastReplyIds = sampledIds; }
+            Dbg.Reply(emitted.ToString(), st.StopReason);
             return st;
         }
 

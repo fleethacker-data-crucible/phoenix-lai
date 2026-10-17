@@ -205,7 +205,9 @@ namespace Phoenix
             Embedder emb = GetEmbedder();
             int embedded = 0;
             if (emb != null)
+            using (StayAwake.Scope("docs indexing"))   // displays must not power down mid-load (see StayAwake)
             {
+                System.Diagnostics.Stopwatch esw = System.Diagnostics.Stopwatch.StartNew();
                 int todo = 0, doneE = 0;
                 foreach (FileEntry e in files) if (e.Vecs == null || e.Vecs.Count != e.Chunks.Count || (e.Vecs.Count > 0 && e.Vecs[0].Length != emb.Dim)) todo += e.Chunks.Count;
                 foreach (FileEntry e in files)
@@ -215,8 +217,16 @@ namespace Phoenix
                     foreach (string[] ch in e.Chunks)
                     {
                         _progress = "embedding " + (++doneE) + "/" + todo;
+                        long t0 = esw.ElapsedMilliseconds;
                         e.Vecs.Add(emb.Document(e.Rel + (ch[0].Length > 0 ? " > " + ch[0] : ""), ch[1]));
                         embedded++;
+                        long ms = esw.ElapsedMilliseconds - t0;
+                        Dbg.Msg("rag", "embedded " + doneE + "/" + todo + " " + e.Rel + " > " + ch[0] + " (" + ch[1].Length + " chars) in " + ms + " ms on " + emb.Backend);
+                        if (doneE % 50 == 0 || doneE == todo)
+                            Dbg.Note("rag", "embedding " + doneE + "/" + todo + " chunks, " + (esw.ElapsedMilliseconds / 1000) + " s so far (" +
+                                     (esw.ElapsedMilliseconds / Math.Max(1, doneE)) + " ms per chunk on " + emb.Backend + ")");
+                        // a short idle gap now and then, so the GPU is never pinned for minutes without a break
+                        if (emb.Backend == "GPU" && doneE % 4 == 0) Thread.Sleep(30);
                     }
                 }
             }

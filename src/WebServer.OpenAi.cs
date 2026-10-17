@@ -92,6 +92,7 @@ namespace Phoenix
                     SendJson(res, 200, "{\"id\":" + Json.Quote(id) + ",\"object\":\"model\",\"owned_by\":\"organization_owner\"}");
                     return;
                 }
+                Dbg.Source = "api" + (req.Headers["User-Agent"] != null ? " (" + req.Headers["User-Agent"] + ")" : "");
                 if (path == "/v1/chat/completions" && post) { Completion(body, res, true); return; }
                 if (path == "/v1/completions" && post) { Completion(body, res, false); return; }
                 if (path == "/v1/embeddings" && post) { Embeddings(body, res); return; }
