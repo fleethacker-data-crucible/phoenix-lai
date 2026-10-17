@@ -6,9 +6,49 @@ const CHECK_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" 
 
 // Reply rendering: code fences become boxes with a language badge, VS Code colors and a copy icon; <write>/<read>/<list> tags are highlighted.
 function render(text, streaming) {
+  // VS Code page: edits happen behind the scenes. A write shows as one activity line ("Editing x…" while it streams,
+  // then "Edited x"), click to open the file in VS Code; read / list / delete tags become activity lines too.
+  if (window.PHX_VSCODE) {
+    const act = (cls, verb, path, extra) => '\n\n<div class="act ' + cls + '" data-path="' + esc(path) + '"><span class="ic"></span>' + verb +
+      ' <b>' + esc(path) + '</b>' + (extra ? '<span class="x">' + extra + '</span>' : '') + '</div>\n\n';
+    text = text.replace(/<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)(<\/write>|$)/g, (m, p, c, end) => {
+      const lines = c.replace(/^\s*```[^\n]*\n/, '').replace(/\n?```\s*$/, '').split('\n').length;
+      return end ? act('edit done', 'Edited', p, lines + ' lines') : act('edit busy', 'Editing', p, lines + ' lines…');
+    });
+    text = text.replace(/<edit\s+path\s*=\s*"([^"]+)"\s*>([\s\S]*?)(<\/edit>|$)/g, (m, p, body, end) => {
+      let add = 0, del = 0;
+      body.replace(/<find>\r?\n?([\s\S]*?)(<\/find>|$)/g, (x, f) => { del += f.replace(/\n$/, '').split('\n').length; return x; });
+      body.replace(/<replace>\r?\n?([\s\S]*?)(<\/replace>|$)/g, (x, r) => { const t = r.replace(/\n$/, ''); add += t ? t.split('\n').length : 0; return x; });
+      return end ? act('edit done', 'Edited', p, '+' + add + ' −' + del) : act('edit busy', 'Editing', p, '');
+    });
+    text = text.replace(/<delete\s+path\s*=\s*"([^"]+)"\s*\/?>/g, (m, p) => act('del', 'Deleted', p));
+    text = text.replace(/<read\s+path\s*=\s*"([^"]+)"(?:\s+lines\s*=\s*"([^"]*)")?\s*\/?>/g, (m, p, l) => act('read', 'Read', p, l ? 'lines ' + l : ''));
+    text = text.replace(/<search\s+query\s*=\s*"([^"]+)"(?:\s+path\s*=\s*"([^"]*)")?\s*\/?>/g, (m, q, p) => act('list', 'Searched', q, p && p !== '.' ? 'in ' + p : ''));
+    text = text.replace(/<list(?:\s+path\s*=\s*"([^"]*)")?\s*\/?>/g, (m, p) => act('list', 'Listed', p && p !== '.' ? p : 'project'));
+    // keep the activity lines out of markdown escaping
+    const acts = [];
+    text = text.replace(/\n\n(<div class="act[\s\S]*?<\/div>)\n\n/g, (m, h) => { acts.push(h); return '\n\n\u0000' + (acts.length - 1) + '\u0000\n\n'; });
+    return renderFences(text, streaming).replace(/(?:<p>)?\u0000(\d+)\u0000(?:<\/p>)?/g, (m, i) => acts[+i]);
+  }
+  // Edits become a diff box labelled with the path: removed lines "- ", added lines "+ ".
+  text = text.replace(/<edit\s+path\s*=\s*"([^"]+)"\s*>([\s\S]*?)(<\/edit>|$)/g, (m, p, body) => {
+    const out = [];
+    body.replace(/<find>\r?\n?([\s\S]*?)(?:<\/find>|$)\s*(?:<replace>\r?\n?([\s\S]*?)(?:<\/replace>|$))?/g, (x, f, r) => {
+      f.replace(/\n$/, '').split('\n').forEach(l => out.push('- ' + l));
+      const t = r === undefined ? '' : r.replace(/\n$/, '');
+      if (t) t.split('\n').forEach(l => out.push('+ ' + l));
+      return x;
+    });
+    return '```✎ ' + p + ' (edit)\n' + out.join('\n') + '\n```';
+  });
   // File writes become code boxes labelled with the path (inner code fences dropped).
   text = text.replace(/<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)(<\/write>|$)/g, (m, p, c) =>
     '```✎ ' + p + '\n' + c.replace(/^\s*```[^\n]*\n/, '').replace(/\n?```\s*$/, '') + '\n```');
+  return renderFences(text, streaming);
+}
+
+// Code fences become code boxes; everything else is markdown.
+function renderFences(text, streaming) {
   const parts = text.split('```');
   let html = '';
   parts.forEach((part, i) => {
@@ -23,10 +63,16 @@ function render(text, streaming) {
       const info = LANGS[lang];
       const badge = info ? '<span class="badge" style="background:' + info.color + ';color:' + badgeText(info.color) + '">' + esc(info.name) + '</span>'
                          : '<span class="badge plain">' + esc(tag && !file ? tag : 'code') + '</span>';
-      html += '<div class="code"><header>' + badge + '<span class="grow"></span>' +
+      const box = '<div class="code"><header>' + badge + '<span class="grow"></span>' +
               (file ? '<span class="file">' + esc(file) + '</span>' : '') +
               (done ? '<button class="copy" title="Copy">' + COPY_ICON + '</button>' : '') +
               '</header><pre>' + highlight(code, lang) + '</pre></div>';
+      // VS Code page: code stays out of the chat, folded into a one-line chip (click to look); a short shell command
+      // (what the model gives you to run, since it never runs anything itself) stays open with its copy button.
+      const command = /^(powershell|pwsh|ps1?|shell|sh|bash|cmd|bat|console|terminal)$/i.test(tag) && code.split('\n').length <= 4;
+      html += window.PHX_VSCODE && !command
+        ? '<details class="fold"><summary>' + esc(info ? info.name : 'code') + ' · ' + code.split('\n').length + ' lines</summary>' + box + '</details>'
+        : box;
     } else {
       html += markdown(part);
     }
@@ -40,7 +86,7 @@ function inlineMd(t) {
   const codes = [];
   t = t.replace(/`([^`\n]+)`/g, (m, c) => { codes.push('<code class="inline">' + esc(c) + '</code>'); return '\u0002' + (codes.length - 1) + '\u0003'; });
   t = esc(t)
-    .replace(/&lt;\/?(read|list)\b[\s\S]*?&gt;/g, m => '<span class="tag">' + m + '</span>')
+    .replace(/&lt;\/?(read|list|search|delete)\b[\s\S]*?&gt;/g, m => '<span class="tag">' + m + '</span>')
     .replace(/!?\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, url) => '<span class="link" title="' + url + '">' + txt + '</span>')
     .replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')

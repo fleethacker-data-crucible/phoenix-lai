@@ -65,7 +65,7 @@ function drawStatus(offline) {
   else {
     // Folder: green = connected, orange = access on but nothing connected, grey = folder access off.
     if (info.folderAccess === false) near.push(statusItem('folder', 'folder access off', false, 'off'));
-    else near.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'warn'));
+    else near.push(statusItem('folder', info.folder ? info.folder : 'no folder', false, info.folder ? 'ok' : 'gold'));
     const g = info.git;
     if (g) {
       items.push(statusItem('branch', (g.branch || 'detached') + (g.commit ? ' @' + g.commit : '')));
@@ -122,7 +122,7 @@ function drawStatus(offline) {
   promptInfo.innerHTML = near.join('<span class="sep">|</span>');
 }
 // This window's id: the server counts open windows by it, so launching the app again reuses this window.
-const PAGE_ID = Math.random().toString(36).slice(2, 12);
+const PAGE_ID = (window.PHX_VSCODE ? 'vs-' : '') + Math.random().toString(36).slice(2, 12);   // vs-: the VS Code chat, not an app window
 window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye?page=' + PAGE_ID));
 // Launched again while this window is open: come to the front (and flash the title in case Windows blocks that).
 function bringForward() {
@@ -136,7 +136,7 @@ async function refresh() {
   if (info.focus) bringForward();
   drawStatus(false);
   const ver = $('ver'); if (ver && info.version) ver.textContent = 'v.' + info.version;
-  if (info.version) document.title = 'PhoenixLAI v.' + info.version;
+  if (info.version) document.title = 'Phoenix LAI v.' + info.version;
   if (info.loading || (info.rag && info.rag.indexing)) setTimeout(refresh, 700);
 }
 // Keep the status line (git changes, model state) current.
@@ -208,7 +208,7 @@ async function setFolder(arg) {
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/dark_phoenix_logo.png" alt="PhoenixLAI">' +
+  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI">' +
     // The empty .sub line keeps the hint where it always was; the version hangs below it without moving anything.
     '<div class="sub">&nbsp;</div>' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.' +
@@ -265,7 +265,7 @@ document.addEventListener('keydown', e => {
 // ---------- approvals (/mode accept) ----------
 // One bar above the prompt per pending file action: what the model wants to do, Accept (green) or Deny (red).
 function askApproval(a) {
-  const what = a.op === 'write' ? 'write ' + a.path + ' (' + (a.bytes || 0).toLocaleString() + ' bytes)' : a.op === 'read' ? 'read ' + a.path : 'list ' + (a.path === '.' ? 'the project folder' : a.path);
+  const what = a.op === 'write' ? 'write ' + a.path + ' (' + (a.bytes || 0).toLocaleString() + ' bytes)' : a.op === 'delete' ? 'delete ' + a.path : a.op === 'edit' ? 'edit ' + a.path : a.op === 'search' ? 'search the project' + (a.path && a.path !== '.' ? ' (' + a.path + ')' : '') : a.op === 'read' ? 'read ' + a.path : 'list ' + (a.path === '.' ? 'the project folder' : a.path);
   const bar = document.createElement('div'); bar.className = 'approve';
   bar.innerHTML = '<span class="q">The model wants to <b>' + esc(what) + '</b></span><button class="yes">Accept</button><button class="no">Deny</button>';
   chatEl.insertBefore(bar, promptLine.isConnected ? promptLine : null); scrollDown();
@@ -368,10 +368,10 @@ const COMMANDS = [
     } },
   { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
     run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
-  { name: '/vram', use: '/vram', desc: 'video memory: what PhoenixLAI uses, what is free, and which programs use the most',
+  { name: '/vram', use: '/vram', desc: 'video memory: what Phoenix LAI uses, what is free, and which programs use the most',
     run: async () => {
       const r = await api('/api/vram'), v = (await api('/api/info')).vram, gb = b => (b / 1073741824).toFixed(2) + ' GB';
-      let txt = v ? 'PhoenixLAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
+      let txt = v ? 'Phoenix LAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
       if (r.processes) txt += 'Largest users of video memory:\n' + r.processes.map(p => '  ' + gb(p.bytes).padStart(9) + '  ' + p.name).join('\n');
       else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
       systemLine(txt);
@@ -413,6 +413,7 @@ function applyLook() {
   const f = FONTS.find(x => x.id === settings.font) || FONTS[0];
   document.documentElement.style.setProperty('--chat', f.css);
   document.documentElement.style.setProperty('--chat-size', (settings.size || 14) + 'px');
+  if (window.applyVscodeTheme) window.applyVscodeTheme();   // vscode.html: VS Code's theme wins over these settings
   alignChevrons();
 }
 // A row of radio buttons; `value` is the selected one, `onPick` previews a choice immediately.
@@ -603,10 +604,12 @@ async function send() {
     done() { if (this.box) this.box.classList.remove('busy'); }
   };
 
-  history.push({ role: 'user', content: text });
+  // vscode.html adds the editor's context (open file, selection) to what the model sees; the chat shows only your text
+  history.push({ role: 'user', content: text + (window.phxContext ? window.phxContext() : '') });
   const messages = settings.system ? [{ role: 'system', content: settings.system }, ...history] : [...history];
   controller = new AbortController();
   let appended = false, t0 = performance.now(), firstAt = 0, wrote = false, prog = null;
+  const edited = [];   // files the model wrote or edited this turn (vscode.html checks them for errors)
   try {
     const body = { messages, temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p,
                    repeat_penalty: settings.repeat_penalty, max_tokens: settings.max_tokens };
@@ -629,6 +632,7 @@ async function send() {
             prog.textContent = 'reading prompt… ' + ev.pf + '%';
           } else if (prog) { prog.remove(); prog = null; }
         }
+        else if (ev.guard) showGuard(ev.guard);
         else if (ev.t !== undefined) { if (prog) { prog.remove(); prog = null; } if (!firstAt) firstAt = performance.now(); reply += ev.t; }
         else if (ev.w !== undefined) work.add(ev.w);
         else if (ev.phase) { flush(); out.innerHTML = render(reply, false); work.phase(ev.phase, ev.lang, ev.ref); }
@@ -645,8 +649,9 @@ async function send() {
         } else if (ev.tool) {
           flush(); out.innerHTML = render(reply, false);
           const t = document.createElement('div'); t.className = 'tool' + (ev.tool.ok ? '' : ' fail');
-          t.textContent = (ev.tool.ok ? '✓ ' : '✗ ') + ev.tool.msg; turn.appendChild(t);
-          if (ev.tool.op === 'write' && ev.tool.ok) wrote = true;
+          t.textContent = (ev.tool.ok ? '✓ ' : '✗ ') + ev.tool.msg; t.dataset.op = ev.tool.op; t.dataset.path = ev.tool.path; turn.appendChild(t);
+          if (ev.tool.ok && (ev.tool.op === 'write' || ev.tool.op === 'edit') && !edited.includes(ev.tool.path)) edited.push(ev.tool.path);
+          if ((ev.tool.op === 'write' || ev.tool.op === 'edit' || ev.tool.op === 'delete') && ev.tool.ok) wrote = true;
         } else if (ev.step) {
           flush(); out.innerHTML = render(reply, false);
           reply = ''; shown = 0; out = document.createElement('div'); out.className = 'reply'; turn.appendChild(out); draw(false);
@@ -657,6 +662,7 @@ async function send() {
           const m = document.createElement('div'); m.className = 'meta';
           const secs = ((performance.now() - t0) / 1000).toFixed(1), ttft = firstAt ? ((firstAt - t0) / 1000).toFixed(2) : '-';
           m.innerHTML = '<b>' + ev.tps + ' t/s</b> · ' + ev.tokens + ' tokens · ' + secs + ' s · first token ' + ttft + ' s';
+          if (!ev.tokens) m.style.display = 'none';   // a reply from the server itself (run guard): no model ran, no stats
           turn.appendChild(m);
           recordTps(ev.tps); if (ev.ctx_used !== undefined) ctxUsed = ev.ctx_used; drawStatus(false);
         }
@@ -676,6 +682,7 @@ async function send() {
   placePrompt(); input.focus();
   saveChat();
   if (wrote) { refresh(); if ($('files').classList.contains('show')) showFiles(filesAt); }
+  if (window.phxTurnDone) window.phxTurnDone(edited, turn);
 }
 
 // Mirror the textarea with a blinking block cursor at the caret position (the textarea itself is invisible).
@@ -918,3 +925,35 @@ function centerBanner() {
 }
 centerBanner();
 document.fonts.ready.then(centerBanner);
+
+// ---------- run guard: big red flashing WARNING banner ----------
+// The server sends {guard: {level, seconds, text}} when someone keeps asking the model to run things: "warn" on the
+// third request (closes itself after a while, or with ✕), "suspend" while chat is locked (counts down, then closes).
+let guardTimer = null;
+function showGuard(g) {
+  let el = document.getElementById('guardBanner');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'guardBanner';
+    el.innerHTML = '<div class="gb-title">⚠ WARNING ⚠</div><div class="gb-text"></div><div class="gb-count"></div><button class="gb-x" title="Close">✕</button>';
+    document.body.appendChild(el);
+    el.querySelector('.gb-x').onclick = () => { el.classList.remove('show'); clearInterval(guardTimer); };
+  }
+  el.querySelector('.gb-text').textContent = g.text || '';
+  el.classList.toggle('locked', g.level === 'suspend');
+  el.querySelector('.gb-x').style.display = g.level === 'suspend' ? 'none' : '';
+  el.classList.add('show');
+  clearInterval(guardTimer);
+  const count = el.querySelector('.gb-count');
+  if (g.level === 'suspend' && g.seconds > 0) {
+    const end = Date.now() + g.seconds * 1000;
+    const tick = () => {
+      const s = Math.max(0, Math.round((end - Date.now()) / 1000));
+      count.textContent = 'Chat locked · ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      if (s <= 0) { clearInterval(guardTimer); el.classList.remove('show'); }
+    };
+    tick(); guardTimer = setInterval(tick, 1000);
+  } else {
+    count.textContent = '';
+    guardTimer = setTimeout(() => el.classList.remove('show'), 12000);
+  }
+}

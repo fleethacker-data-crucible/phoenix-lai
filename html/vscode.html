@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- The chat as shown in VS Code (Phoenix extension): same page as chat.html, VS Code's theme. Keep the two in step. -->
+<html lang="en" class="no-banner vscode">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phoenix</title>
+<link rel="icon" type="image/png" href="assets/toolbar_icon.png">
+<link rel="stylesheet" href="css/chat.css">
+<link rel="stylesheet" href="css/vscode.css">
+</head>
+<body>
+<div id="banner"><span>UNCLASSIFIED</span></div>
+<canvas id="bg"></canvas><canvas id="bgLogo"></canvas>
+<div class="wrap">
+  <div id="chat">
+  </div>
+
+</div>
+
+<div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div><div id="promptInfo" class="sbar"></div><div class="pbar" id="pbar"><button id="pbNew" title="New chat" aria-label="New chat"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button id="pbCmd" title="Commands (/help, /model, /recall, ...)" aria-label="Commands"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M10.5 2.5 5.5 13.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button id="pbModel" class="chip" title="Model (click to change)"></button><span id="pbCtx" class="ctx" title="Context used by this chat"></span><span class="grow"></span><button id="pbMode" class="mode" title="Auto: file actions run without asking · Accept: approve each one"></button><button id="pbSettings" title="Settings" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M6.9 1.8h2.2l.35 1.7 1.2.7 1.65-.55 1.1 1.9-1.3 1.15v1.4l1.3 1.15-1.1 1.9-1.65-.55-1.2.7-.35 1.7H6.9l-.35-1.7-1.2-.7-1.65.55-1.1-1.9 1.3-1.15V7.3L2.6 6.15l1.1-1.9 1.65.55 1.2-.7z"/></svg></button><button id="pbSend" class="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+<div id="files"></div>
+<div id="status" class="sbar"></div>
+<div class="modal" id="settingsModal">
+  <div class="window settings">
+    <header><h2><span class="chev">›</span> settings</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+    <nav class="cats" id="settingsCats">
+      <button data-cat="catModel">model</button><button data-cat="catGen">generation</button><button data-cat="catPrompt">prompt</button>
+      <button data-cat="catDocs">docs</button><button data-cat="catLook">appearance</button><button data-cat="catApp">app</button>
+    </nav>
+    <div class="body" id="settingsBody">
+      <section id="catModel">
+        <div class="section">model</div>
+        <div class="models" id="modelList"></div>
+        <div class="grid2" style="margin-top:10px">
+          <label class="field">context<input id="sContext" type="text" inputmode="numeric" placeholder="auto"><span class="hint">tokens, empty = auto (largest that fits free VRAM / RAM) · changing it reloads the model</span></label>
+          <div class="field">kv cache<div class="radios" id="sKv"></div><span class="hint">memory per context token on the GPU: q8 = half of f16, q4 = a quarter · reloads the model <span id="kvNote"></span></span></div>
+        </div>
+      </section>
+      <section id="catGen">
+        <div class="section">generation</div>
+        <div class="grid2">
+          <label class="field">max reply<input id="sMax" type="number" min="1"><span class="hint">tokens</span></label>
+          <label class="field">temperature<input id="sTemp" type="number" step="0.05" min="0" max="2"><span class="hint">0 = predictable · 2 = wild</span></label>
+          <label class="field">top k<input id="sTopK" type="number" min="0"><span class="hint">0 = off</span></label>
+          <label class="field">top p<input id="sTopP" type="number" step="0.01" min="0" max="1"><span class="hint">1 = off</span></label>
+          <label class="field">repeat penalty<input id="sRepeat" type="number" step="0.01" min="1" max="2"><span class="hint">1 = off</span></label>
+        </div>
+      </section>
+      <section id="catPrompt">
+        <div class="section">system prompt</div>
+        <label class="field"><textarea id="sSystem" spellcheck="false"></textarea><span class="hint">sent with every message · RULES.md files are added on top</span></label>
+      </section>
+      <section id="catDocs">
+        <div class="section">docs</div>
+        <label class="toggle"><input type="checkbox" id="sRag"><span class="sw"></span>docs retrieval (rag)<span class="hint" id="ragNote"></span></label>
+      </section>
+      <section id="catLook">
+        <div class="section">appearance</div>
+        <div class="field">chat font<div class="radios" id="sFont"></div></div>
+        <div class="field" style="margin-top:10px">text size<div class="radios" id="sSize"></div></div>
+        <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
+      </section>
+      <section id="catApp">
+        <div class="section">app</div>
+        <div class="field">browser<div class="radios" id="sBrowser"></div><span class="hint" id="browserNote"></span></div>
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label>
+        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sTypeEffect"><span class="sw"></span>typing effect<span class="hint"> · the reply types itself out, with the odd backspaced typo (display only)</span></label>
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>classification banner (UNCLASSIFIED)</label>
+      </section>
+      <div class="note" id="loadNote"></div>
+    </div>
+    <footer><span class="keys">Enter apply · Esc close</span><button id="settingsNew">new chat</button><button class="primary" id="applySettings">apply</button></footer>
+  </div>
+</div>
+
+<script src="js/vscode-theme.js"></script>
+<script src="js/highlight.js"></script>
+<script src="js/markdown.js"></script>
+<script src="js/chat.js"></script>
+<script src="js/vscode-ui.js"></script>
+</body>
+</html>

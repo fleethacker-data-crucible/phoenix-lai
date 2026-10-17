@@ -25,7 +25,7 @@ $lnk = $sh.CreateShortcut($lnkPath)
 $lnk.TargetPath = '%SystemRoot%\System32\conhost.exe'
 $lnk.Arguments = $args
 $lnk.WorkingDirectory = ''
-$lnk.Description = 'PhoenixLAI - local coding assistant'
+$lnk.Description = 'Phoenix LAI - local coding assistant'
 $lnk.IconLocation = '%SystemRoot%\System32\shell32.dll,13'
 $lnk.Save()
 "created $lnkPath (arguments $($args.Length) chars)"

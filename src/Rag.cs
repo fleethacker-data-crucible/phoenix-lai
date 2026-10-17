@@ -378,6 +378,12 @@ namespace Phoenix
             return anyLang ? inLang : anyCode ? inCode : null;
         }
 
+        // True for messages that search the library (code requests and language questions).
+        public static bool IsLibraryQuestion(string message)
+        {
+            return IsCodeRequest(message) || (DetectLanguage(message) >= 0 && AskRe.IsMatch(message));
+        }
+
         public static bool IsCodeRequest(string message)
         {
             if (string.IsNullOrEmpty(message)) return false;
@@ -406,6 +412,8 @@ namespace Phoenix
                    "language, the matching sections are added to that message automatically (\"Reference sections from my syntax " +
                    "library\"), and you answer from them in your own words (never paste those sections into your reply). If asked whether you can see it, say yes. It is not in the project folder, " +
                    "so never use <read> or <list> on it. Use it to check that the code you write uses correct syntax and APIs. " +
+                   "If a message has no reference sections, the library has nothing on that topic: answer from your own knowledge " +
+                   "and never say the library (or RAG) says or contains it. " +
                    "Do not mention the library unless the user asks about it.";
         }
 

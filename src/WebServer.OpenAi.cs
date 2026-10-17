@@ -22,6 +22,7 @@ namespace Phoenix
     {
         public const int ApiPort = 1234;   // LM Studio's default, so tools configured for it work unchanged
         HttpListener _api;
+        string _lastToolList;   // logged when a client's tool set changes
         public string ApiUrl { get { return _api != null ? "http://localhost:" + ApiPort + "/v1" : null; } }
 
         void StartApi()
@@ -177,6 +178,11 @@ namespace Phoenix
             List<ChatMessage> msgs = new List<ChatMessage>();
             string toolPrompt = chat ? ApiTools.Prompt(o) : null;
             HashSet<string> toolNames = toolPrompt != null ? ApiTools.Names(o) : null;
+            if (toolNames != null)
+            {
+                string list = string.Join(", ", new List<string>(toolNames).ToArray());
+                if (list != _lastToolList) { _lastToolList = list; Log.Text("API tools offered: " + list); }
+            }
             Dictionary<string, string> callNames = new Dictionary<string, string>();
             bool fim = !chat && o.ContainsKey("suffix");
             string fimPrefix = null, fimSuffix = null;

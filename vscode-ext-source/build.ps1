@@ -1,4 +1,4 @@
-# Packs the PhoenixLAI VS Code extension into ..\vscode-ext\phoenixlai-<version>.vsix. Windows PowerShell 5.1, no
+# Packs the Phoenix VS Code extension into ..\vscode-ext\phoenixlai-<version>.vsix. Windows PowerShell 5.1, no
 # Node, no npm, no vsce: a .vsix is a zip with a manifest. Install it with: code --install-extension <file>.vsix
 #   powershell.exe -NoProfile -File vscode-ext-source\build.ps1
 $ErrorActionPreference = 'Stop'
@@ -23,12 +23,12 @@ $g.FillPolygon($brush, $pts)
 $g.Dispose(); $brush.Dispose()
 $bmp.Save($icon, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 
-$files = @('package.json', 'extension.js', 'icon.png', 'README.md')
+$files = @('package.json', 'extension.js', 'icon.png', 'README.md', 'media/triangle.svg')
 foreach ($f in $files) { if (-not (Test-Path (Join-Path $here $f))) { throw "missing $f" } }
 
 # Locality check: the extension may only reach 127.0.0.1:1234.
 $js = Get-Content (Join-Path $here 'extension.js') -Raw
-if ($js -match 'https?://(?!127\.0\.0\.1)' -or $js -match 'require\("(https|net|tls|child_process|dgram)"\)') { throw 'extension.js references a non-loopback URL or a forbidden module' }
+if ($js -match 'https?://(?!127\.0\.0\.1|\$\{HOST\})' -or $js -notmatch 'const HOST = "127\.0\.0\.1";' -or $js -match 'require\("(https|net|tls|child_process|dgram)"\)') { throw 'extension.js references a non-loopback URL or a forbidden module' }
 
 $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -64,6 +64,7 @@ $types = @"
   <Default Extension=".js" ContentType="application/javascript" />
   <Default Extension=".md" ContentType="text/markdown" />
   <Default Extension=".png" ContentType="image/png" />
+  <Default Extension=".svg" ContentType="image/svg+xml" />
   <Default Extension=".vsixmanifest" ContentType="text/xml" />
 </Types>
 "@
