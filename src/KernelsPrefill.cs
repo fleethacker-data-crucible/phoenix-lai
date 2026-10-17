@@ -321,7 +321,7 @@ namespace Phoenix
         // lo = max(0, p - window + 1) (window 0 = all). Keys/values from the ring caches (this chunk is already stored).
         // Streaming softmax over 256-key chunks, so any context length works. Scores use f16(q) like the decode path.
         // Grid (T, nHead). bindings: 0 q [T][nHead][hd], 1 kc, 2 vc, 3 out [T][nHead][hd].
-        // push: hd, kvDim, ring, nHead, nKv, p0, window, scale(bits)
+        // push: hd, kvDim, ring, nHead, nKv, p0, window, scale(bits), b0, b1 (bidirectional image span; 0, 0 = causal)
         public static uint[] Attention() { return Attention(KvType.F16, KvType.F16); }
 
         // kvType: the K cache format; vType: the V cache format (KernelsKv).
@@ -329,7 +329,7 @@ namespace Phoenix
         {
             KB k = new KB(AttWg);
             KB.Buf q = k.Buffer(0, k.F32, true), kc = k.Buffer(1, k.U32, true), vc = k.Buffer(2, k.U32, true), ob = k.Buffer(3, k.F32, false);
-            k.Push(8);
+            k.Push(10);
             KB.Shared qs = k.SharedArray(k.F32, 512), sc = k.SharedArray(k.F32, AttWg), red = k.SharedArray(k.F32, AttWg);
             k.Begin();
             uint c0v = k.Local(k.U32), d = k.Local(k.U32), j = k.Local(k.U32), acc = k.Local(k.F32);
@@ -348,7 +348,10 @@ namespace Phoenix
             uint d1 = k.IAdd(lid, k.C(AttWg));
             uint has1 = k.ULt(d1, hd);
             k.Set(m, k.CF(float.NegativeInfinity)); k.Set(ssum, k.CF(0)); k.Set(o0, k.CF(0)); k.Set(o1, k.CF(0));
-            uint pEnd = k.IAdd(p, k.C(1));
+            // [b0, b1): an image whose tokens see each other both ways (b1 = 0: none): keys run to the image end
+            uint b0 = k.PushU(8), b1 = k.PushU(9);
+            uint inImg = k.S.Value(Op.LogicalAnd, k.Bool, k.S.Value(Op.UGreaterThanEqual, k.Bool, p, b0), k.ULt(p, b1));
+            uint pEnd = k.S.Glsl(k.U32, Spv.GlslUMax, k.IAdd(p, k.C(1)), k.Select(k.U32, inImg, b1, k.C(0)));
             k.For(c0v, lo, pEnd, k.C(AttWg), delegate
             {
                 uint c0 = k.Get(c0v, k.U32);

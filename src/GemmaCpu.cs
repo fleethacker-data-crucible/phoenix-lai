@@ -17,6 +17,7 @@ namespace Phoenix
         public bool Embedding;            // gemma-embedding2: bidirectional, symmetric window, mean pooling + projection
         public int NEmbd, NLayer, NHead, NVocab, NSwa, NEmbdPerLayer, NEmbdOut;
         public int[] NHeadKv, NFf, HeadDim, NRot;
+        public int[] KvSrc;               // layer whose KV cache a layer reads: itself, or an earlier one (E2B/E4B shared KV)
         public bool[] Swa;
         public float Eps, RopeBase, RopeBaseSwa, Softcap;
 
@@ -49,8 +50,17 @@ namespace Phoenix
             c.Softcap = g.Has(a + ".final_logit_softcapping") ? g.GetFloat(a + ".final_logit_softcapping") : 0f;
             c.NEmbdPerLayer = g.Has(a + ".embedding_length_per_layer_input") ? (int)g.GetInt(a + ".embedding_length_per_layer_input") : 0;
             c.NEmbdOut = g.Has(a + ".embedding_length_out") ? (int)g.GetInt(a + ".embedding_length_out") : 0;
-            if (g.Has(a + ".attention.shared_kv_layers") && g.GetInt(a + ".attention.shared_kv_layers") != 0)
-                throw new NotSupportedException("Gemma 4 models with shared KV layers (E2B/E4B) are not supported yet.");
+            // Shared KV (E2B/E4B): the last shared_kv_layers layers have no K/V weights and read the cache of the last
+            // layer of the same kind that has one (llama.cpp: n_layer_kv_from_start - (swa ? 2 : 1)).
+            int shared = g.Has(a + ".attention.shared_kv_layers") ? (int)g.GetInt(a + ".attention.shared_kv_layers") : 0;
+            int kvStart = c.NLayer - shared;
+            c.KvSrc = new int[c.NLayer];
+            for (int i = 0; i < c.NLayer; i++)
+            {
+                int s = c.KvSrc[i] = i < kvStart ? i : kvStart - (c.Swa[i] ? 2 : 1);
+                if (s < 0 || c.Swa[s] != c.Swa[i] || c.HeadDim[s] != c.HeadDim[i] || c.NHeadKv[s] != c.NHeadKv[i])
+                    throw new NotSupportedException("Unexpected shared-KV layout at layer " + i + ".");
+            }
             if (g.TensorsByName.ContainsKey("blk.0.ffn_gate_inp.weight"))
                 throw new NotSupportedException("The Gemma 4 mixture-of-experts model (26B A4B) is not supported yet.");
             return c;
@@ -79,15 +89,17 @@ namespace Phoenix
             public int HeadDim, NHeadKv, KvDim, NFf, NRot;
             public float RopeBase;
             public bool Swa;
+            public int KvSrc;                 // layer whose cache this one reads (its own index unless shared)
             public ushort[] KCache, VCache;   // [MaxCtx * KvDim] fp16, like ggml's f16 cache
         }
 
-        readonly Weight _tokEmbd, _output, _pleModelProj;
+        readonly Weight _tokEmbd, _output, _pleModelProj, _pleTok;
         readonly float* _outputNorm, _pleProjNorm;
         readonly Layer[] _layers;
         readonly float _embdScale;
 
         // Scratch (sized for the largest layer).
+        readonly float[] _pleTokRow;
         readonly float[] _x, _xb, _xb2, _q, _qHalf, _k, _v, _attn, _ffGate, _ffUp, _logits, _cs, _pleIn, _pleGate;
         readonly CpuRef.Q8Activations _qEmbd, _qWide;
 
@@ -102,8 +114,7 @@ namespace Phoenix
             _outputNorm = F32(g, "output_norm.weight");
             if (C.NEmbdPerLayer > 0)
             {
-                if (g.TensorsByName.ContainsKey("per_layer_token_embd.weight"))
-                    throw new NotSupportedException("Per-layer token embeddings (Gemma 4 E2B/E4B) are not supported yet.");
+                if (g.TensorsByName.ContainsKey("per_layer_token_embd.weight")) _pleTok = W(g, "per_layer_token_embd.weight");   // E2B/E4B
                 _pleModelProj = W(g, "per_layer_model_proj.weight");
                 _pleProjNorm = F32(g, "per_layer_proj_norm.weight");
             }
@@ -116,18 +127,18 @@ namespace Phoenix
                 string p = "blk." + i + ".";
                 Layer l = new Layer();
                 l.Swa = C.Swa[i]; l.HeadDim = C.HeadDim[i]; l.NHeadKv = C.NHeadKv[i]; l.KvDim = l.NHeadKv * l.HeadDim;
-                l.NFf = C.NFf[i]; l.NRot = C.NRot[i];
+                l.NFf = C.NFf[i]; l.NRot = C.NRot[i]; l.KvSrc = C.KvSrc[i];
                 l.RopeBase = l.Swa ? C.RopeBaseSwa : C.RopeBase;
                 // gemma4 global layers use proportional RoPE factors; EmbeddingGemma 2 does not.
                 l.RopeFreqs = !l.Swa && !C.Embedding ? ropeFreqs : null;
                 l.AttnNorm = F32(g, p + "attn_norm.weight");
                 l.QNorm = F32(g, p + "attn_q_norm.weight");
-                l.KNorm = F32(g, p + "attn_k_norm.weight");
+                l.KNorm = l.KvSrc == i ? F32(g, p + "attn_k_norm.weight") : null;
                 l.PostAttnNorm = F32(g, p + "post_attention_norm.weight");
                 l.FfnNorm = F32(g, p + "ffn_norm.weight");
                 l.PostFfnNorm = F32(g, p + "post_ffw_norm.weight");
                 l.Wq = W(g, p + "attn_q.weight");
-                l.Wk = W(g, p + "attn_k.weight");
+                l.Wk = l.KvSrc == i ? W(g, p + "attn_k.weight") : null;   // null: shared layer (reads layer KvSrc's cache)
                 l.Wv = g.TensorsByName.ContainsKey(p + "attn_v.weight") ? W(g, p + "attn_v.weight") : null;   // null: V = K
                 l.Wo = W(g, p + "attn_output.weight");
                 l.Gate = W(g, p + "ffn_gate.weight");
@@ -140,7 +151,7 @@ namespace Phoenix
                     l.PleProj = W(g, p + "proj.weight");
                     l.PlePostNorm = F32(g, p + "post_norm.weight");
                 }
-                if (!C.Embedding)
+                if (!C.Embedding && l.KvSrc == i)
                 {
                     l.KCache = new ushort[(long)maxCtx * l.KvDim];
                     l.VCache = new ushort[(long)maxCtx * l.KvDim];
@@ -157,6 +168,7 @@ namespace Phoenix
             _cs = new float[maxRot];
             _pleIn = C.NEmbdPerLayer > 0 ? new float[C.NEmbdPerLayer * C.NLayer] : null;
             _pleGate = C.NEmbdPerLayer > 0 ? new float[C.NEmbdPerLayer] : null;
+            _pleTokRow = _pleTok != null ? new float[C.NEmbdPerLayer * C.NLayer] : null;
             _qEmbd = new CpuRef.Q8Activations(Math.Max(C.NEmbd, maxQ));
             _qWide = new CpuRef.Q8Activations(maxFf);
         }
@@ -178,12 +190,46 @@ namespace Phoenix
 
         // ---------------- chat model: one token at a time ----------------
 
+        // Image soft tokens (negative ids, see ImageTokens): their embedding rows, set by the engine. The CPU path is
+        // causal for every image (the 12B's two-way image attention needs the GPU's batched prefill).
+        public Func<int, float[]> ImageRow;
+
         public float[] Forward(int token, int pos)
         {
             if (C.Embedding) throw new InvalidOperationException("EmbeddingGemma has no language-model head; use Embed().");
             if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
+            if (token < 0) return ForwardEmbedding(ImageRow(token), pos);
             CpuRef.GetRow(_tokEmbd, token, _x);
             for (int i = 0; i < C.NEmbd; i++) _x[i] *= _embdScale;
+            return ForwardX(token, pos);
+        }
+
+        // One position from a ready-made input embedding (an image token from the vision encoder): no sqrt(d) scale,
+        // and E2B/E4B take the per-layer row of token 0 (padding), like llama.cpp.
+        public float[] ForwardEmbedding(float[] embd, int pos)
+        {
+            if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
+            Array.Copy(embd, _x, C.NEmbd);
+            return ForwardX(0, pos);
+        }
+
+        // E2B/E4B per-layer inputs of one position (llama.cpp project_per_layer_inputs), per layer slice:
+        // ple = (rmsnorm(model_proj(x) / sqrt(d)) * proj_norm + tok_row(token) * sqrt(pl)) / sqrt(2).
+        void TokenPerLayerInputs(int token)
+        {
+            int pl = C.NEmbdPerLayer, n = pl * C.NLayer;
+            CpuRef.MatVec(_pleModelProj, _x, _qEmbd, _pleIn);
+            CpuRef.GetRow(_pleTok, token, _pleTokRow);
+            float s = 1f / (float)Math.Sqrt(C.NEmbd), ts = (float)Math.Sqrt(pl), inv2 = 1f / (float)Math.Sqrt(2.0);
+            for (int i = 0; i < n; i++) _pleIn[i] *= s;
+            for (int il = 0; il < C.NLayer; il++) CpuRef.RmsNormInPlace(_pleIn, il * pl, pl, _pleProjNorm, C.Eps);
+            for (int i = 0; i < n; i++) _pleIn[i] = (_pleIn[i] + _pleTokRow[i] * ts) * inv2;
+        }
+
+        // The layers on _x (input embedding in place) at position pos.
+        float[] ForwardX(int pleToken, int pos)
+        {
+            if (_pleTok != null) TokenPerLayerInputs(pleToken);
 
             for (int il = 0; il < C.NLayer; il++)
             {
@@ -193,17 +239,19 @@ namespace Phoenix
 
                 CpuRef.RmsNorm(_x, l.AttnNorm, C.Eps, _xb);
                 CpuRef.MatVec(l.Wq, _xb, _qEmbd, q);
-                CpuRef.MatVec(l.Wk, _xb, _qEmbd, k);
-                if (l.Wv != null) CpuRef.MatVec(l.Wv, _xb, _qEmbd, v); else Array.Copy(k, v, l.KvDim);
                 for (int h = 0; h < C.NHead; h++) CpuRef.RmsNormInPlace(q, h * hd, hd, l.QNorm, C.Eps);
-                for (int h = 0; h < l.NHeadKv; h++) { CpuRef.RmsNormInPlace(k, h * hd, hd, l.KNorm, C.Eps); CpuRef.RmsNormPlain(v, h * hd, hd, C.Eps); }
                 float[] cs = Exact(_cs, l.NRot);
                 CpuRef.RopeTable(pos, l.NRot, l.RopeBase, l.RopeFreqs, cs);
                 CpuRef.RopeNeox(q, C.NHead, hd, l.NRot, cs);
-                CpuRef.RopeNeox(k, l.NHeadKv, hd, l.NRot, cs);
-
-                long cOff = (long)pos * l.KvDim;
-                for (int i = 0; i < l.KvDim; i++) { l.KCache[cOff + i] = Half.FromFloat(k[i]); l.VCache[cOff + i] = Half.FromFloat(v[i]); }
+                if (l.Wk != null)   // a shared layer skips K/V: its source layer stored this position already
+                {
+                    CpuRef.MatVec(l.Wk, _xb, _qEmbd, k);
+                    if (l.Wv != null) CpuRef.MatVec(l.Wv, _xb, _qEmbd, v); else Array.Copy(k, v, l.KvDim);
+                    for (int h = 0; h < l.NHeadKv; h++) { CpuRef.RmsNormInPlace(k, h * hd, hd, l.KNorm, C.Eps); CpuRef.RmsNormPlain(v, h * hd, hd, C.Eps); }
+                    CpuRef.RopeNeox(k, l.NHeadKv, hd, l.NRot, cs);
+                    long cOff = (long)pos * l.KvDim;
+                    for (int i = 0; i < l.KvDim; i++) { l.KCache[cOff + i] = Half.FromFloat(k[i]); l.VCache[cOff + i] = Half.FromFloat(v[i]); }
+                }
                 float[] qh = Exact(_qHalf, nq);
                 for (int i = 0; i < nq; i++) qh[i] = Half.Round(q[i]);   // ggml's non-flash path: Q in f16 against the f16 K cache
 
@@ -225,7 +273,8 @@ namespace Phoenix
         void Attend(Layer l, float[] qh, float[] attn, int first, int last)
         {
             int hd = l.HeadDim, kvDim = l.KvDim, group = C.NHead / l.NHeadKv, n = last - first + 1;
-            ushort[] kc = l.KCache, vc = l.VCache;
+            Layer src = _layers[l.KvSrc];
+            ushort[] kc = src.KCache, vc = src.VCache;
             Parallel.For(0, C.NHead, delegate(int h)
             {
                 int kvOff = (h / group) * hd, qOff = h * hd;
@@ -267,6 +316,16 @@ namespace Phoenix
             CpuRef.MatVec(l.Down, gate, _qWide, _xb);
             CpuRef.RmsNorm(_xb, l.PostFfnNorm, C.Eps, _xb2);
             for (int i = 0; i < C.NEmbd; i++) _x[i] += _xb2[i];
+            if (_pleTok != null)
+            {
+                // per-layer input: x += norm(proj(gelu(inp_gate(x)) * ple[il]))
+                int pl = C.NEmbdPerLayer;
+                CpuRef.MatVec(l.PleGate, _x, _qEmbd, _pleGate);
+                for (int i = 0; i < pl; i++) _pleGate[i] = CpuRef.Gelu(_pleGate[i]) * _pleIn[il * pl + i];
+                CpuRef.MatVec(l.PleProj, _pleGate, _qWide, _xb);
+                CpuRef.RmsNorm(_xb, l.PlePostNorm, C.Eps, _xb2);
+                for (int i = 0; i < C.NEmbd; i++) _x[i] += _xb2[i];
+            }
             if (l.OutScale != 1f) for (int i = 0; i < C.NEmbd; i++) _x[i] *= l.OutScale;
         }
 

@@ -217,9 +217,22 @@ namespace Phoenix
                     if (role == "system" && si >= 0) { msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + text); continue; }
                     if (role == "system") { msgs.Insert(0, new ChatMessage("system", text)); continue; }
                     // Templates expect user / assistant turns to alternate (several tool results in a row are one turn).
-                    if (msgs.Count > 0 && msgs[msgs.Count - 1].Role == role) { msgs[msgs.Count - 1] = new ChatMessage(role, msgs[msgs.Count - 1].Text + "\n\n" + text); continue; }
-                    msgs.Add(new ChatMessage(role, text));
+                    List<byte[]> imgs = role == "user" ? ParseImages(mm) : null;   // inline data: images only
+                    if (msgs.Count > 0 && msgs[msgs.Count - 1].Role == role)
+                    {
+                        ChatMessage prev = msgs[msgs.Count - 1];
+                        ChatMessage merged = new ChatMessage(role, prev.Text + "\n\n" + text);
+                        merged.Images = prev.Images;
+                        if (imgs != null) { if (merged.Images == null) merged.Images = imgs; else merged.Images.AddRange(imgs); }
+                        msgs[msgs.Count - 1] = merged;
+                        continue;
+                    }
+                    ChatMessage cm = new ChatMessage(role, text);
+                    cm.Images = imgs;
+                    msgs.Add(cm);
                 }
+                if (msgs.Exists(delegate(ChatMessage x) { return x.Images != null; }) && (_engine == null || !_engine.HasVision))
+                    throw new ArgumentException("The loaded model cannot read images (no vision projector for it in the models folder).");
                 if (toolPrompt != null)
                 {
                     int si = msgs.FindIndex(delegate(ChatMessage x) { return x.Role == "system"; });

@@ -25,7 +25,7 @@
     input.setSelectionRange(1, 1);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  modelChip.onclick = () => openSettings();
+  modelChip.onclick = () => { if (info.file) openModelSettings(info.file); else openSettings(); };   // settings for the loaded model
   $('pbSettings').onclick = () => openSettings();
   modeBtn.onclick = async () => {
     const m = info && info.mode === 'accept' ? 'auto' : 'accept';

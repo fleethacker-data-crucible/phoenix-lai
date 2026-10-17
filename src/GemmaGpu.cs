@@ -27,12 +27,21 @@ namespace Phoenix
 
         sealed class Layer
         {
-            public GpuBuffer AttnNorm, QNorm, KNorm, PostAttnNorm, FfnNorm, PostFfnNorm, KCache, VCache;
-            public GW Wq, Wk, Wv, Wo, Gate, Up, Down;
+            public GpuBuffer AttnNorm, QNorm, KNorm, PostAttnNorm, FfnNorm, PostFfnNorm, PlePostNorm, KCache, VCache;
+            public GW Wq, Wk, Wv, Wo, Gate, Up, Down, PleGate, PleProj;
             public float OutScale = 1f;
             public int HeadDim, NHeadKv, KvDim, NFf, NRot, Ring;
             public bool Swa;
+            public bool Shared;   // E2B/E4B: no K/V of its own; KCache/VCache/Ring are the source layer's (C.KvSrc)
         }
+
+        // E2B/E4B per-layer inputs: the f16 model projection on the GPU, the token rows (Q6_K, ~2 GB) stay mapped on the CPU.
+        readonly Weight _pleTok;
+        readonly GpuBuffer _pleProjW, _pleProjNorm, _pleTokUp, _pleProjOut, _pleAll;
+        readonly float[] _pleTokHost;
+        GpuKernel _kMmF16, _kPle, _kCopy;
+        GpuBuffer _pPleTok, _pPleProj, _pPle;
+        int Pl { get { return C.NEmbdPerLayer; } }
 
         // Sliding-window layers keep a ring of the last NSwa + SwaSlack positions instead of the whole context (all caches
         // are fp16, packed): Gemma 4 12B at 32K context needs ~1.4 GB of cache instead of ~11 GB. The slack lets the chat
@@ -129,30 +138,43 @@ namespace Phoenix
                     string p = "blk." + i + ".";
                     Layer l = new Layer();
                     l.Swa = C.Swa[i]; l.HeadDim = C.HeadDim[i]; l.NHeadKv = C.NHeadKv[i]; l.KvDim = l.NHeadKv * l.HeadDim;
-                    l.NFf = C.NFf[i]; l.NRot = C.NRot[i];
+                    l.NFf = C.NFf[i]; l.NRot = C.NRot[i]; l.Shared = C.KvSrc[i] != i;
                     l.AttnNorm = UploadF32(T(g, p + "attn_norm.weight"));
                     l.QNorm = UploadF32(T(g, p + "attn_q_norm.weight"));
-                    l.KNorm = UploadF32(T(g, p + "attn_k_norm.weight"));
+                    l.KNorm = l.Shared ? null : UploadF32(T(g, p + "attn_k_norm.weight"));
                     l.PostAttnNorm = UploadF32(T(g, p + "post_attention_norm.weight"));
                     l.FfnNorm = UploadF32(T(g, p + "ffn_norm.weight"));
                     l.PostFfnNorm = UploadF32(T(g, p + "post_ffw_norm.weight"));
                     l.Wq = UploadW(T(g, p + "attn_q.weight"));
-                    l.Wk = UploadW(T(g, p + "attn_k.weight"));
-                    l.Wv = g.TensorsByName.ContainsKey(p + "attn_v.weight") ? UploadW(T(g, p + "attn_v.weight")) : null;
+                    l.Wk = l.Shared ? null : UploadW(T(g, p + "attn_k.weight"));
+                    l.Wv = !l.Shared && g.TensorsByName.ContainsKey(p + "attn_v.weight") ? UploadW(T(g, p + "attn_v.weight")) : null;
                     l.Wo = UploadW(T(g, p + "attn_output.weight"));
                     l.Gate = UploadW(T(g, p + "ffn_gate.weight"));
                     l.Up = UploadW(T(g, p + "ffn_up.weight"));
                     l.Down = UploadW(T(g, p + "ffn_down.weight"));
                     if (g.TensorsByName.ContainsKey(p + "layer_output_scale.weight")) l.OutScale = *(float*)T(g, p + "layer_output_scale.weight").Data;
-                    l.Ring = (Math.Min(maxCtx, l.Swa ? C.NSwa + SwaSlack : maxCtx) + 7) & ~7;   // a multiple of 8 (q4 words)
-                    ulong kb = KernelsKv.CacheBytes(Kv, l.Ring, l.KvDim), vb = KernelsKv.CacheBytes(KvV, l.Ring, l.KvDim);
-                    l.KCache = Buf(kb, BufferKind.Device);
-                    l.VCache = Buf(vb, BufferKind.Device);
-                    KvBytes += (long)(kb + vb);
+                    if (C.NEmbdPerLayer > 0)
+                    {
+                        l.PleGate = UploadW(T(g, p + "inp_gate.weight"));
+                        l.PleProj = UploadW(T(g, p + "proj.weight"));
+                        l.PlePostNorm = UploadF32(T(g, p + "post_norm.weight"));
+                    }
+                    if (l.Shared)
+                    {
+                        Layer src = _layers[C.KvSrc[i]];   // an earlier layer: its cache already holds each position
+                        l.Ring = src.Ring; l.KCache = src.KCache; l.VCache = src.VCache;
+                    }
+                    else
+                    {
+                        l.Ring = (Math.Min(maxCtx, l.Swa ? C.NSwa + SwaSlack : maxCtx) + 7) & ~7;   // a multiple of 8 (q4 words)
+                        ulong kb = KernelsKv.CacheBytes(Kv, l.Ring, l.KvDim), vb = KernelsKv.CacheBytes(KvV, l.Ring, l.KvDim);
+                        l.KCache = Buf(kb, BufferKind.Device);
+                        l.VCache = Buf(vb, BufferKind.Device);
+                        KvBytes += (long)(kb + vb);
+                    }
                     maxQ = Math.Max(maxQ, C.NHead * l.HeadDim); maxKv = Math.Max(maxKv, l.KvDim); maxFf = Math.Max(maxFf, l.NFf);
                     _layers[i] = l;
-                    if (l.Wq.Type != GgmlType.Q4_0 || l.Wk.Type != GgmlType.Q4_0 || (l.Wv != null && l.Wv.Type != GgmlType.Q4_0) || l.Wo.Type != GgmlType.Q4_0 ||
-                        l.Gate.Type != GgmlType.Q4_0 || l.Up.Type != GgmlType.Q4_0 || l.Down.Type != GgmlType.Q4_0) _prefillOk = false;
+                    if (!Q4(l.Wq) || !Q4(l.Wk) || !Q4(l.Wv) || !Q4(l.Wo) || !Q4(l.Gate) || !Q4(l.Up) || !Q4(l.Down) || !Q4(l.PleGate) || !Q4(l.PleProj)) _prefillOk = false;
                 }
                 _swa = MakeKind(true, ropeFreqs);
                 _global = MakeKind(false, ropeFreqs);
@@ -171,6 +193,25 @@ namespace Phoenix
                 _one = Buf(4, BufferKind.Device);
                 _xHost = new float[C.NEmbd]; _logitsHost = new float[C.NVocab];
                 _maxQ = maxQ; _maxKv = maxKv; _maxFf = maxFf;
+                if (C.NEmbdPerLayer > 0)
+                {
+                    if (!g.TensorsByName.ContainsKey("per_layer_token_embd.weight")) throw new NotSupportedException("Per-layer inputs without per_layer_token_embd.");
+                    int n = Pl * C.NLayer;
+                    _pleTok = new Weight(T(g, "per_layer_token_embd.weight"));
+                    GgufTensor pw = T(g, "per_layer_model_proj.weight");
+                    if (pw.Type != GgmlType.F16) throw new NotSupportedException("per_layer_model_proj must be f16.");
+                    _pleProjW = Buf((ulong)pw.SizeBytes, BufferKind.Device);
+                    _gpu.Upload(_pleProjW, 0, (IntPtr)pw.Data, (ulong)pw.SizeBytes);
+                    WeightBytes += pw.SizeBytes;
+                    _pleProjNorm = UploadF32(T(g, "per_layer_proj_norm.weight"));
+                    _pleTokUp = Buf((ulong)n * 4, BufferKind.Upload);
+                    _pleProjOut = Buf((ulong)n * 4, BufferKind.Device);
+                    _pleAll = Buf((ulong)n * 4, BufferKind.Device);
+                    _pleTokHost = new float[n];
+                    _kMmF16 = Kernel(KernelsBatch.MatMulF16(), 3, 3, "mm f16");
+                    _kPle = Kernel(KernelsGemma.PleInputs(), 4, 6, "per-layer inputs");
+                    _kCopy = Kernel(KernelsPrefill.CopyRange(), 2, 3, "copy range");
+                }
             }
             catch { Dispose(); throw; }
         }
@@ -326,6 +367,7 @@ namespace Phoenix
             return q;
         }
 
+        static bool Q4(GW w) { return w == null || w.Type == GgmlType.Q4_0; }
         static uint Bits(float f) { return *(uint*)&f; }
         static uint Groups(int n, uint size) { return (uint)((n + size - 1) / size); }
 
@@ -388,12 +430,46 @@ namespace Phoenix
             kd.Indirect.UploadWords(kd.IndirectHost);
         }
 
+        // Image soft tokens (negative ids, see ImageTokens): their embedding rows, set by the engine when it has a vision
+        // tower. BidiImages: an image's tokens attend to each other both ways on sliding-window layers (Gemma 4 12B).
+        public Func<int, float[]> ImageRow;
+        public bool BidiImages;
+
         public float[] Forward(int token, int pos)
         {
             if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
+            if (token < 0) return ForwardEmbedding(ImageRow(token), pos);
             CpuRef.GetRow(_tokEmbd, token, _xHost);
             for (int i = 0; i < _xHost.Length; i++) _xHost[i] *= _embdScale;
+            return ForwardX(token, pos);
+        }
+
+        // One position from a ready-made input embedding (an image token): no sqrt(d) scale; E2B/E4B use the
+        // per-layer row of token 0 (padding), like llama.cpp.
+        public float[] ForwardEmbedding(float[] embd, int pos)
+        {
+            if (pos >= MaxCtx) throw new InvalidOperationException("Context full.");
+            Array.Copy(embd, _xHost, C.NEmbd);
+            return ForwardX(0, pos);
+        }
+
+        // Host rows of the per-layer token embedding, pre-scaled by sqrt(pl).
+        void PleTokRow(int token, float[] dst, int off)
+        {
+            CpuRef.GetRow(_pleTok, token, _pleTokHost);
+            float ts = (float)Math.Sqrt(Pl);
+            for (int i = 0; i < _pleTokHost.Length; i++) dst[off + i] = _pleTokHost[i] * ts;
+        }
+
+        float[] ForwardX(int pleToken, int pos)
+        {
             _x.Upload(_xHost, 0);
+            if (_pleTok != null)
+            {
+                float[] row = new float[Pl * C.NLayer];
+                PleTokRow(pleToken, row, 0);
+                _pleTokUp.Upload(row, 0);
+            }
             Prepare(_swa, pos);
             Prepare(_global, pos);
 
@@ -423,6 +499,7 @@ namespace Phoenix
         void RecordPass()
         {
             bool inputReady = false;   // the previous layer's fused norm already quantized this layer's input
+            if (_pleTok != null) RecordPleInputs(_x, _pleTokUp, _pleProjOut, _pleAll, 1);
             for (int il = 0; il < C.NLayer; il++)
             {
                 Layer l = _layers[il];
@@ -433,18 +510,29 @@ namespace Phoenix
                 if (!inputReady)
                 {
                     if (l.Wv != null) Quant(KernelsQuant.Mode.RmsNorm, _x, l.AttnNorm, C.NEmbd, l.Wq, l.Wk, l.Wv);
-                    else Quant(KernelsQuant.Mode.RmsNorm, _x, l.AttnNorm, C.NEmbd, l.Wq, l.Wk);
+                    else if (l.Wk != null) Quant(KernelsQuant.Mode.RmsNorm, _x, l.AttnNorm, C.NEmbd, l.Wq, l.Wk);
+                    else Quant(KernelsQuant.Mode.RmsNorm, _x, l.AttnNorm, C.NEmbd, l.Wq);
                 }
-                MatVec(l.Wq, _q, false);
-                if (l.Wv != null) { MatVec(l.Wk, _k, false); MatVec(l.Wv, _v, true); }
-                else MatVec(l.Wk, _k, true);
-                // V = plain RMSNorm of V (or of the raw K when the layer has no V weight), then the weighted Q/K norms.
-                _gpu.Record(_kHeadNorm, new GpuBuffer[] { l.Wv != null ? _v : _k, l.KNorm, _v }, new uint[] { (uint)hd, eps, 0 }, (uint)l.NHeadKv, 1, 1, l.Wv == null);   // barrier when it reads K (normed next)
-                _gpu.Record(_kHeadNorm, new GpuBuffer[] { _q, l.QNorm, _q }, new uint[] { (uint)hd, eps, 1 }, (uint)C.NHead, 1, 1, false);
-                _gpu.Record(_kHeadNorm, new GpuBuffer[] { _k, l.KNorm, _k }, new uint[] { (uint)hd, eps, 1 }, (uint)l.NHeadKv, 1, 1);
-                _gpu.Record(_kRope, new GpuBuffer[] { _q, kd.Cs }, new uint[] { (uint)C.NHead, (uint)hd, half }, Groups(C.NHead * (int)half, Kernels.Wg), 1, 1, false);
-                _gpu.Record(_kRope, new GpuBuffer[] { _k, kd.Cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half }, Groups(l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
-                _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, kd.Params }, new uint[] { (uint)l.KvDim, (uint)l.Ring }, Groups(KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
+                if (l.Shared)
+                {
+                    // Q only: K/V of this position are already in the source layer's cache (same kind, same rope).
+                    MatVec(l.Wq, _q, true);
+                    _gpu.Record(_kHeadNorm, new GpuBuffer[] { _q, l.QNorm, _q }, new uint[] { (uint)hd, eps, 1 }, (uint)C.NHead, 1, 1);
+                    _gpu.Record(_kRope, new GpuBuffer[] { _q, kd.Cs }, new uint[] { (uint)C.NHead, (uint)hd, half }, Groups(C.NHead * (int)half, Kernels.Wg), 1, 1);
+                }
+                else
+                {
+                    MatVec(l.Wq, _q, false);
+                    if (l.Wv != null) { MatVec(l.Wk, _k, false); MatVec(l.Wv, _v, true); }
+                    else MatVec(l.Wk, _k, true);
+                    // V = plain RMSNorm of V (or of the raw K when the layer has no V weight), then the weighted Q/K norms.
+                    _gpu.Record(_kHeadNorm, new GpuBuffer[] { l.Wv != null ? _v : _k, l.KNorm, _v }, new uint[] { (uint)hd, eps, 0 }, (uint)l.NHeadKv, 1, 1, l.Wv == null);   // barrier when it reads K (normed next)
+                    _gpu.Record(_kHeadNorm, new GpuBuffer[] { _q, l.QNorm, _q }, new uint[] { (uint)hd, eps, 1 }, (uint)C.NHead, 1, 1, false);
+                    _gpu.Record(_kHeadNorm, new GpuBuffer[] { _k, l.KNorm, _k }, new uint[] { (uint)hd, eps, 1 }, (uint)l.NHeadKv, 1, 1);
+                    _gpu.Record(_kRope, new GpuBuffer[] { _q, kd.Cs }, new uint[] { (uint)C.NHead, (uint)hd, half }, Groups(C.NHead * (int)half, Kernels.Wg), 1, 1, false);
+                    _gpu.Record(_kRope, new GpuBuffer[] { _k, kd.Cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half }, Groups(l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
+                    _gpu.Record(_kKvT, new GpuBuffer[] { _k, _v, l.KCache, l.VCache, kd.Params }, new uint[] { (uint)l.KvDim, (uint)l.Ring }, Groups(KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
+                }
 
                 // attention (scale 1)
                 _gpu.RecordIndirect(kd.Scores, new GpuBuffer[] { _q, l.KCache, _scores, kd.Params }, new uint[] { (uint)hd, (uint)l.KvDim, (uint)MaxCtx, Bits(1f), (uint)l.Ring }, kd.Indirect, 0);
@@ -465,17 +553,41 @@ namespace Phoenix
                 MatVec(l.Up, _u, true);
                 Quant(KernelsQuant.Mode.GeluMul, _g, _u, l.NFf, l.Down);
                 MatVec(l.Down, _xb, true);
+                GpuBuffer lastNorm = l.PostFfnNorm;
+                if (_pleTok != null)
+                {
+                    // x += norm(ffn); then x += norm(proj(gelu(inp_gate(x)) * ple[il])) (the output scale comes after)
+                    _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, _xb, l.PostFfnNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(1f) }, 1, 1, 1);
+                    Quant(KernelsQuant.Mode.Plain, _x, null, C.NEmbd, l.PleGate);
+                    MatVec(l.PleGate, _g, false);
+                    _gpu.Record(_kCopy, new GpuBuffer[] { _pleAll, _u }, new uint[] { (uint)Pl, (uint)(il * Pl), 0 }, Groups(Pl, Kernels.Wg), 1, 1);
+                    Quant(KernelsQuant.Mode.GeluMul, _g, _u, Pl, l.PleProj);
+                    MatVec(l.PleProj, _xb, true);
+                    lastNorm = l.PlePostNorm;
+                }
                 Layer next = il + 1 < C.NLayer ? _layers[il + 1] : null;
                 inputReady = next != null && Q80Users(next.Wq, next.Wk, next.Wv);
                 if (inputReady)
-                    _gpu.Record(_kNormAddQ, new GpuBuffer[] { _x, _xb, l.PostFfnNorm, next.AttnNorm, _xq, _xd }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
+                    _gpu.Record(_kNormAddQ, new GpuBuffer[] { _x, _xb, lastNorm, next.AttnNorm, _xq, _xd }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
                 else
-                    _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, _xb, l.PostFfnNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
+                    _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, _xb, lastNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
             }
             Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, C.NEmbd, _output);
             MatVec(_output, _logits, true);
             if (C.Softcap > 0)
                 _gpu.Record(_kSoftcap, new GpuBuffer[] { _logits }, new uint[] { (uint)C.NVocab, Bits(C.Softcap) }, Groups(C.NVocab, Kernels.Wg), 1, 1);
+        }
+
+        // Per-layer inputs of T rows of x (each row the scaled input embedding): out[l][t][pl]. tok holds the token
+        // rows pre-scaled by sqrt(pl).
+        void RecordPleInputs(GpuBuffer x, GpuBuffer tok, GpuBuffer proj, GpuBuffer outB, int T)
+        {
+            int n = Pl * C.NLayer;
+            _gpu.Record(_kMmF16, new GpuBuffer[] { _pleProjW, x, proj }, new uint[] { (uint)n, (uint)C.NEmbd, (uint)T },
+                Groups(n, KernelsBatch.MmRows), Groups(T, KernelsBatch.MmTokens), 1);
+            _gpu.Record(_kPle, new GpuBuffer[] { proj, tok, _pleProjNorm, outB },
+                new uint[] { (uint)Pl, (uint)C.NLayer, (uint)T, Bits(C.Eps), Bits(1f / (float)Math.Sqrt(C.NEmbd)), Bits(1f / (float)Math.Sqrt(2.0)) },
+                (uint)(T * C.NLayer), 1, 1);
         }
 
         public void Reset() { }
@@ -498,9 +610,19 @@ namespace Phoenix
             int i = start, end = start + count;
             if (UsePrefill && _prefillOk)
             {
-                while (end - i >= 8)
+                while (i < end)
                 {
-                    int T = Math.Min(PrefillChunk, end - i);
+                    int T = ImageTokens.Fit(tokens, i, PrefillChunk, end);   // an image stays in one chunk
+                    if (BidiImages)
+                    {
+                        // the two-way span covers one image per chunk: a second image starts the next chunk
+                        int b0, b1;
+                        ImageTokens.FirstRun(tokens, i, T, out b0, out b1);
+                        if (b1 > 0) for (int k = b1; k < i + T; k++) if (tokens[k] < 0) { T = k - i; break; }
+                    }
+                    bool img = false;
+                    for (int k = i; k < i + T && !img; k++) img = tokens[k] < 0;
+                    if (T == 0 || (end - i < 8 && !img)) break;   // a short text tail goes through the decode pass
                     logits = PrefillChunkRun(tokens, i, T);
                     i += T;
                 }
@@ -518,7 +640,7 @@ namespace Phoenix
             // tiled attention when shared memory allows (KernelsFlash: ~16x less K/V traffic at long context)
             // one tiled kernel per head size (Gemma: 256 sliding-window, 512 global)
             _flash = UseFlash;
-            _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 8, "pf attention");
+            _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 10, "pf attention");
             if (_flash)
                 foreach (Layer l in _layers)
                 {
@@ -528,7 +650,7 @@ namespace Phoenix
                     KernelsFlash.Tile(hdT, _gpu.MaxSharedMemory, out tq, out kc);
                     // 8 x 8 tiles (512-wide heads under a 32 KB limit) measured slower than the plain kernel: keep it there
                     if (tq < 16 || (_gpu.MaxSharedMemory != 0 && KernelsFlash.SharedBytes(hdT, tq, kc) > _gpu.MaxSharedMemory)) continue;
-                    _kFlash[hdT] = Kernel(KernelsFlash.Attention(Kv, KvV, hdT, tq, kc), 4, 9, "pf attention tiled " + hdT);
+                    _kFlash[hdT] = Kernel(KernelsFlash.Attention(Kv, KvV, hdT, tq, kc), 4, 11, "pf attention tiled " + hdT);
                     _flashTq[hdT] = tq;
                 }
             _kCopyRange = Kernel(KernelsPrefill.CopyRange(), 2, 3, "pf copy");
@@ -545,6 +667,13 @@ namespace Phoenix
             _pCsSwa = Buf(T * (ulong)(_swa != null ? _swa.NRot : 2) * 4, BufferKind.Upload);
             _pCsGlobal = Buf(T * (ulong)(_global != null ? _global.NRot : 2) * 4, BufferKind.Upload);
             _pUp = Buf(T * d * 4, BufferKind.Upload);
+            if (_pleTok != null)
+            {
+                ulong n = (ulong)(Pl * C.NLayer);
+                _pPleTok = Buf(T * n * 4, BufferKind.Upload);
+                _pPleProj = Buf(T * n * 4, BufferKind.Device);
+                _pPle = Buf(T * n * 4, BufferKind.Device);
+            }
         }
 
         void RowQuant(GpuBuffer x, GpuBuffer aux, KernelsQuant.Mode mode, int n)
@@ -576,21 +705,48 @@ namespace Phoenix
         float[] PrefillChunkRun(IList<int> tokens, int p0, int T)
         {
             if (p0 + T > MaxCtx) throw new InvalidOperationException("Context full.");
-            EnsurePrefill();
             int d = C.NEmbd;
             float[] host = new float[T * d], row = new float[d];
+            int[] pleTokens = new int[T];
             for (int t = 0; t < T; t++)
             {
-                CpuRef.GetRow(_tokEmbd, tokens[p0 + t], row);
+                int tok = tokens[p0 + t];
+                if (tok < 0)   // image soft token: the vision tower's row, unscaled; per-layer row of token 0 (padding)
+                {
+                    Array.Copy(ImageRow(tok), 0, host, t * d, d);
+                    pleTokens[t] = 0;
+                    continue;
+                }
+                CpuRef.GetRow(_tokEmbd, tok, row);
                 for (int i = 0; i < d; i++) host[t * d + i] = row[i] * _embdScale;
+                pleTokens[t] = tok;
             }
+            int b0 = 0, b1 = 0;
+            if (BidiImages) ImageTokens.FirstRun(tokens, p0, T, out b0, out b1);
+            return PrefillRun(host, pleTokens, p0, T, b0, b1);
+        }
+
+        // Batched pass over T input rows (host: [T][d], already scaled) at positions p0..p0+T-1. pleTokens: the token of
+        // each row for the E2B/E4B per-layer embedding (0 for image rows). [bidi0, bidi1): positions (an image) whose
+        // sliding-window layers attend to each other both ways (Gemma 4 12B image tokens); empty = causal everywhere.
+        float[] PrefillRun(float[] host, int[] pleTokens, int p0, int T, int bidi0, int bidi1)
+        {
+            EnsurePrefill();
+            int d = C.NEmbd;
             _pUp.Upload(host, 0);
+            if (_pleTok != null)
+            {
+                float[] tok = new float[(long)T * Pl * C.NLayer];
+                for (int t = 0; t < T; t++) PleTokRow(pleTokens[t], tok, t * Pl * C.NLayer);
+                _pPleTok.Upload(tok, 0);
+            }
             UploadRopeRows(_swa, _pCsSwa, p0, T);
             UploadRopeRows(_global, _pCsGlobal, p0, T);
             uint eps = Bits(C.Eps);
 
             _gpu.Begin();
             _gpu.Record(_kCopyRange, new GpuBuffer[] { _pUp, _pX }, new uint[] { (uint)(T * d), 0, 0 }, Groups(T * d, Kernels.Wg), 1, 1);
+            if (_pleTok != null) RecordPleInputs(_pX, _pPleTok, _pPleProj, _pPle, T);
             for (int il = 0; il < C.NLayer; il++)
             {
                 Layer l = _layers[il];
@@ -600,6 +756,14 @@ namespace Phoenix
 
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.AttnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
                 RowQuant(_pXb, null, KernelsQuant.Mode.Plain, T * d);
+                if (l.Shared)
+                {
+                    Mm(l.Wq, _pQ, T, true);
+                    _gpu.Record(_kHeadNorm, new GpuBuffer[] { _pQ, l.QNorm, _pQ }, new uint[] { (uint)hd, eps, 1 }, (uint)(T * C.NHead), 1, 1);
+                    _gpu.Record(_kRopeRows, new GpuBuffer[] { _pQ, cs }, new uint[] { (uint)C.NHead, (uint)hd, half, (uint)T }, Groups(T * C.NHead * (int)half, Kernels.Wg), 1, 1);
+                }
+                else
+                {
                 Mm(l.Wq, _pQ, T, false);
                 if (l.Wv != null) { Mm(l.Wk, _pK, T, false); Mm(l.Wv, _pV, T, true); }
                 else
@@ -614,14 +778,15 @@ namespace Phoenix
                 _gpu.Record(_kRopeRows, new GpuBuffer[] { _pK, cs }, new uint[] { (uint)l.NHeadKv, (uint)hd, half, (uint)T }, Groups(T * l.NHeadKv * (int)half, Kernels.Wg), 1, 1);
                 for (uint par = 0; par < KernelsKv.Passes(Kv); par++)
                     _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
+                }
                 uint hdT = ((uint)hd + 31) & ~31u;
                 if (_flash && _kFlash.ContainsKey(hdT))
                     _gpu.Record(_kFlash[hdT], new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
-                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), (uint)T },
+                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), (uint)T, l.Swa ? (uint)bidi0 : 0u, l.Swa ? (uint)bidi1 : 0u },
                         Groups(T, _flashTq[hdT]), (uint)C.NHead, 1);
                 else
                     _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
-                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f) }, (uint)T, (uint)C.NHead, 1);
+                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), l.Swa ? (uint)bidi0 : 0u, l.Swa ? (uint)bidi1 : 0u }, (uint)T, (uint)C.NHead, 1);
                 RowQuant(_pAtt, null, KernelsQuant.Mode.Plain, T * qDim);
                 Mm(l.Wo, _pTmp, T, true);
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostAttnNorm }, new uint[] { (uint)d, eps, 1, Bits(1f) }, (uint)T, 1, 1);
@@ -632,7 +797,17 @@ namespace Phoenix
                 Mm(l.Up, _pU, T, true);
                 RowQuant(_pG, _pU, KernelsQuant.Mode.GeluMul, T * l.NFf);
                 Mm(l.Down, _pTmp, T, true);
-                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostFfnNorm }, new uint[] { (uint)d, eps, 1, Bits(l.OutScale) }, (uint)T, 1, 1);
+                bool ple = _pleTok != null;
+                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostFfnNorm }, new uint[] { (uint)d, eps, 1, Bits(ple ? 1f : l.OutScale) }, (uint)T, 1, 1);
+                if (ple)
+                {
+                    RowQuant(_pX, null, KernelsQuant.Mode.Plain, T * d);
+                    Mm(l.PleGate, _pG, T, false);
+                    _gpu.Record(_kCopyRange, new GpuBuffer[] { _pPle, _pU }, new uint[] { (uint)(T * Pl), (uint)(il * T * Pl), 0 }, Groups(T * Pl, Kernels.Wg), 1, 1);
+                    RowQuant(_pG, _pU, KernelsQuant.Mode.GeluMul, T * Pl);
+                    Mm(l.PleProj, _pTmp, T, true);
+                    _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PlePostNorm }, new uint[] { (uint)d, eps, 1, Bits(l.OutScale) }, (uint)T, 1, 1);
+                }
 
                 if ((il + 1) % LayersPerSubmit == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
@@ -712,6 +887,13 @@ namespace Phoenix
             for (int il = 0; il < _layers.Length; il++)
             {
                 Layer l = _layers[il];
+                if (l.Shared)   // its cache is the source layer's, saved there (splicing it twice would rotate K twice)
+                {
+                    KvSnapshot.Layer none = new KvSnapshot.Layer();
+                    none.Src0 = pos0; none.M = 0; none.Words = new uint[0];
+                    s.Layers[il] = none;
+                    continue;
+                }
                 int m = Math.Min(count, l.Ring), src0 = pos0 + count - m, mPad = (m + 1) & ~1;
                 ulong bytes = SnapBytes(l.KvDim, m);
                 _gpu.Begin();
@@ -743,6 +925,7 @@ namespace Phoenix
             for (int il = 0; il < _layers.Length; il++)
             {
                 Layer l = _layers[il];
+                if (l.Shared) continue;
                 KvSnapshot.Layer sl = s.Layers[il];
                 ulong bytes = (ulong)sl.Words.Length * 4;
                 fixed (uint* p = sl.Words) Buffer.MemoryCopy(p, (void*)_recallUp.Mapped, bytes, bytes);

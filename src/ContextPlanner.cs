@@ -28,6 +28,7 @@ namespace Phoenix
                 perToken = gpu ? (long)c.NHead * 4 : 0;   // attention scores row
                 for (int l = 0; l < c.NLayer; l++)
                 {
+                    if (c.KvSrc[l] != l) continue;   // E2B/E4B shared-KV layer: reads an earlier layer's cache
                     long kv = (long)c.NHeadKv[l] * c.HeadDim[l] * 2 * 2;   // K and V, fp16
                     if (gpu && c.Swa[l]) fixedBytes += (c.NSwa + GemmaGpu.SwaSlack) * kv;
                     else perToken += kv;
@@ -51,12 +52,39 @@ namespace Phoenix
         // commitBytes: Windows commit still available. It binds on machines with a small page file: the GPU driver backs
         // video memory with commit, and the CPU path's cache is ordinary memory; the memory-mapped weights are not.
         // Returns the context, and why for the log.
+        // The least memory a load of this model needs: weights (as Choose counts them), the fixed cache, the margin and the
+        // smallest context (Min). commitNeed: what it takes from Windows commit (GPU weights are backed by commit too).
+        public static long MinBytes(GgufFile g, string path, bool gpu, out long commitNeed)
+        {
+            long perToken, fixedBytes;
+            KvCost(g, gpu, out perToken, out fixedBytes);
+            long weights = Weights(g, path, gpu), kv = fixedBytes + (long)Min * perToken;
+            commitNeed = CommitReserve + kv + (gpu ? weights : 0);
+            return weights + kv + (gpu ? GpuMargin : CpuMargin);
+        }
+
+        static long Weights(GgufFile g, string path, bool gpu)
+        {
+            long weights = new FileInfo(path).Length;
+            GgufTensor ple;   // E2B/E4B per-layer token table: stays memory-mapped on the CPU, never uploaded
+            if (gpu && g.TensorsByName.TryGetValue("per_layer_token_embd.weight", out ple)) weights -= ple.SizeBytes;
+            // its vision tower (loaded on the first image) gets room too
+            if (gpu && GemmaConfig.IsGemma(g.GetString("general.architecture")))
+                try
+                {
+                    string mm = VisionEncoder.FindFor(path, (int)g.GetInt(g.GetString("general.architecture") + ".embedding_length"));
+                    if (mm != null) weights += VisionEncoder.VramBytes(mm);
+                }
+                catch { }
+            if (gpu) weights += weights / 50 + (256L << 20);   // row padding, prefill buffers
+            return weights;
+        }
+
         public static int Choose(GgufFile g, string path, bool gpu, long freeBytes, long commitBytes, out string why)
         {
             long perToken, fixedBytes;
             KvCost(g, gpu, out perToken, out fixedBytes);
-            long weights = new FileInfo(path).Length;
-            if (gpu) weights += weights / 50 + (256L << 20);   // row padding, prefill buffers
+            long weights = Weights(g, path, gpu);
             long margin = gpu ? GpuMargin : CpuMargin;
             long room = freeBytes - weights - fixedBytes - margin;
             long commitRoom = commitBytes - CommitReserve - fixedBytes - (gpu ? weights : 0);
