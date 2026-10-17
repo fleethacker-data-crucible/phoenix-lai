@@ -18,6 +18,7 @@ namespace Phoenix.Tests
                 SiluMul(gpu, fail, output);
                 Quant(gpu, fail, output);
             }
+            if (!Flash2Test.Run(output)) fail.Add("flash2 attention");
             return fail;
         }
 
