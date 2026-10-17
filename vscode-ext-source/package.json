@@ -1,0 +1,20 @@
+{
+  "name": "phoenixlai",
+  "displayName": "PhoenixLAI",
+  "description": "The local PhoenixLAI studio in VS Code's Chat panel (Ask, Edit, Agent) plus inline code completion. Loopback only (127.0.0.1:1234), no settings, no dependencies.",
+  "version": "1.0.0",
+  "publisher": "phoenixlai",
+  "license": "UNLICENSED",
+  "private": true,
+  "icon": "icon.png",
+  "engines": { "vscode": "^1.104.0" },
+  "categories": ["AI", "Chat"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "extensionKind": ["ui"],
+  "contributes": {
+    "languageModelChatProviders": [
+      { "vendor": "phoenixlai", "displayName": "PhoenixLAI" }
+    ]
+  }
+}

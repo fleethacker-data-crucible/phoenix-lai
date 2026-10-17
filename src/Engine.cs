@@ -513,9 +513,43 @@ namespace Phoenix
             lock (GpuGate.Lock) return GenerateLocked(messages, settings, maxTokens, onText, cancel);
         }
 
+        // Fill-in-the-middle (code completion): the prefix/suffix prompt in the model's FIM format when its vocabulary has
+        // one (<|fim_prefix|>.. or CodeLlama <PRE>..), with no chat template; otherwise an instructed completion through
+        // the chat template. The tail of the prefix and the head of the suffix are kept when they are too long.
+        public GenerationStats GenerateFim(string prefix, string suffix, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
+        {
+            int pre = TokenId("<|fim_prefix|>"), suf = TokenId("<|fim_suffix|>"), mid = TokenId("<|fim_middle|>");
+            if (pre < 0 || suf < 0 || mid < 0) { pre = TokenId("<PRE>"); suf = TokenId("<SUF>"); mid = TokenId("<MID>"); }
+            bool fim = pre >= 0 && suf >= 0 && mid >= 0 && suffix != null;
+            if (!fim)
+            {
+                // Instruct models without FIM tokens: ask through the chat template (raw continuation measured poor on
+                // Gemma 4 12B: it repeated fragments of the prefix).
+                const int Keep = 6000;
+                string pre2 = prefix ?? "", suf2 = suffix ?? "";
+                if (pre2.Length > Keep) pre2 = pre2.Substring(pre2.Length - Keep);
+                if (suf2.Length > Keep / 3) suf2 = suf2.Substring(0, Keep / 3);
+                List<ChatMessage> m = new List<ChatMessage>();
+                m.Add(new ChatMessage("system", "You are a code completion engine. The user sends a file with the cursor marked <CURSOR>. " +
+                    "Reply with only the text to insert at the cursor: no explanation, no code fences, nothing that is already before or after it. " +
+                    "Insert a short, natural continuation (finish the line or the block). If nothing fits, reply with nothing."));
+                m.Add(new ChatMessage("user", pre2 + "<CURSOR>" + suf2));
+                return Generate(m, settings, maxTokens, onText, cancel);
+            }
+            int budget = Math.Max(64, ContextLength - Math.Min(maxTokens, ContextLength / 2) - 8);
+            List<int> p = Tokenizer.Encode(prefix ?? "", false, false);
+            List<int> s = Tokenizer.Encode(suffix, false, false);
+            if (s.Count > budget / 4) s.RemoveRange(budget / 4, s.Count - budget / 4);
+            if (p.Count + s.Count > budget) p.RemoveRange(0, p.Count + s.Count - budget);
+            List<int> prompt = new List<int>();
+            if (Tokenizer.AddBos && Tokenizer.BosId >= 0) prompt.Add(Tokenizer.BosId);
+            prompt.Add(pre); prompt.AddRange(p); prompt.Add(suf); prompt.AddRange(s); prompt.Add(mid);
+            _spans = new List<Span>();
+            lock (GpuGate.Lock) return Run(prompt, settings, maxTokens, onText, cancel, false);
+        }
+
         GenerationStats GenerateLocked(List<ChatMessage> messages, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel)
         {
-            GenerationStats st = new GenerationStats();
             List<ChatMessage> msgs = new List<ChatMessage>(messages);
             List<int> prompt = Template(msgs);
             int room = Math.Max(16, Math.Min(maxTokens, ContextLength / 2));
@@ -527,6 +561,12 @@ namespace Phoenix
                 prompt = Template(msgs);
             }
             if (prompt.Count >= ContextLength) throw new InvalidOperationException("The message is too long for the context window (" + ContextLength + " tokens).");
+            return Run(prompt, settings, maxTokens, onText, cancel, true);
+        }
+
+        GenerationStats Run(List<int> prompt, SamplerSettings settings, int maxTokens, TextCallback onText, CancelCheck cancel, bool chat)
+        {
+            GenerationStats st = new GenerationStats();
 
             // Reuse the cached prefix.
             int reuse = 0;
@@ -679,8 +719,7 @@ namespace Phoenix
                 _fed.Add(next);
             }
             st.GenerateSeconds = sw.Elapsed.TotalSeconds;
-            RememberReply(emitted.ToString(), sampledIds);
-            LastReplyIds = sampledIds;
+            if (chat) { RememberReply(emitted.ToString(), sampledIds); LastReplyIds = sampledIds; }
             return st;
         }
 

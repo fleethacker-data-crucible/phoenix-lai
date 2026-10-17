@@ -124,6 +124,46 @@ namespace Phoenix
 
         public static string Num(double v) { return v.ToString("R", CultureInfo.InvariantCulture); }
 
+        // Writes a parsed value (Dictionary / List / string / double / bool / null) back as compact JSON.
+        public static string Write(object v)
+        {
+            StringBuilder sb = new StringBuilder();
+            Write(sb, v);
+            return sb.ToString();
+        }
+
+        static void Write(StringBuilder sb, object v)
+        {
+            if (v == null) { sb.Append("null"); return; }
+            if (v is string) { sb.Append(Quote((string)v)); return; }
+            if (v is bool) { sb.Append((bool)v ? "true" : "false"); return; }
+            if (v is double) { sb.Append(Num((double)v)); return; }
+            Dictionary<string, object> d = v as Dictionary<string, object>;
+            if (d != null)
+            {
+                sb.Append('{');
+                bool first = true;
+                foreach (KeyValuePair<string, object> kv in d)
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(Quote(kv.Key)).Append(':');
+                    Write(sb, kv.Value);
+                }
+                sb.Append('}');
+                return;
+            }
+            List<object> l = v as List<object>;
+            if (l != null)
+            {
+                sb.Append('[');
+                for (int i = 0; i < l.Count; i++) { if (i > 0) sb.Append(','); Write(sb, l[i]); }
+                sb.Append(']');
+                return;
+            }
+            sb.Append(Quote(v.ToString()));
+        }
+
         // Typed getters with defaults.
         public static double GetNum(Dictionary<string, object> o, string key, double dflt)
         {
