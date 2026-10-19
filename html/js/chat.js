@@ -532,7 +532,7 @@ const COMMANDS = [
       catch (e) { systemLine('Could not change debug logging: ' + e.message); }
     } },
   { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
-    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'turned off for now (GPU only)' }],
+    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'processor (slow; no video card needed)' + (info.device === 'cpu' ? ' (current)' : '') }],
     run: async arg => {
       const d = (arg || '').trim().toLowerCase();
       if (d !== 'gpu' && d !== 'cpu') { systemLine('Running on ' + (info.device === 'cpu' ? 'CPU' : 'GPU') + (info.backend ? ' (' + info.backend + ')' : '') + '. Use /device gpu or /device cpu.'); return; }
@@ -642,6 +642,7 @@ async function openSettings() {
   radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
   $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
     : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
+  radios('sDevice', [{ value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }], info.device === 'cpu' ? 'cpu' : 'gpu');
   let g = { profile: 'auto', safe: false };
   try { g = await api('/api/gpu'); } catch (e) {}
   openedGpu = g;
@@ -663,6 +664,12 @@ $('applySettings').addEventListener('click', async () => {
     await api('/api/rag', { enabled: $('sRag').checked });
     const br = radioValue('sBrowser');
     if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
+    const dev = radioValue('sDevice');
+    if (dev && dev !== (info.device === 'cpu' ? 'cpu' : 'gpu') && !controller) {
+      systemLine('Switching to ' + dev.toUpperCase() + (info.file ? ' and reloading ' + info.file + '…' : '.'));
+      info = await api('/api/device', { device: dev }); ctxUsed = 0;
+      systemLine('Now on ' + dev.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
+    }
     const gp = radioValue('sGpu'), gs = $('sGpuSafe').checked;
     if (openedGpu && gp && (gp !== openedGpu.profile || gs !== !!openedGpu.safe)) {
       await api('/api/gpu', { profile: gp, safe: gs ? 'on' : 'off' });
