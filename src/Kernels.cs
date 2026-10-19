@@ -1,5 +1,5 @@
 // Compute kernels as SPIR-V, built with a small structured-code helper over SpirvBuilder. C# 5 only.
-// Each kernel mirrors the matching CpuRef / LlamaCpu step so results can be compared directly.
+// Each kernel mirrors the matching CpuRef step so results can be compared directly.
 using System;
 using System.Collections.Generic;
 
@@ -416,7 +416,7 @@ namespace Phoenix
             return k.Finish();
         }
 
-        // One workgroup per query head: scores, softmax, weighted sum of V (LlamaCpu attention, ggml f16 rounding).
+        // One workgroup per query head: scores, softmax, weighted sum of V (ggml f16 rounding).
         // bindings: 0 q, 1 kc, 2 vc, 3 scores scratch [nHead*maxCtx], 4 out. push: n, headDim, kvDim, group, maxCtx, scale(bits)
         public static uint[] Attention()
         {
