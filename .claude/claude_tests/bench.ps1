@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = (Resolve-Path (Join-Path $here '..\..')).Path   # tests live in .claude\claude_tests
 if (-not $Models) {
-    $Models = @('Llama-3.2-1B-Instruct-Q8_0.gguf', 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', 'Devstral-Small-2-24B-Instruct-2512-UD-IQ2_XXS.gguf')
+    $Models = @('gemma-4-12b-it-qat-q4_0.gguf')
 }
 $cp = New-Object System.CodeDom.Compiler.CompilerParameters
 $cp.GenerateInMemory = $true

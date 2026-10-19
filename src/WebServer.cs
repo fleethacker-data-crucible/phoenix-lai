@@ -1,4 +1,4 @@
-﻿// Loopback-only chat server: serves html\, streams chat, switches models, and lets the model work in a local folder.
+// Loopback-only chat server: serves html\, streams chat, switches models, and lets the model work in a local folder.
 // C# 5 only. The ONLY file allowed to use networking or start a process (enforced by run.ps1): it listens on
 // 127.0.0.1 only, never makes outgoing connections, and only starts msedge.exe or chrome.exe (app window).
 using System;
@@ -41,7 +41,6 @@ namespace Phoenix
             Log = new ChatLog(logsDir);
             Dbg.Attach(Log, AppDataDir);
             Workspace.EnsureProjectsRoot();
-            ChatEngine.KvCache = ReadKv();
             Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
             CodeCheck.PsDataPath = Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs", "checkers", "ps51-commands.tsv");
             // An outdated or missing index is rebuilt in the background (otherwise the docs look empty and the model is
@@ -303,31 +302,6 @@ namespace Phoenix
             try { return !File.Exists(DeviceFile) || File.ReadAllText(DeviceFile).Trim() != "cpu"; } catch { return true; }
         }
 
-        // Whether a model can use the q8 / q4 KV cache (read from its header once per file version): Llama-family models
-        // whose KV width is a multiple of 64; Gemma keeps fp16 (ChatEngine.KvFor).
-        static readonly Dictionary<string, bool> _kvqCache = new Dictionary<string, bool>();
-        static bool SupportsQuantKv(string file)
-        {
-            string key = file + "|" + File.GetLastWriteTimeUtc(file).Ticks;
-            lock (_kvqCache)
-            {
-                bool ok;
-                if (_kvqCache.TryGetValue(key, out ok)) return ok;
-                try
-                {
-                    using (GgufFile g = GgufFile.Open(file))
-                    {
-                        string arch = g.GetString("general.architecture");
-                        if (GemmaConfig.IsGemma(arch)) ok = false;
-                        else { ModelConfig m = ModelConfig.FromGguf(g); ok = m.NHeadKv * m.HeadDim % 64 == 0; }
-                    }
-                }
-                catch { ok = false; }
-                _kvqCache[key] = ok;
-                return ok;
-            }
-        }
-
         // Why the engine cannot run a model ("" when it can), read from its header once per file version: the same
         // config checks a load does (e.g. the Gemma 4 26B mixture-of-experts model is refused).
         static readonly Dictionary<string, string> _unsupportedCache = new Dictionary<string, string>();
@@ -342,13 +316,10 @@ namespace Phoenix
                 {
                     using (GgufFile g = GgufFile.Open(file))
                     {
-                        string arch = g.GetString("general.architecture");
-                        bool gemma = GemmaConfig.IsGemma(arch);
-                        if (gemma) GemmaConfig.FromGguf(g); else ModelConfig.FromGguf(g);
-                        // every weight must be in a format the engine runs (Gemma: the GPU path's formats)
-                        GgmlType[] ok = gemma
-                            ? new GgmlType[] { GgmlType.F32, GgmlType.F16, GgmlType.BF16, GgmlType.Q4_0, GgmlType.Q8_0, GgmlType.Q4_K, GgmlType.Q5_K, GgmlType.Q6_K }
-                            : new GgmlType[] { GgmlType.F32, GgmlType.F16, GgmlType.BF16, GgmlType.Q4_0, GgmlType.Q8_0, GgmlType.Q3_K, GgmlType.Q4_K, GgmlType.Q5_K, GgmlType.Q6_K, GgmlType.IQ2_XXS, GgmlType.IQ2_S, GgmlType.IQ3_S };
+                        if (!GemmaConfig.IsGemma(g.GetString("general.architecture"))) throw new NotSupportedException("Not a Gemma 4 model (PhoenixLAI runs Gemma 4 models).");
+                        GemmaConfig.FromGguf(g);
+                        // every weight must be in a format the engine runs (the GPU path's formats)
+                        GgmlType[] ok = new GgmlType[] { GgmlType.F32, GgmlType.F16, GgmlType.BF16, GgmlType.Q4_0, GgmlType.Q8_0, GgmlType.Q4_K, GgmlType.Q5_K, GgmlType.Q6_K };
                         why = "";
                         foreach (GgufTensor t in g.Tensors)
                             if (Array.IndexOf(ok, t.Type) < 0) { why = t.Name + " is " + GgmlTypes.Name(t.Type) + ", a weight format the server cannot run."; break; }
@@ -432,13 +403,6 @@ namespace Phoenix
         int _approvalId;
         readonly Dictionary<int, KeyValuePair<ManualResetEvent, bool>> _approvals = new Dictionary<int, KeyValuePair<ManualResetEvent, bool>>();
         static bool ReadAcceptMode() { try { return File.ReadAllText(ModeFile).Trim() == "accept"; } catch { return false; } }
-
-        // KV cache format for GPU Llama models (/settings: f16, q8, q4), kept across restarts.
-        static string KvFile { get { return Path.Combine(AppDataDir, "kv-cache.txt"); } }
-        static KvType ReadKv()
-        {
-            try { string s = File.ReadAllText(KvFile).Trim(); return s == "f16" ? KvType.F16 : s == "q4" ? KvType.Q4 : KvType.Q8; } catch { return KvType.Q8; }
-        }
 
         static string RecentFile { get { return Path.Combine(AppDataDir, "recent-folders.txt"); } }
 
@@ -541,8 +505,8 @@ namespace Phoenix
             path = Path.GetFullPath(path);
             if (!path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) throw new FileNotFoundException("Model not found: " + nameOrPath);
             // Never load the same model twice: a request that would load exactly what is already loaded (same file,
-            // context, KV cache, device), e.g. a second click or a request queued behind a load in progress, is a no-op.
-            string sig = path.ToLowerInvariant() + "|" + ContextLength + "|" + KernelsKv.Name(ChatEngine.KvCache) + "|" + _useGpu;
+            // context, device), e.g. a second click or a request queued behind a load in progress, is a no-op.
+            string sig = path.ToLowerInvariant() + "|" + ContextLength + "|" + _useGpu;
             lock (_engineLock)
             {
                 if (_engine != null && _loadedSig == sig) { Log.Text(Path.GetFileName(path) + " is already loaded"); return; }
@@ -742,7 +706,7 @@ namespace Phoenix
                         if (!first) sb.Append(',');
                         first = false;
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576)
-                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false")
+                          .Append(",\"kvq\":false")   // Gemma keeps an fp16 cache: the page offers no q8 / q4
                           .Append(",\"defaults\":").Append(SystemPrompts.DefaultsJson(Path.GetFileName(f)));
                         string why = Unsupported(f);
                         if (why.Length > 0) sb.Append(",\"unsupported\":").Append(Json.Quote(why));
@@ -770,14 +734,6 @@ namespace Phoenix
                 // context: tokens, or 0 / missing = auto
                 int ctx = (int)Json.GetNum(body, "context", ContextLength);
                 ContextLength = ctx >= 256 ? ctx : 0;
-                // kv: optional per-model KV cache type (the chat page keeps settings per model)
-                string kvs = Json.GetStr(body, "kv", null);
-                if (kvs != null)
-                {
-                    kvs = kvs.ToLowerInvariant();
-                    ChatEngine.KvCache = kvs == "f16" ? KvType.F16 : kvs == "q4" ? KvType.Q4 : KvType.Q8;
-                    try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(KvFile, KernelsKv.Name(ChatEngine.KvCache)); } catch { }
-                }
                 LoadModel(name);
                 SendJson(res, 200, Info());
                 return;
@@ -871,19 +827,6 @@ namespace Phoenix
                 return;
             }
             if (path == "/api/vram") { SendJson(res, 200, VramProcessesJson()); return; }
-            if (path == "/api/kv" && post)
-            {
-                string kv = Json.GetStr(body, "kv", "q8").ToLowerInvariant();
-                KvType t = kv == "f16" ? KvType.F16 : kv == "q4" ? KvType.Q4 : KvType.Q8;
-                bool changed = t != ChatEngine.KvCache;
-                ChatEngine.KvCache = t;
-                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(KvFile, KernelsKv.Name(t)); } catch { }
-                Log.Text("KV cache: " + KernelsKv.Name(t));
-                ChatEngine cur = _engine;
-                if (changed && cur != null) LoadModel(cur.ModelPath);   // the cache is allocated at load
-                SendJson(res, 200, Info());
-                return;
-            }
             if (path == "/api/recall" && post)
             {
                 // /recall: pre-read every text file of the connected project (Instant Recall), newest first. Runs in the
@@ -1051,7 +994,7 @@ namespace Phoenix
             Workspace w = _folderAccess ? _workspace : null;
             ChatEngine er = _engine;
             return "{\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
-                   ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"kv\":\"" + KernelsKv.Name(ChatEngine.KvCache) + "\",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
+                   ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"vision\":" + (e != null && e.HasVision ? "true" : "false") +

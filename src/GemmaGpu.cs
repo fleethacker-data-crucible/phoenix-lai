@@ -91,6 +91,8 @@ namespace Phoenix
         bool _flash;
         readonly Dictionary<uint, GpuKernel> _kFlash = new Dictionary<uint, GpuKernel>();
         readonly Dictionary<uint, uint> _flashTq = new Dictionary<uint, uint>();
+        public static bool UseFlash2 = true;          // register-blocked, KV-head-shared tiles (KernelsFlash2; fp16 KV only)
+        readonly Dictionary<uint, GpuKernel> _kFlash2 = new Dictionary<uint, GpuKernel>();
         GpuBuffer _pX, _pXb, _pTmp, _pQ, _pK, _pV, _pAtt, _pG, _pU, _pXq, _pXd, _pCsSwa, _pCsGlobal, _pUp;
         int _maxQ, _maxKv, _maxFf;
         readonly GpuBuffer _x, _xb, _q, _k, _v, _attn, _g, _u, _xq, _xd, _kq, _kd, _scores, _attnPart, _logits;
@@ -657,6 +659,13 @@ namespace Phoenix
             // tiled attention when shared memory allows (KernelsFlash: ~16x less K/V traffic at long context)
             // one tiled kernel per head size (Gemma: 256 sliding-window, 512 global)
             _flash = UseFlash;
+            if (UseFlash2 && Kv == KvType.F16 && KvV == KvType.F16)
+                foreach (Layer l in _layers)
+                {
+                    uint hdT = ((uint)l.HeadDim + 31) & ~31u;
+                    if (_kFlash2.ContainsKey(hdT) || hdT != (uint)l.HeadDim || !KernelsFlash2.Fits(hdT, C.NHead, l.NHeadKv) || l.KvDim % 2 != 0) continue;
+                    _kFlash2[hdT] = Kernel(KernelsFlash2.Attention(hdT), 4, 9, "pf attention reg " + hdT);
+                }
             _kAttnPre = Kernel(KernelsPrefill.Attention(Kv, KvV), 4, 10, "pf attention");
             if (_flash)
                 foreach (Layer l in _layers)
@@ -797,7 +806,16 @@ namespace Phoenix
                     _gpu.Record(_kKvRows, new GpuBuffer[] { _pK, _pV, l.KCache, l.VCache }, new uint[] { (uint)l.KvDim, (uint)l.Ring, (uint)p0, (uint)T, par }, Groups(T * KvStoreGroups(l.KvDim), Kernels.Wg), 1, 1);
                 }
                 uint hdT = ((uint)hd + 31) & ~31u;
-                if (_flash && _kFlash.ContainsKey(hdT))
+                // the register-blocked kernel is causal only: an image's two-way span on a sliding-window layer takes the others
+                if (_kFlash2.ContainsKey(hdT) && KernelsFlash2.Fits(hdT, C.NHead, l.NHeadKv) && l.Ring % 2 == 0 && !(l.Swa && bidi1 > bidi0))
+                {
+                    uint rows, keys;
+                    KernelsFlash2.Tile(hdT, out rows, out keys);
+                    _gpu.Record(_kFlash2[hdT], new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
+                        new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), (uint)T },
+                        Groups(T, rows / (uint)(C.NHead / l.NHeadKv)), (uint)l.NHeadKv, 1);
+                }
+                else if (_flash && _kFlash.ContainsKey(hdT))
                     _gpu.Record(_kFlash[hdT], new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
                         new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), (uint)T, l.Swa ? (uint)bidi0 : 0u, l.Swa ? (uint)bidi1 : 0u },
                         Groups(T, _flashTq[hdT]), (uint)C.NHead, 1);

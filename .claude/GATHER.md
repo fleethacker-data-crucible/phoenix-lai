@@ -5,10 +5,10 @@ Download these on a machine with internet, then copy them in by hand. Keep model
 ## Models (GGUF)
 | # | File | Approx size | Source (Hugging Face) | Used for |
 |---|------|------|--------|---------|
-| 1 | `Llama-3.2-1B-Instruct-Q8_0.gguf` | 1.3 GB | `bartowski/Llama-3.2-1B-Instruct-GGUF` | Phases 2–6 (main dev model) |
-| 2 | `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` | 4.9 GB | `bartowski/Meta-Llama-3.1-8B-Instruct-GGUF` | Phase 7–8 (Q4_K + Q6_K tensors) |
-| 3 | `Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf` | 5.7 GB | same repo | Phase 7 (Q5_K) — optional |
-| 4 | `tinyllama-1.1b-chat-v1.0.Q8_0.gguf` | 1.2 GB | `TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF` | SentencePiece tokenizer path — optional |
+| 1 | `gemma-4-12b-it-qat-q4_0.gguf` | 7.0 GB | Gemma 4 12B instruct, QAT q4_0 | Chat model; all gates |
+| 2 | `embeddinggemma-2-Q8_0.gguf` | 0.3 GB | EmbeddingGemma | Docs search (RAG) |
+
+PhoenixLAI runs Gemma 4 only (Llama / Mistral support removed 2026-10-17).
 
 ## Reference documents (read-only specs, no code is used)
 | File | Where | Why |
