@@ -293,8 +293,9 @@ namespace Phoenix
 
         // Where models run (/device gpu|cpu), kept across restarts. GPU still falls back to the CPU if it fails.
         static string DeviceFile { get { return Path.Combine(AppDataDir, "device.txt"); } }
-        // CPU mode is switched off for now (GPU only): a saved "cpu" choice is ignored and /api/device refuses it.
-        public const bool CpuModeAllowed = false;
+        // CPU mode: chosen in Settings or with /device (saved in DeviceFile). false = GPU only (a saved "cpu" choice is
+        // ignored and /api/device refuses it).
+        public const bool CpuModeAllowed = true;
         bool _useGpu = !CpuModeAllowed || ReadUseGpu();
 
         static bool ReadUseGpu()
@@ -1465,7 +1466,7 @@ namespace Phoenix
                     Stopwatch rsw = Stopwatch.StartNew();
                     hits = Rag.Search(msgs[ui].Text, pi >= 0 ? msgs[pi].Text : null);
                     if (hits.Count == 0 && libraryNote != null && Rag.IsLibraryQuestion(msgs[ui].Text))
-                    { List<byte[]> keep = msgs[ui].Images; msgs[ui] = new ChatMessage("user", msgs[ui].Text + "\n\n(No sections of my syntax library match this; it has nothing on it.)"); msgs[ui].Images = keep; }
+                    { List<byte[]> keep = msgs[ui].Images; msgs[ui] = new ChatMessage("user", msgs[ui].Text + "\n\n(No sections of my document library match this; it has nothing on it.)"); msgs[ui].Images = keep; }
                     if (hits.Count > 0)
                     {
                         List<byte[]> keepImg = msgs[ui].Images;
@@ -1643,7 +1644,7 @@ namespace Phoenix
             }
             // docs sections in the newest user message (tool-result messages are skipped)
             int lastUser = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user" && !m.Text.StartsWith("Tool results:"); });
-            bool hadSections = lastUser >= 0 && msgs[lastUser].Text.Contains("Reference sections from my syntax library");
+            bool hadSections = lastUser >= 0 && msgs[lastUser].Text.Contains(Rag.SectionsHeader);
             StringBuilder p = new StringBuilder("Check the code in your reply above for mistakes: syntax errors, wrong type or method names, " +
                 "wrong API usage, and logic errors" + (hadSections ? ", using the reference sections in my message where they apply" : "") +
                 ". Do not change anything that is already correct, and do not use <read> or <list>.");

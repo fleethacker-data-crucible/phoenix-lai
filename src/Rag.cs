@@ -267,10 +267,9 @@ namespace Phoenix
             // Asking for the docs by name ("via rag", "in my docs") means the user wants something from them: any single
             // matching word is enough, and if nothing matches at all (e.g. "a random function"), a few random sections.
             bool explicitDocs = ExplicitRe.IsMatch(query);
-            // The library is a syntax reference for writing code: other messages (chat, "what files do I have") get
-            // nothing, so a shared word like "files" no longer drags unrelated sections into the prompt.
-            // A question about a language ("what does it say about c# functions?") is a lookup too.
-            if (!explicitDocs && !IsCodeRequest(query) && !(DetectLanguage(query) >= 0 && AskRe.IsMatch(query))) return hits;
+            // Code requests and language questions search their language's syntax sheet; every other message searches the
+            // rest of the library (any topic the user adds), with the normal relevance limits so small talk gets nothing.
+            bool codeLookup = IsCodeRequest(query) || (DetectLanguage(query) >= 0 && AskRe.IsMatch(query));
             Dictionary<ulong, float> q = new Dictionary<ulong, float>();
             AddQueryTerms(q, query, 1f);
             if (!string.IsNullOrEmpty(context)) AddQueryTerms(q, context, 0.5f);
@@ -283,12 +282,12 @@ namespace Phoenix
             lock (_swapLock)
             {
                 if (_index == null) return hits;
-                bool[] allowed = explicitDocs ? null : CodeFiles(_index, query);
+                bool[] allowed = explicitDocs ? null : codeLookup ? CodeFiles(_index, query) : NonCodeFiles(_index);
                 hits = _index.Search(q, qv, TopK, BudgetChars, MinRelative, explicitDocs ? 0f : MinCoverage, explicitDocs ? 0.05f : MinLift, MaxDrop, RrfK, allowed);
                 if (hits.Count == 0 && explicitDocs) hits = _index.RandomHits(3, BudgetChars);
                 // A request about one language always gets that sheet's Essentials card first (the rules that apply to
                 // any code in it: version limits, the mistakes models make most), then the best-matching sections.
-                if (!explicitDocs && allowed != null && DetectLanguage(query) >= 0)
+                if (!explicitDocs && codeLookup && allowed != null && DetectLanguage(query) >= 0)
                 {
                     RagHit card = Card(_index, allowed);
                     if (card != null)
@@ -466,6 +465,20 @@ namespace Phoenix
             foreach (KeyValuePair<int, string> v in ver) if (v.Value != keep) inLang[v.Key] = false;
         }
 
+        // Every file outside code-syntax\ (the topics the user adds: gemma-4\, manuals, notes), for messages that are not code.
+        static bool[] NonCodeFiles(RagIndex ix)
+        {
+            bool[] ok = new bool[ix.FileCount];
+            for (int f = 0; f < ix.FileCount; f++) ok[f] = !InCodeFolder(ix.FilePath(f));
+            return ok;
+        }
+
+        static bool InCodeFolder(string path)
+        {
+            foreach (string part in path.Replace('\\', '/').ToLowerInvariant().Split('/')) if (part == CodeFolder) return true;
+            return false;
+        }
+
         // The Essentials section of the allowed sheets (the first one found), or null.
         static RagHit Card(RagIndex ix, bool[] allowed)
         {
@@ -483,10 +496,11 @@ namespace Phoenix
             return null;
         }
 
-        // True for messages that search the library (code requests and language questions).
+        // True for messages that ask about the library or look something up in it (code requests, language questions,
+        // "is there anything on X in my docs"): when nothing matches, the model is told the library has nothing on it.
         public static bool IsLibraryQuestion(string message)
         {
-            return IsCodeRequest(message) || (DetectLanguage(message) >= 0 && AskRe.IsMatch(message));
+            return ExplicitRe.IsMatch(message) || IsCodeRequest(message) || (DetectLanguage(message) >= 0 && AskRe.IsMatch(message));
         }
 
         public static bool IsCodeRequest(string message)
@@ -498,7 +512,7 @@ namespace Phoenix
         }
 
         static readonly System.Text.RegularExpressions.Regex ExplicitRe = new System.Text.RegularExpressions.Regex(
-            @"\b(rag|docs|documents|documentation|docs? library|knowledge ?base|reference material)\b",
+            @"\b(rag|docs?|docu\w*|(?:my|the|your) library|knowledge ?base|reference material)\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         static readonly System.Text.RegularExpressions.Regex AskRe = new System.Text.RegularExpressions.Regex(
@@ -511,28 +525,32 @@ namespace Phoenix
         {
             RagIndex ix = _index;
             if (!Enabled || ix == null || ix.FileCount == 0) return null;
-            // The languages it covers, not a file list: small models copied a 19-name list into every reply (2026-10-17).
-            List<string> langs = new List<string>();
-            int other = 0;
+            // Topics (the docs\ subfolders) and the languages of the syntax sheets, not a file list: small models copied a
+            // 19-name list into every reply (2026-10-17).
+            List<string> langs = new List<string>(), topics = new List<string>();
             for (int i = 0; i < ix.FileCount; i++)
             {
                 string p = ix.FilePath(i).Replace('\\', '/');
-                string stem = SheetLanguage(System.IO.Path.GetFileNameWithoutExtension(p));
-                int l = -1;
-                for (int k = 0; k < Langs.Length && l < 0; k++) if (Array.IndexOf(Langs[k].Aliases, stem) >= 0) l = k;
-                if (l >= 0 && p.StartsWith(CodeFolder + "/", StringComparison.OrdinalIgnoreCase)) { if (!langs.Contains(Langs[l].Name)) langs.Add(Langs[l].Name); }
-                else other++;
+                if (InCodeFolder(p))
+                {
+                    string stem = SheetLanguage(System.IO.Path.GetFileNameWithoutExtension(p));
+                    for (int k = 0; k < Langs.Length; k++)
+                        if (Array.IndexOf(Langs[k].Aliases, stem) >= 0) { if (!langs.Contains(Langs[k].Name)) langs.Add(Langs[k].Name); break; }
+                    continue;
+                }
+                int slash = p.IndexOf('/');
+                string topic = slash > 0 ? p.Substring(0, slash) : "general notes";
+                if (!topics.Contains(topic)) topics.Add(topic);
             }
-            string covers = langs.Count > 0 ? "syntax for " + string.Join(", ", langs.ToArray()).Replace("PS1", "Power" + "Shell")   /* split: run.ps1 refuses the one-word name in source */ + (other > 0 ? ", plus other reference documents" : "")
-                                            : ix.FileCount + " reference documents";
-            return "Syntax reference library (the user calls it their \"RAG\"): " + covers + ". Never list the library or its files in a reply " +
-                   "unless the user asks what it contains. You DO have this library: whenever a message asks for code or about a " +
-                   "language, the matching sections are added to that message automatically (\"Reference sections from my syntax " +
-                   "library\"), and you answer from them in your own words (never paste those sections into your reply). If asked whether you can see it, say yes. It is not in the project folder, " +
-                   "so never use <read> or <list> on it. Use it to check that the code you write uses correct syntax and APIs. " +
-                   "If a message has no reference sections, the library has nothing on that topic: answer from your own knowledge " +
-                   "and never say the library (or RAG) says or contains it. " +
-                   "Do not mention the library unless the user asks about it.";
+            List<string> covers = new List<string>(topics);
+            if (langs.Count > 0) covers.Add("code syntax for " + string.Join(", ", langs.ToArray()).Replace("PS1", "Power" + "Shell"));   /* split: run.ps1 refuses the one-word name in source */
+            return "Document library (the user's own reference documents; they call it their \"RAG\"). Topics: " + string.Join("; ", covers.ToArray()) + ". " +
+                   "You DO have this library: whenever a message relates to something in it, the matching sections are added to that " +
+                   "message automatically (\"Reference sections from my document library\"). Treat them as reliable, current facts: " +
+                   "they override what you remember. Answer from them in your own words (never paste them whole). If asked whether you " +
+                   "can see the library or a topic in it, say yes. It is not in the project folder, so never use <read> or <list> on it. " +
+                   "If a message has no reference sections, the library has nothing on that question: answer from your own knowledge " +
+                   "and never say the library says or contains it. Do not list the library or mention it unless the user asks about it.";
         }
 
         // Weights: 1 = topic word of the message, 0.75 = common word (scores but does not count as a match),
@@ -551,14 +569,22 @@ namespace Phoenix
         // Prompt block placed before the user's question.
         // The user's message with the matching sections in front, worded as the user speaking (it is their message).
         // Plain and short: small models echo or misread elaborate wrappers.
+        public const string SectionsHeader = "Reference sections from my document library";
+
         public static string WrapMessage(List<RagHit> hits, string message)
         {
-            StringBuilder sb = new StringBuilder("Reference sections from my syntax library (my RAG; not files in my project), for checking the code you write:\n\n");
+            StringBuilder sb = new StringBuilder(SectionsHeader + " (my RAG; not files in my project):\n\n");
+            bool code = false;
             for (int i = 0; i < hits.Count; i++)
+            {
+                if (InCodeFolder(hits[i].File)) code = true;
                 sb.Append("[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " > " + hits[i].Title : "")
                   .Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
-            sb.Append("---\nMake sure any code you write follows the syntax shown in these sections where they apply, and put code in " +
-                      "fenced code blocks tagged with the language. Don't quote or mention the sections unless I ask about them.\n\n").Append(message);
+            }
+            sb.Append("---\n").Append(code
+                ? "Make sure any code you write follows the syntax shown in these sections where they apply, and put code in " +
+                  "fenced code blocks tagged with the language. Don't quote or mention the sections unless I ask about them.\n\n"
+                : "Use these sections as the facts for your answer where they apply. Don't quote them or mention them unless I ask.\n\n").Append(message);
             return sb.ToString();
         }
 
