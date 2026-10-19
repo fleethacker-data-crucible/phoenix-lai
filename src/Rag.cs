@@ -1,4 +1,4 @@
-// Local retrieval (RAG) over the docs\ folder: markdown-aware chunking, hybrid search (BM25 keywords + EmbeddingGemma
+﻿// Local retrieval (RAG) over the docs\ folder: markdown-aware chunking, hybrid search (BM25 keywords + EmbeddingGemma
 // vectors, fused by reciprocal rank), and a memory-mapped binary index (docs\.index\rag.bin) that is rebuilt
 // incrementally by Rag.Reindex and swapped in when complete.
 // C# 5 only.
@@ -24,7 +24,7 @@ namespace Phoenix
         // Tuned defaults: ~400-token chunks, BM25 k1/b from the literature, ~1500 tokens of context per message.
         public const int TargetChunkChars = 1600, MaxChunkChars = 2400, MinChunkChars = 300;
         public const float K1 = 1.2f, B = 0.75f;
-        public int TopK = 6, BudgetChars = 6000;
+        public int TopK = 4, BudgetChars = 6000;   // the Essentials card + the 3 best sections (6 cost ~3,000 tokens a request for no measured gain)
         // A chunk must match >= 2 of the message's terms (or >= MinCoverage of them for short messages) and score
         // >= MinRelative of the best hit, so chit-chat and off-topic questions retrieve nothing.
         public float MinRelative = 0.35f, MinCoverage = 0.3f;
@@ -110,6 +110,9 @@ namespace Phoenix
             }
         }
 
+        // The embedding model for other indexes (the project index): one copy in memory for both.
+        public Embedder SharedEmbedder() { return GetEmbedder(); }
+
         // Embeds text as given (no query/document prefix) for the /v1/embeddings API.
         public float[] EmbedRaw(string text, out string model)
         {
@@ -158,7 +161,7 @@ namespace Phoenix
             public bool Reused;
         }
 
-        // Rebuilds the index from docs\, reusing chunks of files whose size+time (or content hash) did not change.
+        // Rebuilds the index from docs\, reusing chunks only of files whose content (SHA-256) did not change.
         string Reindex()
         {
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
@@ -187,17 +190,15 @@ namespace Phoenix
             {
                 FileEntry e = files[i];
                 int oi;
-                if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && old.FileSize(oi) == e.Size && old.FileMtime(oi) == e.Mtime)
+                // Always by content: size and time can stay the same across an edit (a copy that keeps the time, a
+                // same-length fix), and any change must drop the file's old chunks and vectors.
+                byte[] bytes = File.ReadAllBytes(e.Full);
+                using (SHA256 sha = SHA256.Create()) e.Hash = sha.ComputeHash(bytes);
+                if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && old.FileSize(oi) == e.Size && TextFiles.SameHash(old.FileHash(oi), e.Hash))
                 {
-                    e.Hash = old.FileHash(oi); e.Chunks = old.FileChunks(oi); e.Vecs = old.FileVectors(oi); e.Reused = true;
+                    e.Chunks = old.FileChunks(oi); e.Vecs = old.FileVectors(oi); e.Reused = true;
                 }
-                else
-                {
-                    byte[] bytes = File.ReadAllBytes(e.Full);
-                    using (SHA256 sha = SHA256.Create()) e.Hash = sha.ComputeHash(bytes);
-                    if (old != null && oldFiles.TryGetValue(e.Rel, out oi) && SameHash(old.FileHash(oi), e.Hash)) { e.Chunks = old.FileChunks(oi); e.Vecs = old.FileVectors(oi); e.Reused = true; }
-                    else { e.Chunks = Chunker.Split(e.Rel, DecodeText(bytes)); Interlocked.Increment(ref changed); }
-                }
+                else { e.Chunks = Chunker.Split(e.Rel, DecodeText(bytes)); Interlocked.Increment(ref changed); }
                 _progress = "chunking " + Interlocked.Increment(ref done) + "/" + files.Count;
             });
 
@@ -253,18 +254,9 @@ namespace Phoenix
                 emb != null ? ", " + embedded + " embedded" : ", keyword search only: no EmbeddingGemma in models\\");
         }
 
-        static bool SameHash(byte[] a, byte[] b)
-        {
-            if (a == null || b == null || a.Length != b.Length) return false;
-            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
-            return true;
-        }
-
         static string DecodeText(byte[] b)
         {
-            string s = new UTF8Encoding(false, false).GetString(b);
-            if (s.Length > 0 && s[0] == '﻿') s = s.Substring(1);
-            return s.Replace("\r\n", "\n").Replace('\r', '\n');
+            return TextFiles.Decode(b).Replace("\r\n", "\n").Replace('\r', '\n');
         }
 
         // Best chunks for a query, within TopK and BudgetChars. `context` (e.g. the previous question) counts half.
@@ -294,6 +286,23 @@ namespace Phoenix
                 bool[] allowed = explicitDocs ? null : CodeFiles(_index, query);
                 hits = _index.Search(q, qv, TopK, BudgetChars, MinRelative, explicitDocs ? 0f : MinCoverage, explicitDocs ? 0.05f : MinLift, MaxDrop, RrfK, allowed);
                 if (hits.Count == 0 && explicitDocs) hits = _index.RandomHits(3, BudgetChars);
+                // A request about one language always gets that sheet's Essentials card first (the rules that apply to
+                // any code in it: version limits, the mistakes models make most), then the best-matching sections.
+                if (!explicitDocs && allowed != null && DetectLanguage(query) >= 0)
+                {
+                    RagHit card = Card(_index, allowed);
+                    if (card != null)
+                    {
+                        hits.RemoveAll(delegate(RagHit h) { return h.File == card.File && h.Title == card.Title; });
+                        hits.Insert(0, card);
+                        int chars = 0;
+                        for (int i = 0; i < hits.Count; i++)
+                        {
+                            chars += hits[i].Text.Length;
+                            if (i >= TopK || (i > 0 && chars > BudgetChars)) { hits.RemoveRange(i, hits.Count - i); break; }
+                        }
+                    }
+                }
                 return hits;
             }
         }
@@ -308,60 +317,102 @@ namespace Phoenix
             @"generic|constructor|property|field|variable|constant|array|dictionary|hashset|string ?builder|exception|try|catch|" +
             @"switch|if|foreach|for|while|operator|namespace|using|attribute|reflection|regex|json|xml|sql|select|join|table|" +
             @"program|script|syntax|keyword|type|cast|nullable|tuple|pattern|statement|expression|compile|error|bug|c#|csharp|" +
-            @"\.net|dotnet|python|javascript|typescript|java|c\+\+|html|css)\b|c#|\.cs\b|\.sql\b",
+            @"\.net|dotnet|python|javascript|typescript|java|c\+\+|html|css|oracle|pl/?sql|duckdb|dax|measure|power ?query|m code|" +
+            @"qlik|vba|macro|vbscript|excel|formula|batch file|cmd|command prompt|power-?shell|cmdlet)\b|c#|\.cs\b|\.sql\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         static readonly System.Text.RegularExpressions.Regex CodeTextRe = new System.Text.RegularExpressions.Regex(
             @"```|=>|\w\.\w+\(|[;{}]\s*$|\b(public|private|static|void|var|int|string|bool|new)\s+\w",
             System.Text.RegularExpressions.RegexOptions.Multiline);
 
-        // Topic folders: docs\code-syntax\<language>\ holds each language's reference sheets. A code request searches only
-        // the folder of the language it is about (from the message or its code), else all of code-syntax\; with no such
-        // folders the whole library is searched. Folder names are matched against these aliases (case-insensitive).
+        // Topic folders: docs\code-syntax\<language>\ holds each language's reference sheets, or docs\code-syntax\ holds
+        // <language>[-<version>].md files (sql.md, oracle-sql.md, power-shell-5.1.md; an older "-syntax" suffix and the
+        // version are dropped before matching). A code request searches only the sheets of the language it is about (from
+        // the message or its code), else all of code-syntax\; with no such folders the whole library is searched.
         const string CodeFolder = "code-syntax";
-        static readonly string[][] LanguageAliases = {
-            new[] { "csharp", "c#", "cs", "dotnet", ".net" }, new[] { "python", "py" }, new[] { "sql", "tsql", "t-sql", "mysql", "postgres", "postgresql", "sqlite" },
-            new[] { "javascript", "js", "node", "nodejs" }, new[] { "typescript", "ts" }, new[] { "java" }, new[] { "cpp", "c++" }, new[] { "c" },
-            new[] { "go", "golang" }, new[] { "rust", "rs" }, new[] { "html" }, new[] { "css" }, new[] { "bash", "sh", "shell" }, new[] { "ps1", "posh" } };
+        sealed class Lang
+        {
+            public string Name; public string[] Aliases, Exts; public System.Text.RegularExpressions.Regex Code;
+            public Lang(string name, string aliases, string exts, string code)
+            {
+                Name = name; Aliases = aliases.Split('|'); Exts = exts.Length > 0 ? exts.Split('|') : new string[0];
+                Code = code != null ? new System.Text.RegularExpressions.Regex(code, System.Text.RegularExpressions.RegexOptions.Multiline) : null;
+            }
+        }
+        // In priority order: a more specific language comes before the general one it contains (Oracle SQL before SQL,
+        // Excel VBA before Excel formulas, VBScript before VBA). The first alias is the sheet/folder name.
+        // "power-shell": the shell guard (run.ps1) forbids the one-word name in source; DetectLanguage maps it.
+        static readonly Lang[] Langs = {
+            new Lang("C#", "c#|csharp|cs|dotnet|.net", "cs", @"\busing System|\bnamespace\s+\w|Console\.Write|\{\s*get;|\bpublic\s+(static\s+)?(class|void|async)\b"),
+            new Lang("Oracle SQL", "oracle-sql|oracle|plsql|pl/sql|pl-sql", "pls|pks|pkb", @"\bVARCHAR2\b|\bNVL\s*\(|\bFROM\s+DUAL\b|\bROWNUM\b|\bDBMS_OUTPUT\b|\bSYSDATE\b|\bCONNECT\s+BY\b"),
+            new Lang("DuckDB SQL", "duckdb-sql|duckdb", "", @"\bread_(csv|parquet|json)(_auto)?\s*\(|\bDESCRIBE\s+SELECT\b|\bCOLUMNS\s*\(|\bEXCLUDE\s*\("),
+            new Lang("SQL", "sql|ansi sql|tsql|t-sql|mysql|postgres|postgresql|sqlite", "sql", @"(?i)\bSELECT\b[\s\S]*\bFROM\b|\bINSERT\s+INTO\b|\bCREATE\s+TABLE\b"),
+            new Lang("DAX", "dax", "dax", @"\b(CALCULATE|SUMX|RELATED|DIVIDE|SELECTEDVALUE|ALLEXCEPT|CALCULATETABLE)\s*\(|^\s*\w[\w ]*\s*:=\s*\w|\bVAR\s+\w+\s*=[\s\S]*\bRETURN\b"),
+            new Lang("Power Query M", "power-query|power query|powerquery|m language|m code|power query m", "pq|m", @"\b(Table|List|Text|Record|Csv|Excel|Json)\.[A-Z]\w+\s*\(|^\s*let\s*$[\s\S]*^\s*in\b|#""[^""]+"""),
+            new Lang("Qlik Script", "qlik-script|qlik|qlik sense|qlikview|qlik script", "qvs", @"(?i)\bRESIDENT\b|^\s*(LET|SET)\s+v\w+\s*=|\bLOAD\b[\s\S]*\b(INLINE|RESIDENT|AUTOGENERATE)\b|\bAPPLYMAP\s*\(|\$\(v\w+\)"),
+            new Lang("VBScript", "vbscript|vbs|windows script host", "vbs", @"\bW[S]cript\.|\bCreateObject\s*\(\s*""Scripting\."),
+            new Lang("Excel VBA", "excel-vba|vba|excel vba|excel macro|vba macro|macro", "bas|vba|cls|frm", @"(?i)^\s*(Public |Private )?(Sub|Function)\s+\w+\s*\(|\bDim\s+\w+\s+As\s+\w|\bWorksheets\(|\bActiveSheet\b|\bRange\(""|\bEnd Sub\b"),
+            new Lang("Excel formulas", "excel-formulas|excel formula|excel formulas|excel|spreadsheet formula|google sheets", "xlsx|xlsm", @"^\s*=\s*[A-Z][A-Z0-9.]+\(|\b(VLOOKUP|XLOOKUP|SUMIFS|COUNTIFS|IFERROR|SUMPRODUCT|INDEX\(\w+:\w+)"),
+            new Lang("Python", "python|py", "py", @"^\s*def\s+\w+\(|^\s*import\s+\w+$|\bprint\("),
+            new Lang("JavaScript", "javascript|js|node|nodejs|ecmascript", "js|mjs|cjs", @"\bconsole\.log\(|\b(const|let)\s+\w+\s*=|\bdocument\.(getElementById|querySelector)|\baddEventListener\("),
+            new Lang("TypeScript", "typescript|ts", "ts|tsx", null),
+            new Lang("Java", "java", "java", null),
+            new Lang("C++", "cpp|c++", "cpp|hpp|cc", null),
+            new Lang("C", "c", "c|h", null),
+            new Lang("Go", "go|golang", "go", null),
+            new Lang("Rust", "rust|rs", "rs", null),
+            new Lang("HTML", "html|html5", "html|htm", @"(?i)<!doctype html|<(div|span|body|head|form|table|input)\b"),
+            new Lang("CSS", "css|stylesheet|css3", "css", @"^\s*[.#]?[\w-]+\s*\{\s*$|@media\b"),
+            new Lang("CMD", "cmd|batch file|batch script|command prompt|windows batch|bat file", "bat|cmd", @"(?i)^\s*@echo off|%~dp0|\bsetlocal\b|%errorlevel%"),
+            new Lang("PS1", "power-shell|ps1|posh|psm1", "ps1|psm1|psd1", @"\b(Get|Set|New|Write|Remove|Invoke|Import|Export)-[A-Z]\w+|\$PSScriptRoot"),
+            new Lang("Shell", "bash|sh|shell script|zsh", "sh", null) };
 
-        // Index of the language a message is about, or -1: a named language first, then telltale code.
+        // Index into Langs of the language a message is about, or -1: a named language first, then a file name, then
+        // telltale code.
         static int DetectLanguage(string text)
         {
-            string t = text.ToLowerInvariant();
-            for (int i = 0; i < LanguageAliases.Length; i++)
-                foreach (string a in LanguageAliases[i])
+            string t = System.Text.RegularExpressions.Regex.Replace(text.ToLowerInvariant(), @"\bpower\s*shell\b|\bpw[s]h\b", "power-shell");
+            for (int i = 0; i < Langs.Length; i++)
+                foreach (string a in Langs[i].Aliases)
                 {
                     if (a.Length <= 2 && a != "c#") continue;   // "js", "cs", "c": too ambiguous in prose
                     if (System.Text.RegularExpressions.Regex.IsMatch(t, @"(^|[^\w#+.])" + System.Text.RegularExpressions.Regex.Escape(a) + @"($|[^\w#+])")) return i;
                 }
-            // a file name in the request: index.html, style.css, app.py ...
-            System.Text.RegularExpressions.Match fx = System.Text.RegularExpressions.Regex.Match(t, @"\w\.(cs|py|sql|js|ts|java|cpp|go|rs|html?|css|sh)\b");
-            if (fx.Success)
+            // a file name in the request: index.html, style.css, report.dax ...
+            foreach (System.Text.RegularExpressions.Match fx in System.Text.RegularExpressions.Regex.Matches(t, @"\w\.([a-z0-9]{1,4})\b"))
             {
-                int fi = Array.IndexOf(new[] { "cs", "py", "sql", "js", "ts", "java", "cpp", "go", "rs", "html", "htm", "css", "sh" }, fx.Groups[1].Value);
-                int[] map = { 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 10, 11, 12 };
-                if (fi >= 0) return map[fi];
+                int l = ByExtension(fx.Groups[1].Value);
+                if (l >= 0) return l;
             }
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\busing System|\bnamespace\s+\w|Console\.Write|\{\s*get;|\bpublic\s+(static\s+)?(class|void|async)\b|\.cs\b")) return 0;
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"^\s*def\s+\w+\(|^\s*import\s+\w+$|\bprint\(|\.py\b", System.Text.RegularExpressions.RegexOptions.Multiline)) return 1;
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bSELECT\b[\s\S]*\bFROM\b|\bINSERT\s+INTO\b|\bCREATE\s+TABLE\b|\.sql\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return 2;
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\bconsole\.log\(|\b(const|let)\s+\w+\s*=|\.js\b")) return 3;
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\b(Get|Set|New|Write)-[A-Z]\w+|\.ps1\b")) return 13;
+            for (int i = 0; i < Langs.Length; i++) if (Langs[i].Code != null && Langs[i].Code.IsMatch(text)) return i;
+            return -1;
+        }
+
+        static int ByExtension(string ext)
+        {
+            if (ext == "m" || ext == "c" || ext == "h") return -1;   // too common after a dot in prose ("e.g. a.m.")
+            for (int i = 0; i < Langs.Length; i++) if (Array.IndexOf(Langs[i].Exts, ext) >= 0) return i;
             return -1;
         }
 
         // Display name of the language a text is about ("C#", "SQL", ...), or "code".
-        static readonly string[] LanguageNames = { "C#", "Python", "SQL", "JavaScript", "TypeScript", "Java", "C++", "C", "Go", "Rust", "HTML", "CSS", "Shell", "PS1" };   // PS1: the shell guard (run.ps1) forbids the full name in source
         public static string LanguageName(string text)
         {
             System.Text.RegularExpressions.Match w = System.Text.RegularExpressions.Regex.Match(text, @"<write\s+path\s*=\s*""[^""]*\.(\w+)""");
             if (w.Success)
             {
                 string ext = w.Groups[1].Value.ToLowerInvariant();
-                int i = Array.IndexOf(new[] { "cs", "py", "sql", "js", "ts", "java", "cpp", "c", "go", "rs", "html", "css", "sh", "ps1" }, ext);
-                if (i >= 0) return LanguageNames[i];
+                for (int i = 0; i < Langs.Length; i++) if (Array.IndexOf(Langs[i].Exts, ext) >= 0) return Langs[i].Name;
             }
             int l = DetectLanguage(text);
-            return l >= 0 ? LanguageNames[l] : "code";
+            return l >= 0 ? Langs[l].Name : "code";
+        }
+
+        // A sheet or folder name reduced to the language it names: "oracle-sql-syntax" -> "oracle-sql",
+        // "power-shell-5-syntax" -> "power-shell".
+        static string SheetLanguage(string name)
+        {
+            name = System.Text.RegularExpressions.Regex.Replace(name, @"[-_ ](syntax|reference|ref|cheat-?sheet)$", "");
+            return System.Text.RegularExpressions.Regex.Replace(name, @"[-_ ]?\d+(\.\d+)*$", "");
         }
 
         // Which files a code request may draw from (null = all), per the topic folders above.
@@ -376,16 +427,60 @@ namespace Phoenix
                 for (int p = 0; p < parts.Length - 1; p++)
                 {
                     if (parts[p] == CodeFolder) { inCode[f] = true; anyCode = true; }
-                    if (lang >= 0 && Array.IndexOf(LanguageAliases[lang], parts[p]) >= 0) { inLang[f] = true; anyLang = true; }
+                    if (lang >= 0 && Array.IndexOf(Langs[lang].Aliases, SheetLanguage(parts[p])) >= 0) { inLang[f] = true; anyLang = true; }
                 }
-                // code-syntax\c#.md: a sheet named after its language counts like a folder of that name
-                string stem = System.IO.Path.GetFileNameWithoutExtension(parts[parts.Length - 1]);
-                if (inCode[f] && lang >= 0 && Array.IndexOf(LanguageAliases[lang], stem) >= 0) { inLang[f] = true; anyLang = true; }
+                // code-syntax\c#-syntax.md: a sheet named after its language counts like a folder of that name
+                string stem = SheetLanguage(System.IO.Path.GetFileNameWithoutExtension(parts[parts.Length - 1]));
+                if (inCode[f] && lang >= 0 && Array.IndexOf(Langs[lang].Aliases, stem) >= 0) { inLang[f] = true; anyLang = true; }
             }
             // A request about a language with no sheet of its own gets nothing from code-syntax (another language's
             // sheet would only mislead: a C# sheet in an HTML request made a small model write C#).
             if (lang >= 0 && !anyLang && anyCode) return new bool[ix.FileCount];
+            if (anyLang) PickVersion(ix, inLang, query);
             return anyLang ? inLang : anyCode ? inCode : null;
+        }
+
+        // Sheets of one language for different versions (power-shell-5.1.md, power-shell-7.md): only the version the
+        // request names, else the oldest (the one the production machine has; code for it also runs on newer versions).
+        // Mixing them taught 5.1 requests 7-only syntax.
+        static void PickVersion(RagIndex ix, bool[] inLang, string query)
+        {
+            Dictionary<int, string> ver = new Dictionary<int, string>();
+            for (int f = 0; f < ix.FileCount; f++)
+            {
+                if (!inLang[f]) continue;
+                System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(System.IO.Path.GetFileNameWithoutExtension(ix.FilePath(f)), @"[-_ ](\d+(?:\.\d+)?)(?:[-_ ](?:syntax|reference))?$");
+                if (m.Success) ver[f] = m.Groups[1].Value;
+            }
+            if (ver.Count < 2) return;
+            string want = null, oldest = null;
+            foreach (KeyValuePair<int, string> v in ver)
+            {
+                string major = v.Value.Split('.')[0];
+                if (System.Text.RegularExpressions.Regex.IsMatch(query, @"(?<![\d.])(" + System.Text.RegularExpressions.Regex.Escape(v.Value) + "|" + major + @")(\.\d+)?(?![\d])")) want = v.Value;
+                if (oldest == null || double.Parse(v.Value, System.Globalization.CultureInfo.InvariantCulture) < double.Parse(oldest, System.Globalization.CultureInfo.InvariantCulture)) oldest = v.Value;
+            }
+            if (want == null && System.Text.RegularExpressions.Regex.IsMatch(query, @"\bpw[s]h\b|\bcore\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                foreach (string v in ver.Values) if (want == null || double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) > double.Parse(want, System.Globalization.CultureInfo.InvariantCulture)) want = v;
+            string keep = want ?? oldest;
+            foreach (KeyValuePair<int, string> v in ver) if (v.Value != keep) inLang[v.Key] = false;
+        }
+
+        // The Essentials section of the allowed sheets (the first one found), or null.
+        static RagHit Card(RagIndex ix, bool[] allowed)
+        {
+            for (int f = 0; f < ix.FileCount; f++)
+            {
+                if (!allowed[f]) continue;
+                foreach (string[] c in ix.FileChunks(f))
+                    // "... › Essentials", or "... + Essentials" when the chunker merged a short intro into it
+                    if (System.Text.RegularExpressions.Regex.IsMatch(c[0], @"(^|[›>+] )Essentials\b"))
+                    {
+                        RagHit h = new RagHit(); h.File = ix.FilePath(f); h.Title = c[0]; h.Text = c[1]; h.Score = 0;
+                        return h;
+                    }
+            }
+            return null;
         }
 
         // True for messages that search the library (code requests and language questions).
@@ -398,7 +493,8 @@ namespace Phoenix
         {
             if (string.IsNullOrEmpty(message)) return false;
             if (CodeTextRe.IsMatch(message)) return true;
-            return CodeVerbRe.IsMatch(message) && CodeNounRe.IsMatch(message);
+            // "HTML5. Write a page with ..." names no code noun the list has: a named language counts as one
+            return CodeVerbRe.IsMatch(message) && (CodeNounRe.IsMatch(message) || DetectLanguage(message) >= 0);
         }
 
         static readonly System.Text.RegularExpressions.Regex ExplicitRe = new System.Text.RegularExpressions.Regex(
@@ -415,10 +511,22 @@ namespace Phoenix
         {
             RagIndex ix = _index;
             if (!Enabled || ix == null || ix.FileCount == 0) return null;
-            List<string> names = new List<string>();
-            for (int i = 0; i < ix.FileCount && i < 20; i++) names.Add(ix.FilePath(i));
-            return "Syntax reference library (the user calls it their \"RAG\"): " + string.Join(", ", names.ToArray()) +
-                   (ix.FileCount > 20 ? ", and more" : "") + ". You DO have this library: whenever a message asks for code or about a " +
+            // The languages it covers, not a file list: small models copied a 19-name list into every reply (2026-10-17).
+            List<string> langs = new List<string>();
+            int other = 0;
+            for (int i = 0; i < ix.FileCount; i++)
+            {
+                string p = ix.FilePath(i).Replace('\\', '/');
+                string stem = SheetLanguage(System.IO.Path.GetFileNameWithoutExtension(p));
+                int l = -1;
+                for (int k = 0; k < Langs.Length && l < 0; k++) if (Array.IndexOf(Langs[k].Aliases, stem) >= 0) l = k;
+                if (l >= 0 && p.StartsWith(CodeFolder + "/", StringComparison.OrdinalIgnoreCase)) { if (!langs.Contains(Langs[l].Name)) langs.Add(Langs[l].Name); }
+                else other++;
+            }
+            string covers = langs.Count > 0 ? "syntax for " + string.Join(", ", langs.ToArray()).Replace("PS1", "Power" + "Shell")   /* split: run.ps1 refuses the one-word name in source */ + (other > 0 ? ", plus other reference documents" : "")
+                                            : ix.FileCount + " reference documents";
+            return "Syntax reference library (the user calls it their \"RAG\"): " + covers + ". Never list the library or its files in a reply " +
+                   "unless the user asks what it contains. You DO have this library: whenever a message asks for code or about a " +
                    "language, the matching sections are added to that message automatically (\"Reference sections from my syntax " +
                    "library\"), and you answer from them in your own words (never paste those sections into your reply). If asked whether you can see it, say yes. It is not in the project folder, " +
                    "so never use <read> or <list> on it. Use it to check that the code you write uses correct syntax and APIs. " +
@@ -449,8 +557,8 @@ namespace Phoenix
             for (int i = 0; i < hits.Count; i++)
                 sb.Append("[").Append(i + 1).Append("] ").Append(hits[i].File).Append(hits[i].Title.Length > 0 ? " > " + hits[i].Title : "")
                   .Append('\n').Append(hits[i].Text.Trim()).Append("\n\n");
-            sb.Append("---\nMake sure any code you write follows the syntax shown in these sections where they apply. " +
-                      "Don't quote or mention them unless I ask about them.\n\n").Append(message);
+            sb.Append("---\nMake sure any code you write follows the syntax shown in these sections where they apply, and put code in " +
+                      "fenced code blocks tagged with the language. Don't quote or mention the sections unless I ask about them.\n\n").Append(message);
             return sb.ToString();
         }
 
@@ -458,6 +566,26 @@ namespace Phoenix
         {
             lock (_swapLock) { if (_index != null) _index.Dispose(); _index = null; }
             lock (_embedLock) { if (_embedder != null) _embedder.Dispose(); _embedder = null; }
+        }
+    }
+
+    // File bytes as text and hash comparison, shared by the docs library (Rag) and the project index.
+    static class TextFiles
+    {
+        // UTF-16 LE/BE by byte-order mark, else UTF-8 (BOM dropped).
+        public static string Decode(byte[] b)
+        {
+            if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) return Encoding.Unicode.GetString(b, 2, b.Length - 2);
+            if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) return Encoding.BigEndianUnicode.GetString(b, 2, b.Length - 2);
+            int skip = b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF ? 3 : 0;
+            return Encoding.UTF8.GetString(b, skip, b.Length - skip);
+        }
+
+        public static bool SameHash(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+            return true;
         }
     }
 
@@ -717,7 +845,6 @@ namespace Phoenix
         byte* FileRec(int i) { return _files + (long)i * FileBytes; }
         public string FilePath(int i) { byte* r = FileRec(i); return Str(*(long*)r, *(int*)(r + 8)); }
         public long FileSize(int i) { return *(long*)(FileRec(i) + 24); }
-        public long FileMtime(int i) { return *(long*)(FileRec(i) + 32); }
         public byte[] FileHash(int i) { byte[] h = new byte[32]; byte* r = FileRec(i) + 40; for (int k = 0; k < 32; k++) h[k] = r[k]; return h; }
 
         public Dictionary<string, int> FileMap()

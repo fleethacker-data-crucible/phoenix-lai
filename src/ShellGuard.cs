@@ -65,8 +65,10 @@ namespace Phoenix
             @"|\b(your\s+job|the\s+task)\s+is\s+to\s+" + Act +
             // "run it for me", "execute that now", "build it please"
             @"|\b(run|execute|launch|build|compile|test|install|deploy)\s+(it|this|that|them)\s+(for\s+me|now|please|already|right\s+now)\b" +
-            // a message that is only a command line: "npm start", ".\run.ps1", "python app.py", "dotnet build"
-            @"|^\s*(npm|npx|yarn|pnpm|node|python3?|py|pip3?|dotnet|cargo|go\s+run|java|javac|gcc|cmake|msbuild|git|docker|kubectl|choco|winget|scoop|powershell|pwsh|cmd|bash|sh)\s+\S+[^\n]*\s*$" +
+            // a message that is only a command line: "npm start", ".\run.ps1", "python app.py", "dotnet build". Prose that
+            // starts with a tool's name ("PowerShell 7. Write a script ...", "python function that sorts") is not one.
+            @"|^\s*(npm|npx|yarn|pnpm|node|python3?|py|pip3?|dotnet|cargo|go\s+run|java|javac|gcc|cmake|msbuild|git|docker|kubectl|choco|winget|scoop|powershell|pwsh|cmd|bash|sh)\s+" +
+            @"(?![^\n]*\b(write|writes|create|make|script|scripts|code|function|that|which|how|what|why|the|a|an|with|for|to|is|are|in|of|and|me|my|example)\b)(?![\d.]+\s*[.:,]\s)\S+[^\n]*\s*$" +
             @"|^\s*\.{1,2}[\\/]\S+\.(ps1|bat|cmd|exe|sh|py)\b[^\n]*\s*$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
         // Questions about how to run something: never a request for the model to run it.

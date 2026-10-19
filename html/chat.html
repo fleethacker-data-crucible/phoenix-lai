@@ -6,6 +6,7 @@
 <title>Phoenix LAI</title>
 <link rel="icon" type="image/png" href="assets/toolbar_icon.png">
 <link rel="stylesheet" href="css/chat.css">
+<link rel="stylesheet" href="css/skills.css">
 </head>
 <body>
 <div id="banner"><span>UNCLASSIFIED</span></div>
@@ -14,14 +15,15 @@
   <div class="brand"><img src="assets/toolbar_icon.png" alt=""><span>Phoenix LAI</span><button id="navSettings" title="Settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button></div>
   <div id="sideHw" class="sbar"></div>
   <nav class="snav">
-    <button id="navNew"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>New chat</button>
-    <button id="navFiles"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Files</button>
-    <button id="navHelp"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/><path d="M12 17h.01"/></svg>Commands</button>
+    <button id="navNew"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+    <button id="navSkills"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 7v10l8 4 8-4V7z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>Skill builder</button>
   </nav>
-  <div class="sgroup">Projects</div><div class="sempty">No projects</div>
-  <div class="sgroup">Recents</div><div class="sempty">No chats yet</div>
-  <div class="sfoot"><span class="avatar">P</span><span class="who">Local<small>this machine</small></span>
-  </div>
+  <div class="sgroup">Skills<button id="newSkill" title="New skill">+</button></div>
+  <div id="skillList" class="slist skills"></div>
+  <div class="sgroup">Projects<button id="newProject" title="New project">+</button></div>
+  <div id="projList" class="slist"></div>
+  <div class="sgroup">Recents</div>
+  <div id="recentList" class="slist recents"></div>
 </aside>
 <main id="main">
   <div id="topbar"><div class="mpick"><button id="modelPick"><span id="topModel">Select model</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button><div id="modelMenu"></div></div><span id="topSpeed" class="sbar"></span></div>
@@ -35,10 +37,7 @@
 <div id="files"></div>
 <div class="modal" id="settingsModal">
   <div class="window settings">
-    <header><h2><span class="chev">›</span> settings</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
-    <nav class="cats" id="settingsCats">
-      <button data-cat="catDocs">docs</button><button data-cat="catLook">appearance</button><button data-cat="catApp">app</button>
-    </nav>
+    <header><h2><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <div class="body" id="settingsBody">
       <section id="catDocs">
         <div class="section">docs</div>
@@ -48,12 +47,15 @@
         <div class="section">appearance</div>
         <div class="field">chat font<div class="radios" id="sFont"></div></div>
         <div class="field" style="margin-top:10px">text size<div class="radios" id="sSize"></div></div>
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sLight"><span class="sw"></span>light mode<span class="hint"> · light background and panels (off = dark)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sGrid"><span class="sw"></span>grid background<span class="hint"> · grid and faint logo behind the chat (off = solid)</span></label>
         <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
       </section>
       <section id="catApp">
         <div class="section">app</div>
         <div class="field">browser<div class="radios" id="sBrowser"></div><span class="hint" id="browserNote"></span></div>
+        <div class="field" style="margin-top:10px">dev: GPU<div class="radios" id="sGpu"></div><span class="hint" id="gpuNote"></span></div>
+        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sGpuSafe"><span class="sw"></span>dev: safe GPU kernels<span class="hint"> · plain kernels without the subgroup and integer-dot fast paths, for a card whose answers come out as garbage</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label>
         <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sTypeEffect"><span class="sw"></span>typing effect<span class="hint"> · the reply types itself out, with the odd backspaced typo (display only)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>classification banner (UNCLASSIFIED)</label>
@@ -97,5 +99,6 @@
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
 <script src="js/chat.js"></script>
+<script src="js/skills.js"></script>
 </body>
 </html>

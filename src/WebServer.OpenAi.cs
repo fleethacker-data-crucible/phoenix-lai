@@ -81,6 +81,7 @@ namespace Phoenix
                     res.Headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
                 }
                 if (req.HttpMethod == "OPTIONS") { res.StatusCode = 204; res.Close(); return; }
+                if (req.HttpMethod == "HEAD") { res.StatusCode = 200; res.ContentLength64 = 0; res.Close(); return; }   // no body allowed
                 string path = req.Url.AbsolutePath.TrimEnd('/');
                 if (path.StartsWith("/api/v0/")) path = "/v1/" + path.Substring(8);   // LM Studio's REST alias
                 bool post = req.HttpMethod == "POST";
@@ -158,20 +159,7 @@ namespace Phoenix
         }
 
         // OpenAI message content is a string or a list of parts ({type: "text", text}); only text is used.
-        static string ContentText(object c)
-        {
-            if (c == null) return "";
-            if (c is string) return (string)c;
-            List<object> parts = c as List<object>;
-            if (parts == null) return "";
-            StringBuilder sb = new StringBuilder();
-            foreach (object p in parts)
-            {
-                Dictionary<string, object> d = p as Dictionary<string, object>;
-                if (d != null && Json.GetStr(d, "type", "text") == "text") sb.Append(Json.GetStr(d, "text", ""));
-            }
-            return sb.ToString();
-        }
+        static string ContentText(object c) { return PartsText(c, "", "text"); }
 
         void Completion(Dictionary<string, object> o, HttpListenerResponse res, bool chat)
         {

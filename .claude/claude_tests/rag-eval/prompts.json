@@ -1,0 +1,260 @@
+{
+  "powershell": {
+    "prefix": "Windows PowerShell 5.1. ",
+    "prompts": [
+      "Write a script that reads C:\\App\\settings.json and prints settings.database.host, using 'localhost' when the value is missing or empty.",
+      "Write a script that copies C:\\Data\\report.csv to D:\\Backup and deletes the original only if the copy succeeded.",
+      "Write a script that pings every server in servers.txt at the same time (in parallel) and prints which ones answer.",
+      "Write a function that converts the JSON in config.json into a nested hashtable.",
+      "Write a script that reads a binary file C:\\Data\\image.png into a byte array and prints its first 8 bytes in hex.",
+      "Write a script that saves a string to C:\\Out\\notes.txt as UTF-8 without a byte order mark.",
+      "Write a script that sets $label to 'large' when a file is over 1 GB and 'small' otherwise, then prints the file name and label for every file in D:\\Media.",
+      "Write a script that lists the 10 largest files under C:\\Data (recursively) with their size in MB.",
+      "Write a script that copies every .log file changed in the last 24 hours from C:\\Logs to D:\\Archive, keeping the folder structure.",
+      "Write a script that gets the last 50 errors from the System event log with time, source and message.",
+      "Write a script that registers a scheduled task which starts D:\\Scripts\\backup.ps1 every day at 2 AM as SYSTEM.",
+      "Write a script that finds every user folder under C:\\Users bigger than 5 GB and writes the result to a CSV file.",
+      "Write a function with a mandatory -Path parameter and a -Recurse switch that returns duplicate files (same SHA256 hash) in that folder.",
+      "Write a script that tests whether TCP port 1433 is reachable on server01 and port 80 on server02, and prints a table.",
+      "Write a script that reads a 5 GB log file line by line and writes every line containing 'Timeout' to timeouts.txt without loading the whole file."
+    ]
+  },
+  "csharp": {
+    "prefix": "C# for .NET Framework 4.8 (compiled with csc.exe). Give one complete compilable file. ",
+    "prompts": [
+      "Write a console program that reads a text file given as the first argument and prints the 10 most frequent words with their counts.",
+      "Write a console program that reads two text files at the same time with async/await and prints their combined length.",
+      "Write a Person class with Name, Age and an Email that defaults to an empty string, and a Main that prints a person formatted as 'Name (Age) <Email>'.",
+      "Write a console program that parses each line of numbers.txt as an integer, skips lines that are not numbers, and prints the sum and average.",
+      "Write a method that returns both the minimum and the maximum of an int array, plus a Main that prints them.",
+      "Write a console program that reads a config file of key=value lines into a dictionary and prints the value of 'port', or 8080 when it is missing.",
+      "Write a class hierarchy Shape, Circle and Rectangle with an Area method, and a Main that prints the area of each shape in a list, saying which kind it is.",
+      "Write a console program that prints a greeting with the user's name, the current date as yyyy-MM-dd and the number of days until the end of the year.",
+      "Write a thread-safe generic LRU cache class with Get, Put and a capacity, plus a Main that uses it.",
+      "Write a console program that serializes a Person class (Name, Age, Emails list) to XML with XmlSerializer and reads it back.",
+      "Write a console program that recursively lists all files over 100 MB under a folder given as the first argument, largest first.",
+      "Write a console program that watches a folder with FileSystemWatcher and prints every created, changed, deleted and renamed file until Enter is pressed.",
+      "Write a method that safely gets the length of the first line of a possibly null string array, returning 0 when anything is missing, plus a Main that tests it.",
+      "Write a console program with a list of orders (Customer, Amount) that uses LINQ to print each customer's total and the single biggest order, highest total first.",
+      "Write a static method that retries an action up to 3 times with a delay, logging each failure with the exception type name, plus a Main that uses it."
+    ]
+  },
+  "oracle": {
+    "prefix": "Oracle SQL / PL/SQL (Oracle 19c). Tables: customers(customer_id, name, email, city, signup_date), orders(order_id, customer_id, order_date, amount, status), products(product_id, name, price, category), staging_products(product_id, name, price, category), sales(sale_id, sale_date, region, product, amount), employees(employee_id, last_name, manager_id, department_id, salary, hire_date), users(user_id, email, last_login), accounts(account_id, status, last_login). ",
+    "prompts": [
+      "Write a query for the top 5 customers by total order amount this year.",
+      "Write a query that returns rows 21 to 40 of orders ordered by order_date.",
+      "Write a query listing customers whose email is empty or missing.",
+      "Write a query for orders placed in the last 7 days, with the number of days since each order.",
+      "Write a query that shows each customer's name and city as one column like 'Ann (Oslo)'.",
+      "Write a CREATE TABLE for invoices with an auto-increment primary key, a customer name, an amount, a paid yes/no flag and a created date that defaults to now.",
+      "Write SQL that updates a product's price if it exists and inserts it otherwise, using staging_products as the source.",
+      "Write a query that lists each department with the comma-separated last names of its employees.",
+      "Write a query that shows the highest-paid employee in each department.",
+      "Write a stored procedure that raises the salary of every employee in a given department by a given percent, with exception handling.",
+      "Write a PL/SQL block that bulk collects the ids of accounts with no login for a year and marks them INACTIVE with FORALL.",
+      "Write a hierarchical query that lists every employee under manager 100 with their level in the hierarchy."
+    ]
+  },
+  "sql": {
+    "prefix": "Standard SQL that works in PostgreSQL. Tables: customers(customer_id, name, email, city, signup_date), orders(order_id, customer_id, order_date, amount, status, product_id, quantity), products(product_id, name, price, category), staging_products(product_id, name, price, category), sales(sale_id, sale_date, region, product, category, amount, customer_id), employees(employee_id, name, manager_id, department_id, salary, hire_date), users(user_id, email, name, created_at, last_login). ",
+    "prompts": [
+      "Write a query for the top 5 customers by total order amount.",
+      "Write a query that returns each customer's most recent order.",
+      "Write a query for customers who have never placed an order.",
+      "Write a query with monthly revenue, a running total, and the change from the previous month.",
+      "Write a query showing each category's revenue and its percentage of total revenue.",
+      "Write a query counting, per customer, the orders that are shipped and the orders that are cancelled.",
+      "Write SQL that updates products from staging_products when the product exists and inserts it otherwise.",
+      "Write SQL that deletes duplicate users (same email, ignoring case) but keeps the one with the lowest user_id.",
+      "Write a query that finds employees who earn more than the average salary of their department.",
+      "Write a recursive query listing every employee under manager 100 with their depth.",
+      "Write a query that shows, for each product, the quantity sold in the last 30 days, including products with no sales as 0.",
+      "Write a query that returns the second highest salary in each department."
+    ]
+  },
+  "duckdb": {
+    "prefix": "DuckDB SQL. Tables: customers(customer_id, name, email, city, signup_date), orders(order_id, customer_id, order_date, amount, status, discount, product_id, quantity), products(product_id, name, price, category), sales(sale_id, sale_date, region, product, category, amount, customer_id), raw_products(price_text, city, name). Files in the current folder: sales.csv (sale_date, region, product, category, amount, customer_id), events_2024_01.csv and events_2024_02.csv (event_id, user_id, event_type, ts), a logs folder of CSV files, orders.parquet. ",
+    "prompts": [
+      "Write a query on sales.csv that shows total amount per region and product, the 10 largest first.",
+      "Write SQL that loads events_2024_01.csv into a new table events and then appends events_2024_02.csv.",
+      "Write a query that reads every CSV file in the logs folder and counts the rows per file.",
+      "Write SQL that exports the orders from 2024 to a Parquet file.",
+      "Write a query with total order amount per month, labelled like 2024-01.",
+      "Write a query that keeps only each customer's latest order.",
+      "Write a query that selects every column of orders except discount and status.",
+      "Write a query that turns orders into one row per customer with one column per month of total amount.",
+      "Write SQL that creates an invoices table whose id is generated automatically, then inserts one invoice.",
+      "Write a query that converts raw_products.price_text such as '$1,299.00' into a number, NULL when it cannot be converted.",
+      "Write a query for orders from the last 30 days and the number of days since each order.",
+      "Write a query that reads orders.parquet and shows the average amount per status, rounded to 2 decimals."
+    ]
+  },
+  "javascript": {
+    "prefix": "JavaScript for Node.js 18 (CommonJS .js file unless I say otherwise). ",
+    "prompts": [
+      "Write a script that reads input.txt, keeps the lines containing ERROR and writes them to errors.txt.",
+      "Write a function that fetches JSON from a URL and returns it, throwing a clear error on HTTP failures.",
+      "Write a script that processes an array of 100 ids with an async worker function, at most 4 at a time, and prints the results.",
+      "Write a function that groups an array of {customer, amount} orders and returns the totals sorted from highest to lowest.",
+      "Write a script that counts how many lines of a 5 GB log file contain 'Timeout' without loading it all into memory.",
+      "Write a minimal HTTP server that returns {\"ok\":true} on GET /health and 404 otherwise.",
+      "Write a debounce function and use it on a search input in a browser page to show the typed text in a result element.",
+      "Write a function that deep-merges two configuration objects without changing either input.",
+      "Write a function that checks whether an array of strings contains a given word, ignoring case.",
+      "Write a script that reads every .json file in a folder, parses it, and prints the file names that are not valid JSON.",
+      "Write a class Stack with push, pop, peek and a size getter, plus a short example of using it.",
+      "Write a function that returns the number of days between two dates given as YYYY-MM-DD strings."
+    ]
+  },
+  "powershell7": {
+    "prefix": "PowerShell 7. ",
+    "prompts": [
+      "Write a script that pings 20 hosts named host1 to host20 in parallel, 5 at a time, and lists the ones that answer.",
+      "Write a script that reads settings.json into a hashtable and prints settings.database.host, defaulting to 'localhost'.",
+      "Write a script that copies report.csv to a backup folder and deletes the original only if the copy worked, using pipeline chain operators.",
+      "Write a script that reads the first 16 bytes of image.png and prints them as hex.",
+      "Write a script that writes a log folder path that works on Windows, Linux and macOS and creates it.",
+      "Write a function that returns 'even' or 'odd' for a number using the ternary operator.",
+      "Write a script that lists the 5 processes using the most memory with their memory in MB.",
+      "Write a script that converts a CSV file to JSON with nested depth 5.",
+      "Write a script that gets the free space of every drive on Windows and prints a table.",
+      "Write a function that retries a script block up to 3 times with a 2 second pause, printing each error."
+    ]
+  },
+  "vbscript": {
+    "prefix": "VBScript for Windows Script Host (cscript). ",
+    "prompts": [
+      "Write a script that counts the lines containing ERROR in C:\\Logs\\app.log.",
+      "Write a script that lists every .log file over 1 MB in C:\\Logs and its subfolders.",
+      "Write a script that copies C:\\Data\\report.csv to D:\\Backup and deletes the original only if the copy succeeded.",
+      "Write a function that returns the largest number in an array, and use it.",
+      "Write a script that reads a file path from the command line and prints the file's size, or a usage message.",
+      "Write a script that counts word frequencies in a text file with a Dictionary and prints them.",
+      "Write a script that appends the current date and time to C:\\Temp\\run.log.",
+      "Write a script that renames every .jpeg file in C:\\Photos to .jpg.",
+      "Write a script that reads a CSV file and prints the second column of every row.",
+      "Write a class with a Name property and a Greet method, and use it."
+    ]
+  },
+  "vba": {
+    "prefix": "Excel VBA. ",
+    "prompts": [
+      "Write a macro that deletes every empty row in the Data sheet.",
+      "Write a macro that doubles every number in column B of the Data sheet quickly for 100,000 rows.",
+      "Write a macro that totals column B per customer in column A and writes the totals to columns E and F.",
+      "Write a macro that copies the first sheet of every .xlsx file in C:\\Reports into the sheet named All.",
+      "Write a macro with error handling that turns off screen updating while it works and always restores it.",
+      "Write a user-defined function that returns a price with tax, with an optional tax rate defaulting to 20%.",
+      "Write a macro that highlights in yellow every cell in column C greater than 1000.",
+      "Write a macro that saves every sheet of the workbook as a separate CSV file.",
+      "Write a macro that finds the last used row and column of the active sheet and shows them in a message box.",
+      "Write a macro that sorts the Data sheet by column B descending, with headers."
+    ]
+  },
+  "cmd": {
+    "prefix": "A Windows batch file (.bat). ",
+    "prompts": [
+      "Write a batch file that takes a folder as its first argument, prints a usage message if it is missing, and lists the .log files in it.",
+      "Write a batch file that counts the .txt files in C:\\Data and prints the count.",
+      "Write a batch file that copies C:\\Data to D:\\Backup\\Data with robocopy and reports failure correctly.",
+      "Write a batch file that reads users.csv and prints the name and email from each line.",
+      "Write a batch file that copies report.csv to a file name containing today's date as yyyy-MM-dd.",
+      "Write a batch file that sets a variable to 5, adds 10 to it, and prints the result.",
+      "Write a batch file that deletes .tmp files older than 7 days in C:\\Temp.",
+      "Write a batch file with a subroutine that squares a number and returns the result in a variable.",
+      "Write a batch file that loops over the files in a folder and prints a running number for each.",
+      "Write a batch file that checks whether a service named Spooler is running and prints yes or no."
+    ]
+  },
+  "dax": {
+    "prefix": "DAX for Power BI. Tables: Sales(OrderID, Date, CustomerID, ProductID, Region, Quantity, UnitPrice, Amount), Products(ProductID, Product, Category), 'Date'(Date, Year, Month). ",
+    "prompts": [
+      "Write a measure for total revenue as quantity times unit price.",
+      "Write measures for sales year to date and the year-over-year growth percentage.",
+      "Write a measure for each region's share of total sales.",
+      "Write a measure that counts orders over 1000 in the North region.",
+      "Write a measure that ranks products by total sales.",
+      "Write a measure for the average order value.",
+      "Write a measure that returns blank when there are no sales and otherwise the sales amount.",
+      "Write a measure for sales of the top 5 products.",
+      "Write a calculated table for a date table from 2020 to 2026 with year and month columns.",
+      "Write a measure for sales in the same period last year."
+    ]
+  },
+  "powerquery": {
+    "prefix": "Power Query M. ",
+    "prompts": [
+      "Write a query that loads C:\\Data\\sales.csv, promotes headers and sets Date, Region and Amount types.",
+      "Write a query that keeps rows of the Sales table from 2024 with a positive amount and adds a column with 20% tax.",
+      "Write a query that groups the Sales table by Region with the total amount and the number of orders.",
+      "Write a query that combines every CSV file in C:\\Data\\Monthly into one table.",
+      "Write a query that merges Orders with Customers on CustomerID and adds the customer name and city.",
+      "Write a query that converts a PriceText column like '$1,299.00' into a number, null when it cannot be converted.",
+      "Write a query that unpivots the month columns of a Budget table into Month and Amount.",
+      "Write a query that adds a column labelling each order 'big' when the amount is over 1000 and 'small' otherwise.",
+      "Write a query that removes duplicate rows by Email, keeping the first.",
+      "Write a query that splits a FullName column into First and Last name columns."
+    ]
+  },
+  "qlik": {
+    "prefix": "Qlik Sense load script. ",
+    "prompts": [
+      "Write a script that loads sales.csv from lib://Data and maps region codes N and S to North and South.",
+      "Write a script that loads Sales and then a table with the total amount and order count per Region.",
+      "Write a script that loads only the sales after a start date held in a variable.",
+      "Write a script that adds customer name and city from customers.csv to the Sales table.",
+      "Write an incremental load that appends new orders from orders_new.csv to orders.qvd.",
+      "Write a master calendar script for the dates in the Sales table.",
+      "Write a script that loads two CSV files with the same columns into two separate tables.",
+      "Write a script that loads an inline table of products with ID, name and price.",
+      "Write a script that stores the Sales table as a QVD file and drops it.",
+      "Write a script that creates a composite key from OrderID and LineNo to avoid a synthetic key."
+    ]
+  },
+  "excel": {
+    "prefix": "Excel formulas (Microsoft 365). The table Sales has columns Date, Region, Customer, Amount. ",
+    "prompts": [
+      "Write a formula that looks up the price of the SKU in E2 in the Products table (SKU, Price) and shows 'not found' when missing.",
+      "Write a formula that sums Sales amounts for the North region in 2024.",
+      "Write a formula that counts sales larger than the value in H2.",
+      "Write a formula that lists the sales over 1000, largest first.",
+      "Write a formula that joins the names of all staff in the department in A2 with commas, from a Staff table (Name, Dept).",
+      "Write formulas for the first and last day of the month of the date in A2.",
+      "Write a formula that gives someone's age in whole years from the birth date in B2.",
+      "Write a formula that shows 'high' when A2 is over 100, 'low' when under 10, and 'medium' otherwise.",
+      "Write a formula that returns the third largest amount in the Sales table.",
+      "Write a formula for the North region's share of total sales, avoiding a division by zero."
+    ]
+  },
+  "html": {
+    "prefix": "HTML5. ",
+    "prompts": [
+      "Write a complete page with a header, a navigation menu of three links, a main section and a footer.",
+      "Write a sign-up form with name, email, a plan drop-down, a terms checkbox and a submit button, accessible.",
+      "Write a table of three orders with a caption, header row and a total row.",
+      "Write a page section with a responsive hero image and a video with controls.",
+      "Write a button that opens a modal dialog with a close button.",
+      "Write an unordered list of five products, each with an image, name and price.",
+      "Write a contact form with a message textarea and a phone field that only accepts digits.",
+      "Write a page that loads a stylesheet and a script that runs after the page is parsed.",
+      "Write a definition list of three terms and an accordion of two collapsible sections without JavaScript.",
+      "Write a small article with a heading, a published date, a figure with a caption and a quote."
+    ]
+  },
+  "css": {
+    "prefix": "CSS. ",
+    "prompts": [
+      "Write CSS that centers a box horizontally and vertically on the page.",
+      "Write CSS for a responsive grid of cards that fits as many 240px columns as possible.",
+      "Write CSS for light and dark themes using custom properties.",
+      "Write CSS for a header that stays at the top while the page scrolls.",
+      "Write CSS for a button with hover and keyboard focus styles and a smooth color change.",
+      "Write CSS for a two-column layout with a 250px sidebar that stacks on screens under 768px.",
+      "Write CSS that makes the text size grow with the screen width between 16px and 24px.",
+      "Write CSS for a full-width image that keeps its aspect ratio and covers a 300px tall banner.",
+      "Write CSS for a card with a shadow, rounded corners and 20px padding, with a width of the full container minus 40px.",
+      "Write CSS for a navigation bar with links spread evenly in a row."
+    ]
+  }
+}

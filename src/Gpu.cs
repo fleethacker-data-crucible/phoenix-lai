@@ -131,6 +131,83 @@ namespace Phoenix
         uint _memTypeCount;
         readonly List<IntPtr> _strings = new List<IntPtr>();
 
+        // GPU profile (/gpu): which card to use and how carefully to drive it. Kept in
+        // %LOCALAPPDATA%\LocalLLMStudio\gpu-profile.txt as "<auto|amd|nvidia>[ safe]"; the environment variables
+        // PHOENIX_GPU_PROFILE and PHOENIX_GPU_SAFE (1/0) override the file (used by the nvidia\ test scripts).
+        //   amd / nvidia: use that vendor's GPU when the machine has several (laptops pair Intel graphics with NVIDIA).
+        //   nvidia also halves the layers per GPU submit: laptop GPUs throttle, and Windows resets a GPU job after ~2 s.
+        //   safe: no subgroup arithmetic and no packed integer dot product (plain shared-memory kernels), for a driver
+        //   whose fast paths give wrong numbers.
+        public static string ProfileFile
+        {
+            get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio", "gpu-profile.txt"); }
+        }
+        public const uint VendorAmd = 0x1002, VendorNvidia = 0x10DE, VendorIntel = 0x8086;
+
+        public static void ReadProfile(out string profile, out bool safe)
+        {
+            profile = "auto"; safe = false;
+            try { if (System.IO.File.Exists(ProfileFile)) ParseProfile(System.IO.File.ReadAllText(ProfileFile), ref profile, ref safe); } catch { }
+            string ep = Environment.GetEnvironmentVariable("PHOENIX_GPU_PROFILE"), es = Environment.GetEnvironmentVariable("PHOENIX_GPU_SAFE");
+            if (!string.IsNullOrEmpty(ep)) ParseProfile(ep, ref profile, ref safe);
+            if (!string.IsNullOrEmpty(es)) safe = es.Trim() == "1" || es.Trim().ToLowerInvariant() == "on";
+        }
+
+        static void ParseProfile(string text, ref string profile, ref bool safe)
+        {
+            foreach (string w in text.ToLowerInvariant().Split(new char[] { ' ', '\t', '\r', '\n', ',' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (w == "auto" || w == "amd" || w == "nvidia") profile = w;
+                else if (w == "safe") safe = true;
+            }
+        }
+
+        public static void WriteProfile(string profile, bool safe)
+        {
+            if (profile != "auto" && profile != "amd" && profile != "nvidia") throw new ArgumentException("GPU profile must be auto, amd or nvidia.");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(ProfileFile));
+            System.IO.File.WriteAllText(ProfileFile, profile + (safe ? " safe" : ""));
+        }
+
+        public string Profile = "auto";
+        public bool Safe;
+        public string Picked = "";           // why this device was chosen, and what else was there
+
+        // Layers per GPU submit for a forward pass: the model's own number, halved on the nvidia profile.
+        public int LayersPerSubmit(int normal) { return Profile == "nvidia" ? Math.Max(1, normal / 2) : normal; }
+
+        static string VendorName(uint v)
+        {
+            return v == VendorAmd ? "AMD" : v == VendorNvidia ? "NVIDIA" : v == VendorIntel ? "Intel" : "0x" + v.ToString("X4");
+        }
+
+        static string TypeName(uint t)
+        {
+            return t == 1 ? "integrated" : t == 2 ? "discrete" : t == 3 ? "virtual" : t == 4 ? "cpu" : "other";
+        }
+
+        // NVIDIA packs the driver version as 10.8.8.6 bits; everyone else uses Vulkan's 10.10.12 layout.
+        static string DriverVersion(uint vendor, uint v)
+        {
+            if (vendor == VendorNvidia) return (v >> 22) + "." + ((v >> 14) & 0xFF) + "." + ((v >> 6) & 0xFF) + "." + (v & 0x3F);
+            return (v >> 22) + "." + ((v >> 12) & 0x3FF) + "." + (v & 0xFFF);
+        }
+
+        public uint DriverVersionRaw;
+        public static double LongestJobMs;   // longest SubmitAndWait in this process (any device)
+
+        // One line for the session log: what the GPU is and which paths the kernels take.
+        public string Describe()
+        {
+            ulong used, budget;
+            string mem = MemoryBudget(out used, out budget) ? (budget >> 20) + " MB budget, " + (used >> 20) + " MB used" : "no budget";
+            return "GPU " + DeviceName + " (" + VendorName(VendorId) + ", " + TypeName(DeviceType) + ", driver " + DriverVersion(VendorId, DriverVersionRaw) +
+                ", Vulkan " + (ApiVersion >> 22) + "." + ((ApiVersion >> 12) & 0x3FF) + "." + (ApiVersion & 0xFFF) + "); profile " + Profile + (Safe ? " safe" : "") +
+                "; subgroup " + SubgroupSize + (SubgroupArithmetic ? " (arithmetic)" : " (no arithmetic)") + "; integer dot " +
+                (IntegerDot ? (IntegerDotAccelerated ? "accelerated" : "emulated") : "off") + "; shared memory " + MaxSharedMemory +
+                " B; VRAM " + (DeviceLocalBytes >> 20) + " MB (" + mem + "); " + Picked;
+        }
+
         public static GpuDevice Create()
         {
             GpuDevice d = new GpuDevice();
@@ -168,19 +245,28 @@ namespace Phoenix
             IntPtr[] devs = new IntPtr[count];
             fixed (IntPtr* pd = devs) Vk.Check(Vk.vkEnumeratePhysicalDevices(Instance, &count, pd), "vkEnumeratePhysicalDevices");
 
+            ReadProfile(out Profile, out Safe);
+            uint wantVendor = Profile == "nvidia" ? VendorNvidia : Profile == "amd" ? VendorAmd : 0;
             int best = -1, bestScore = -1;
             uint bestFamily = 0;
+            StringBuilder seen = new StringBuilder();
+            byte* props = stackalloc byte[1024];
             for (int i = 0; i < count; i++)
             {
-                uint family;
-                if (!FindComputeQueue(devs[i], out family)) continue;
-                byte* props = stackalloc byte[1024];
                 Vk.vkGetPhysicalDeviceProperties(devs[i], props);
-                uint type = *(uint*)(props + 16);
+                uint type = *(uint*)(props + 16), vendor = *(uint*)(props + 8);
+                int nl = 0;
+                while (nl < 256 && props[20 + nl] != 0) nl++;
+                if (seen.Length > 0) seen.Append(", ");
+                seen.Append(Encoding.UTF8.GetString(props + 20, nl)).Append(" [").Append(VendorName(vendor)).Append(' ').Append(TypeName(type)).Append(']');
+                uint family;
+                if (!FindComputeQueue(devs[i], out family)) { seen.Append(" (no compute queue)"); continue; }
                 int score = type == 2 ? 3 : type == 1 ? 2 : 1; // discrete > integrated > other
+                if (wantVendor != 0 && vendor == wantVendor) score += 10;   // the profile's vendor beats everything
                 if (score > bestScore) { best = i; bestScore = score; bestFamily = family; }
             }
             if (best < 0) throw new InvalidOperationException("No Vulkan device with a compute queue.");
+            Picked = "devices: " + seen;
             Physical = devs[best];
             QueueFamily = bestFamily;
 
@@ -189,6 +275,8 @@ namespace Phoenix
             ApiVersion = *(uint*)(p + 0);
             VendorId = *(uint*)(p + 8);
             DeviceType = *(uint*)(p + 16);
+            DriverVersionRaw = *(uint*)(p + 4);
+            if (wantVendor != 0 && VendorId != wantVendor) Picked += " (no " + VendorName(wantVendor) + " GPU found)";
             int len = 0;
             while (len < 256 && p[20 + len] != 0) len++;
             DeviceName = Encoding.UTF8.GetString(p + 20, len);
@@ -251,6 +339,7 @@ namespace Phoenix
                     IntegerDotAccelerated = *(uint*)(dp + 16 + 4 * 4) != 0; // 4x8BitPacked signed (all our operands fit signed bytes)
                 }
             }
+            if (Safe) { SubgroupArithmetic = false; IntegerDot = false; IntegerDotAccelerated = false; }
             *(uint*)(dotFeat + 16) = IntegerDot ? 1u : 0u;
 
             // Logical device + queue
@@ -721,12 +810,12 @@ namespace Phoenix
                 VkConst.PipelineStageHost, VkConst.AccessHostRead);
             Vk.Check(Vk.vkEndCommandBuffer(Cmd), "vkEndCommandBuffer");
             _recording = false;
-            long t0 = Dbg.On ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Submit();
+            double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             if (Dbg.On)
             {
                 // one line per slow job (the ~2 s Windows GPU timeout is the danger zone), and a running count
-                double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 _dbgSubmits++; _dbgMs += ms;
                 if (ms > 250) Dbg.Msg("gpu", "slow GPU job: " + ms.ToString("F0") + " ms" + (ms > 1500 ? " (near the Windows GPU timeout)" : ""));
                 if (_dbgSubmits % 2000 == 0) Dbg.Msg("gpu", _dbgSubmits + " GPU jobs so far, " + (_dbgMs / 1000).ToString("F1") + " s busy");
@@ -793,9 +882,13 @@ namespace Phoenix
             si.commandBufferCount = 1;
             si.pCommandBuffers = (IntPtr)(&cmd);
             ulong fence = _fence;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Vk.Check(Vk.vkQueueSubmit(Queue, 1, &si, fence), "vkQueueSubmit");
             Vk.Check(Vk.vkWaitForFences(Device, 1, &fence, 1, ulong.MaxValue), "vkWaitForFences");
             Vk.Check(Vk.vkResetFences(Device, 1, &fence), "vkResetFences");
+            // longest GPU job in this process, for the nvidia\ probe (Windows resets a GPU job after ~2 s)
+            double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            if (ms > LongestJobMs) LongestJobMs = ms;
         }
 
         public void Dispose()

@@ -3,17 +3,22 @@ const $ = id => document.getElementById(id);
 const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
 const mirror = $('mirror');
 let history = [], info = {}, controller = null, filesAt = '.';
-const DEFAULT_SYSTEM = 'You are a concise, expert assistant running locally.';
-const settings = { temperature: 0.7, top_k: 40, top_p: 0.95, repeat_penalty: 1.1, max_tokens: 2048, system: DEFAULT_SYSTEM, pretype: true, typeEffect: true };
+const settings = { pretype: true, typeEffect: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
-// Settings per model (sampling, reply limit, system prompt, context, KV cache), kept under settings.models by file name.
-// Anything not set for a model falls back to these defaults.
-function ms(name) {
-  const d = { temperature: settings.temperature, top_k: settings.top_k, top_p: settings.top_p, repeat_penalty: settings.repeat_penalty,
-              max_tokens: settings.max_tokens, system: settings.system, context: 0, kv: 'q8' };
-  return Object.assign(d, (settings.models || {})[name] || {});
-}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
+// Each model's defaults come from the server (/api/models "defaults": Google's Gemma 4 sampling, reply limit and system
+// prompt by model size); this is the fallback until the list arrives. An empty system prompt = the server's default.
+const BASE_DEFAULTS = { temperature: 1.0, top_k: 64, top_p: 0.95, repeat_penalty: 1.0, max_tokens: 4096, system: '', context: 0, kv: 'q8' };
+const MODEL_KEYS = ['temperature', 'top_k', 'top_p', 'repeat_penalty', 'max_tokens', 'system'];
+// One-time move to per-model defaults: drop the old global sampling values and saved copies of the old defaults.
+if (settings.defaultsV !== 2) {
+  MODEL_KEYS.forEach(k => delete settings[k]);
+  Object.values(settings.models || {}).forEach(c => MODEL_KEYS.forEach(k => delete c[k]));
+  settings.defaultsV = 2; save();
+}
+function modelDefaults(name) { const m = chatModels.find(x => x.name === name); return Object.assign({}, BASE_DEFAULTS, m && m.defaults); }
+// Settings per model, kept under settings.models by file name: only what differs from that model's defaults.
+function ms(name) { return Object.assign(modelDefaults(name), (settings.models || {})[name] || {}); }
 
 const ICON_DIR = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICON_FILE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>';
@@ -45,6 +50,8 @@ const SICON = {
   speed: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
   gpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>',
   ctx: '<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
+  pc: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
   rag: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>'
 };
 let lastTps = '', ctxUsed = 0;
@@ -86,6 +93,9 @@ function drawStatus(offline) {
     if (!cpu) hw.push(statusItem('gpu', info.loading ? 'detecting gpu…' : info.loadError ? 'gpu error' : onGpu ? info.backend.replace(/^GPU: /, '')
       : info.backend ? 'gpu unavailable: on cpu' : 'gpu idle', true));
   }
+  // who and where: the Windows user and the computer's name, above the video card
+  if (info.machine) hw.unshift(statusItem('pc', info.machine));
+  if (info.user) hw.unshift(statusItem('user', info.user));
   const sh = $('sideHw'); if (sh) sh.innerHTML = hw.map(t => '<div>' + t + '</div>').join('');
   const ts = $('topSpeed'); if (ts) ts.innerHTML = top.join('<span class="sep">|</span>');
 }
@@ -173,15 +183,27 @@ async function setFolder(arg) {
 }
 
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
+// Each time the app window opens, the welcome logo starts on the other version (dark / light) than last time. A refresh
+// (F5) keeps it: sessionStorage survives a reload of the window but not a new window.
+try {
+  if (!sessionStorage.getItem('phx.logoSet')) { settings.logoLight = !settings.logoLight; save(); sessionStorage.setItem('phx.logoSet', '1'); }
+} catch (e) {}
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI">' +
+  chatEl.innerHTML = '<div class="empty" id="empty"><div class="logos' + (settings.logoLight ? ' light' : '') + '">' +
+    '<img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI"><img class="logo alt" src="assets/light_phoenix_logo.png" alt=""></div>' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.</div></div>';   // version: in the title bar
   placePrompt(); centerEmpty();
 }
+// Click the welcome logo: the dark and light versions dissolve into each other (the choice is remembered; one listener,
+// so a chat restored after a reload keeps working).
+chatEl.addEventListener('click', e => {
+  const l = e.target.closest('.logos'); if (!l) return;
+  settings.logoLight = !settings.logoLight; l.classList.toggle('light', settings.logoLight); save();
+});
 // The prompt always sits at the end of the conversation.
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); syncComposer(); scrollDown(); }
-function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
+function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
 
 // The conversation survives a reload (F5) of this window: what is on screen, the history sent to the model and the
 // speed/context numbers are kept in sessionStorage (per window, gone when it closes). Only /new starts over.
@@ -189,30 +211,137 @@ const SAVE_KEY = 'phx.chat';
 function saveChat() {
   try {
     const keep = promptLine.isConnected; if (keep) promptLine.remove();
-    try { sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html: chatEl.innerHTML, history, ctxUsed, tps: tpsHistory })); }
+    try { sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html: chatEl.innerHTML, history, ctxUsed, tps: tpsHistory, composer: chatEl.style.getPropertyValue('--composer') })); }
     catch (e) {
       // pictures can outgrow the window's storage: keep the chat without them (the model forgets them after a reload)
       const lite = history.map(m => m.images ? { role: m.role, content: m.content } : m);
       const html = chatEl.innerHTML.replace(/<img src="data:[^"]*"/g, '<img class="gone" alt="picture"');
-      sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html, history: lite, ctxUsed, tps: tpsHistory }));
+      sessionStorage.setItem(SAVE_KEY, JSON.stringify({ html, history: lite, ctxUsed, tps: tpsHistory, composer: chatEl.style.getPropertyValue('--composer') }));
     }
     if (keep) chatEl.appendChild(promptLine);
   } catch (e) {}
 }
-function forgetChat() { try { sessionStorage.removeItem(SAVE_KEY); } catch (e) {} }
+function forgetChat() { try { sessionStorage.removeItem(SAVE_KEY); sessionStorage.removeItem('phx.chatId'); } catch (e) {} }
 function restoreChat() {
   try {
     const s = JSON.parse(sessionStorage.getItem(SAVE_KEY) || 'null');
     if (!s || !s.html) return false;
     promptLine.remove();
+    if (s.composer) chatEl.style.setProperty('--composer', s.composer);   // the box's height from before: no jump while it is re-measured
     chatEl.innerHTML = s.html;
     chatEl.querySelectorAll('.caret').forEach(c => c.remove());
+    chatEl.querySelectorAll('.logos').forEach(l => l.classList.toggle('light', !!settings.logoLight));   // this load's logo
     chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
     history = s.history || []; ctxUsed = s.ctxUsed || 0;
     (s.tps || []).forEach(t => recordTps(t));
     placePrompt(); centerEmpty(); scrollDown();
+    // Fonts and code blocks finish laying out after this and make the chat taller: keep it pinned to the newest line
+    // while the page settles (a second and a half), so a reload never leaves the end below the view.
+    const settleUntil = performance.now() + 1500;
+    const pin = new ResizeObserver(() => { if (performance.now() < settleUntil) scrollDown(); else pin.disconnect(); });
+    [chatEl, ...chatEl.children].forEach(c => pin.observe(c));
+    document.fonts.ready.then(() => { if (performance.now() < settleUntil) scrollDown(); });
+    setTimeout(() => pin.disconnect(), 1600);
     return true;
   } catch (e) { return false; }
+}
+// ---------- saved chats (Recents) and projects ----------
+// Every chat is kept by the server (%LOCALAPPDATA%\LocalLLMStudio\chats) after each reply, under an id this window
+// holds in sessionStorage; Recents lists them newest first and reopens one with a click. A project is a folder in
+// Phoenix_Projects: + creates one, a click connects it (like /folder <name>).
+const ID_KEY = 'phx.chatId';
+let chatId = null, chatList = [], projectList = [];
+try { chatId = sessionStorage.getItem(ID_KEY); } catch (e) {}
+const TRASH_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>';
+const PROJ_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+function chatTitle() {
+  // the first message on screen (after /compact the history starts with the summary)
+  const shown = chatEl.querySelector('.turn .user .ubody'), first = history.find(m => m.role === 'user');
+  if (!first) return 'New chat';
+  const t = String(shown ? shown.firstChild && shown.firstChild.nodeType === 3 ? shown.firstChild.nodeValue : shown.textContent : first.content || '').split('\n\n[context]')[0].replace(/\s+/g, ' ').trim();
+  return t.length > 60 ? t.slice(0, 60).trim() + '…' : (t || 'Picture');
+}
+async function persistChat() {
+  if (!history.length) return;
+  try {
+    if (!chatId) { chatId = (Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)); sessionStorage.setItem(ID_KEY, chatId); }
+    const data = sessionStorage.getItem(SAVE_KEY);
+    if (!data) return;
+    chatList = (await api('/api/chat-save', { id: chatId, title: chatTitle(), project: info.folder || '', data })).chats;
+    drawRecents();
+  } catch (e) {}
+}
+function drawRecents() {
+  const el = $('recentList'); if (!el) return;
+  el.innerHTML = chatList.length ? chatList.map(c => '<div class="sitem' + (c.id === chatId ? ' on' : '') + '" data-id="' + esc(c.id) + '" title="' +
+    esc(c.title + (c.project ? '  (' + c.project + ')' : '') + ' · ' + new Date(c.updated).toLocaleString()) + '"><span>' + esc(c.title) +
+    '</span><b class="del" title="Delete this chat">' + TRASH_ICON + '</b></div>').join('') : '<div class="sempty">No chats yet</div>';
+}
+function drawProjects() {
+  const el = $('projList'); if (!el) return;
+  const cur = (info.folder || '').replace(/^\//, '').split('/')[0].toLowerCase();
+  el.innerHTML = projectList.length ? projectList.map(p => '<div class="sitem' + (p.toLowerCase() === cur ? ' on' : '') + '" data-p="' + esc(p) + '" title="Connect ' + esc(p) + '">' +
+    PROJ_ICON + '<span>' + esc(p) + '</span><b class="del" title="Remove this project">' + TRASH_ICON + '</b></div>').join('') : '<div class="sempty">No projects</div>';
+}
+async function loadSidebar() {
+  try { chatList = (await api('/api/chats')).chats; } catch (e) {}
+  try { projectList = (await api('/api/projects')).projects; } catch (e) {}
+  drawRecents(); drawProjects();
+  if (window.loadSkillList) window.loadSkillList();   // skills.js: app skills + the active project's
+}
+async function openChat(id) {
+  if (controller) return;
+  let d;
+  try { d = (await api('/api/chat-get?id=' + encodeURIComponent(id))).data; } catch (e) { systemLine('Could not open that chat: ' + e.message); loadSidebar(); return; }
+  try { sessionStorage.setItem(SAVE_KEY, d); sessionStorage.setItem(ID_KEY, id); } catch (e) {}
+  chatId = id;
+  if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); }
+  if (!restoreChat()) { welcome(); return; }
+  drawRecents();
+  if (info.file) drawStatus(false);
+  input.focus();
+}
+function newProjectBox() {
+  const el = $('projList'); if (!el || el.querySelector('.pnew')) return;
+  const box = document.createElement('input'); box.className = 'pnew'; box.placeholder = 'Project name'; box.maxLength = 64; box.spellcheck = false;
+  const err = document.createElement('div'); err.className = 'perr';
+  el.prepend(err); el.prepend(box); box.focus();
+  const close = () => { box.remove(); err.remove(); };
+  box.addEventListener('keydown', async e => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); input.focus(); return; }
+    if (e.key !== 'Enter') return;
+    const name = box.value.trim(); if (!name) return;
+    try { projectList = (await api('/api/project-create', { name })).projects; }
+    catch (x) { err.textContent = x.message; return; }
+    close(); await setFolder(name); newChat(); await loadSidebar();
+  });
+  box.addEventListener('blur', () => setTimeout(() => { if (!box.value.trim()) close(); }, 150));
+}
+if ($('recentList')) {
+  $('recentList').addEventListener('click', async e => {
+    const it = e.target.closest('.sitem'); if (!it) return;
+    if (e.target.closest('.del')) {
+      try { chatList = (await api('/api/chat-delete', { id: it.dataset.id })).chats; } catch (x) {}
+      if (it.dataset.id === chatId) newChat(); else drawRecents();
+      return;
+    }
+    if (it.dataset.id !== chatId) openChat(it.dataset.id);
+  });
+  $('projList').addEventListener('click', async e => {
+    const it = e.target.closest('.sitem'); if (!it || controller) return;
+    if (e.target.closest('.del')) {
+      if (!confirm('Remove the project "' + it.dataset.p + '"?\n\nIts folder is moved to Phoenix_Projects\\.llm-backup, not erased.')) return;
+      try { projectList = (await api('/api/project-delete', { name: it.dataset.p })).projects; } catch (x) { systemLine('Could not remove the project: ' + x.message); return; }
+      await refresh(); drawProjects(); return;
+    }
+    // click = make it the active project (green); click the active one again = disconnect. Either way the chats shown
+    // and saved switch to that project's .phoenix\chats (or the no-project folder), so start a fresh chat.
+    const active = it.classList.contains('on');
+    await setFolder(active ? 'close' : it.dataset.p);
+    newChat(); await loadSidebar();
+  });
+  $('newProject').onclick = newProjectBox;
+  loadSidebar();
 }
 window.addEventListener('pagehide', saveChat);
 if (!restoreChat()) welcome();
@@ -256,6 +385,58 @@ function systemLine(text) {
   const d = document.createElement('div'); d.className = 'meta sysline'; d.textContent = text;
   chatEl.insertBefore(d, promptLine.isConnected ? promptLine : null); scrollDown();
   saveChat();
+}
+
+// /compact: the model summarises the history it has been sent; the messages stay on screen above a divider, and from
+// then on the model gets only the summary (as the conversation's first exchange) plus what follows.
+async function compact(auto) {
+  if (controller) return;
+  if (!info.file) { systemLine('No model loaded — use /model to pick one.'); return; }
+  const n = history.length;
+  if (n < 2) { systemLine('Nothing to compact yet.'); return; }
+  const box = document.createElement('details'); box.className = 'work busy compacted';
+  box.innerHTML = '<summary><span class="spin"></span><span class="lbl"></span></summary><pre class="worklog"></pre>';
+  const lbl = box.querySelector('.lbl'), log = box.querySelector('.worklog');
+  const what = (auto ? 'Context 80% full: compacting ' : 'Compacting ') + n + ' messages…';
+  lbl.textContent = what;
+  chatEl.insertBefore(box, promptLine.isConnected ? promptLine : null); scrollDown();
+  controller = new AbortController();
+  let summary = '', text = '', err = null, tokens = 0;
+  try {
+    const res = await fetch('/api/compact', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history.map(m => ({ role: m.role, content: m.content })) }) });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith('data: ')) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.part) lbl.textContent = what + (ev.parts > 1 ? ' (part ' + ev.part + ' of ' + ev.parts + ')' : '');
+        else if (ev.t !== undefined) { text += ev.t; log.textContent = text; }
+        else if (ev.error) err = ev.error;
+        else if (ev.done) { summary = ev.summary; tokens = ev.tokens; }
+      }
+    }
+  } catch (e) { err = e.name === 'AbortError' ? 'stopped' : e.message; }
+  controller = null;
+  box.classList.remove('busy');
+  if (!summary) {
+    box.classList.add('bad'); lbl.textContent = '✗ Compact failed: ' + (err || 'no summary') + ' — nothing was changed';
+  } else {
+    history = [{ role: 'user', content: 'Summary of our conversation so far (the earlier messages were compacted into it):\n\n' + summary },
+               { role: 'assistant', content: 'Understood. I will continue from this summary.' }];
+    ctxUsed = 0; drawStatus(false);
+    log.textContent = summary;
+    box.classList.add('verified');
+    lbl.textContent = '✓ ' + (auto ? 'Auto-compacted ' : 'Compacted ') + n + ' messages into a ' + tokens + '-token summary · the model sees only the summary from here (click to read it)';
+  }
+  placePrompt(); input.focus();
+  saveChat(); persistChat();
 }
 
 // Docs library: /index rebuilds what changed; /rag on|off; /rag <words> previews what a message would retrieve.
@@ -324,6 +505,7 @@ const COMMANDS = [
       await loadModel(m.name);
     } },
   { name: '/new', use: '/new', desc: 'start a new chat', run: () => newChat() },
+  { name: '/compact', use: '/compact', desc: 'summarise the conversation so far: the chat stays on screen, the model keeps only the summary', run: () => compact() },
   { name: '/rag', use: '/rag [on | off | <words>]', desc: 'docs status, turn retrieval on/off, or preview a search', arg: true,
     subs: [{ name: 'on' }, { name: 'off' }, { name: '<words>' }],
     run: async arg => {
@@ -369,6 +551,12 @@ const COMMANDS = [
       else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
       systemLine(txt);
     } },
+  { name: '/skills', use: '/skills [name]', desc: 'open the Skill Builder (a skill is called in chat with /<skill-name>)', arg: true,
+    options: () => (window.skillNames ? window.skillNames() : []).map(n => ({ value: n, desc: 'edit' })),
+    run: arg => {   // no name: the builder as it was (or the first skill)
+      if (window.openSkillBuilder) window.openSkillBuilder(arg || undefined);
+      else systemLine('The Skill Builder is in the Phoenix window (it needs more room than this panel). Skills you save there work here too: call one with /<skill-name>.');
+    } },
   { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() }
 ];
 
@@ -376,6 +564,8 @@ async function command(text) {
   const sp = text.search(/\s/), cmd = sp < 0 ? text : text.slice(0, sp), arg = sp < 0 ? '' : text.slice(sp).trim();
   if (cmd === '/reindex') { await reindex(); return true; }
   const c = COMMANDS.find(c => c.name === cmd.toLowerCase());
+  // /<skill-name> calls a skill: the message goes to the model, and the server puts the skill in front of it.
+  if (!c && window.skillNames && window.skillNames().includes(cmd.slice(1).toLowerCase())) return false;
   if (!c) { systemLine('Unknown command ' + cmd + ' — type /help for the list.'); return true; }
   await c.run(arg);
   return true;
@@ -398,7 +588,8 @@ const ACCENTS = ['#e8c15a', '#f08a3c', '#e85a5a', '#e85aa8', '#a77bf0', '#5a8ce8
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function applyLook() {
   document.documentElement.classList.toggle('no-banner', !settings.banner);
-  document.documentElement.classList.toggle('grid', !!settings.grid);   // grid background + faint logo, else solid   // banner kept, off by default
+  document.documentElement.classList.toggle('grid', !!settings.grid);
+  document.documentElement.classList.toggle('light', !!settings.light);   // settings > appearance > light mode   // grid background + faint logo, else solid   // banner kept, off by default
   const acc = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : ACCENTS[0], rgb = hexRgb(acc), root = document.documentElement.style;
   root.setProperty('--accent', acc);
   root.setProperty('--accent-rgb', rgb.join(','));
@@ -425,16 +616,22 @@ function drawSwatches() {
 }
 $('sAccent').addEventListener('click', e => { const b = e.target.closest('button[data-c]'); if (!b) return; settings.accent = b.dataset.c; applyLook(); drawSwatches(); });
 const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
-let openedBrowser = 'edge', lookBefore = null;
+let openedBrowser = 'edge', openedGpu = null, lookBefore = null;
 async function openSettings() {
   const rg = info.rag || {};
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
-  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid };
+  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid, light: settings.light };
   $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
   $('sTypeEffect').checked = settings.typeEffect !== false; $('sTypeEffect').onchange = () => { settings.typeEffect = $('sTypeEffect').checked; save(); };
   $('sBanner').checked = !!settings.banner;
-  $('sGrid').checked = !!settings.grid;
-  $('sGrid').onchange = () => { settings.grid = $('sGrid').checked; applyLook(); };
+  if ($('sGrid')) {   // not in the VS Code panel, which takes VS Code's theme
+    $('sGrid').checked = !!settings.grid;
+    $('sGrid').onchange = () => { settings.grid = $('sGrid').checked; applyLook(); };
+  }
+  if ($('sLight')) {
+    $('sLight').checked = !!settings.light;
+    $('sLight').onchange = () => { settings.light = $('sLight').checked; applyLook(); };
+  }
   $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
   radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
@@ -445,26 +642,19 @@ async function openSettings() {
   radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
   $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
     : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
+  let g = { profile: 'auto', safe: false };
+  try { g = await api('/api/gpu'); } catch (e) {}
+  openedGpu = g;
+  radios('sGpu', [{ value: 'amd', label: 'AMD' }, { value: 'nvidia', label: 'NVIDIA' }, { value: 'auto', label: 'Auto' }], g.profile);
+  $('sGpuSafe').checked = !!g.safe;
+  $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
   $('settingsModal').classList.add('show');
   $('settingsBody').scrollTop = 0;
 }
 function closeSettings(applied) {
-  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; applyLook(); }   // undo the preview
+  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; settings.light = lookBefore.light; applyLook(); }   // undo the preview
   $('settingsModal').classList.remove('show');
 }
-// Category bar: jump to a section.
-$('settingsCats').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (!b) return;
-  const body = $('settingsBody'), sec = $(b.dataset.cat);
-  body.scrollTo({ top: sec.offsetTop - body.offsetTop - 4, behavior: 'smooth' });
-});
-// Highlight the category being looked at.
-$('settingsBody').addEventListener('scroll', () => {
-  const body = $('settingsBody'); let cur = 'catDocs';
-  for (const sec of body.querySelectorAll('section')) if (sec.offsetTop - body.offsetTop - 30 <= body.scrollTop) cur = sec.id;
-  if (body.scrollTop + body.clientHeight >= body.scrollHeight - 4) cur = 'catApp';
-  document.querySelectorAll('#settingsCats button').forEach(x => x.classList.toggle('on', x.dataset.cat === cur));
-});
 $('closeSettings').addEventListener('click', () => closeSettings(false));
 $('settingsNew').addEventListener('click', () => { closeSettings(true); save(); newChat(); });
 $('applySettings').addEventListener('click', async () => {
@@ -473,6 +663,11 @@ $('applySettings').addEventListener('click', async () => {
     await api('/api/rag', { enabled: $('sRag').checked });
     const br = radioValue('sBrowser');
     if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
+    const gp = radioValue('sGpu'), gs = $('sGpuSafe').checked;
+    if (openedGpu && gp && (gp !== openedGpu.profile || gs !== !!openedGpu.safe)) {
+      await api('/api/gpu', { profile: gp, safe: gs ? 'on' : 'off' });
+      systemLine('GPU profile set to ' + gp + (gs ? ' (safe kernels)' : '') + ' — used from the next model load (/model).');
+    }
   } catch (e) {}
   closeSettings(true);
   refresh();
@@ -491,6 +686,12 @@ async function send() {
   }
   if (!info.file) { systemLine('No model loaded — use /model to pick one.'); return; }
   input.value = ''; autosize();
+  // Auto-compact at 80% of the context: one summary now, instead of old messages silently dropping (and the whole
+  // window being re-read) on every turn from here on.
+  if (info.context && ctxUsed >= info.context * 0.8 && history.length >= 2) {
+    await compact(true);
+    if (controller) return;
+  }
   // The message box stays fixed at the bottom: the turn goes in above it.
 
   const turn = document.createElement('div'); turn.className = 'turn';
@@ -537,7 +738,6 @@ async function send() {
     } else if (performance.now() - lastGrow > 450) draw(false);
   };
   const flush = () => { shown = reply.length; typo = null; };
-  const paint = () => {};
   draw(false);
   // A timer (not requestAnimationFrame) so the reveal keeps going when the window is hidden or minimized.
   raf = setInterval(tick, 16);
@@ -557,17 +757,19 @@ async function send() {
     add(t) { this.ensure(); this.text += t; this.log.textContent = this.text; if (this.box.open) this.log.scrollTop = this.log.scrollHeight; },
     // green = looks good, gold = possible problems found (corrected) or no clear answer, red = definite syntax errors
     // (corrected). The label says whether the language's syntax reference (RAG) was used.
-    phase(p, lang, usedRef) {
+    phase(p, lang, usedRef, docs) {
       this.ensure();
       if (lang) this.lang = lang;
       const sheet = this.lang === 'code' ? 'the syntax reference' : 'the ' + this.lang + ' syntax reference';
       const via = usedRef ? ' (checked against ' + sheet + ')' : ' (no ' + (this.lang === 'code' ? '' : this.lang + ' ') + 'reference sheet; checked by the model)';
       const labels = { checking: 'Checking against ' + sheet + '…', good: '✓ Looks good' + via, fixed: '⚠ Possible mistakes found and corrected' + via,
                        unsure: '⚠ Could not confirm the code is correct' + via, wrong: '✗ Syntax errors found and corrected' + via };
+      // passed with library documents in front of it: one plain line naming them
+      if (p === 'good' && usedRef && docs && docs.length) labels.good = '✓ Verified via RAG document' + (docs.length > 1 ? 's ' : ' ') + docs.join(', ');
       this.label.textContent = labels[p] || p;
       this.box.classList.toggle('busy', p === 'checking');
-      this.box.classList.remove('ok', 'warn', 'bad');
-      if (p !== 'checking') this.box.classList.add(p === 'good' ? 'ok' : p === 'wrong' ? 'bad' : 'warn');
+      this.box.classList.remove('ok', 'warn', 'bad', 'verified');
+      if (p !== 'checking') this.box.classList.add(p === 'good' ? (usedRef && docs && docs.length ? 'verified' : 'ok') : p === 'wrong' ? 'bad' : 'warn');
     },
     done() { if (this.box) this.box.classList.remove('busy'); }
   };
@@ -605,14 +807,31 @@ async function send() {
         else if (ev.guard) showGuard(ev.guard);
         else if (ev.t !== undefined) { if (prog) { prog.remove(); prog = null; } if (!firstAt) firstAt = performance.now(); reply += ev.t; }
         else if (ev.w !== undefined) work.add(ev.w);
-        else if (ev.phase) { flush(); out.innerHTML = render(reply, false); work.phase(ev.phase, ev.lang, ev.ref); }
+        else if (ev.skills) {
+          // the skills the server gave the model for this message: one line above the reply, a click opens the skill
+          const d = document.createElement('div'); d.className = 'sources skillsused';
+          d.innerHTML = '<b>skill' + (ev.skills.length > 1 ? 's' : '') + '</b> ' + ev.skills.map(k => '<a data-skill="' + esc(k.name) + '" data-scope="' + esc(k.scope) + '">' + esc(k.name) + '</a>' +
+            (k.called ? '' : ' <i>(matched)</i>')).join(', ');
+          d.title = 'Instructions loaded for this message · click to open in the Skill Builder';
+          turn.insertBefore(d, out);
+        }
+        else if (ev.indexed) {
+          // the project index took in the model's file changes: a green line under the reply (and its check line)
+          const n = document.createElement('details'); n.className = 'work verified indexed';
+          const f = ev.indexed.files || [];
+          n.innerHTML = '<summary><span class="lbl"></span></summary>';
+          n.querySelector('.lbl').textContent = '✓ Changes indexed: ' + (f.length > 3 ? f.length + ' files' : f.join(', ')) + ' (' + ev.indexed.ms + ' ms)';
+          turn.appendChild(n);
+        }
+        else if (ev.phase) { flush(); out.innerHTML = render(reply, false); work.phase(ev.phase, ev.lang, ev.ref, ev.docs); }
         else if (ev.approve) askApproval(ev.approve);
         else if (ev.replace !== undefined) { reply = ev.replace; shown = reply.length; out.innerHTML = render(reply, false); }
         else if (ev.rag) {
           const d = document.createElement('div'); d.className = 'sources';
           // One short line (files used); click it to see the exact sections that were added.
           const files = [...new Set(ev.rag.map(h => h.file))];
-          d.innerHTML = '<b>docs</b> ' + ev.rag.length + ' section' + (ev.rag.length > 1 ? 's' : '') + ' from ' + files.map(esc).join(', ') +
+          // counts only (a library can hold many files); the names and sections are in the detail
+          d.innerHTML = '<b>docs</b> searched the library: ' + ev.rag.length + ' section' + (ev.rag.length > 1 ? 's' : '') + ' from ' + files.length + ' document' + (files.length > 1 ? 's' : '') +
             '<div class="detail">' + ev.rag.map(h => '[' + h.n + '] ' + esc(h.file) + (h.title ? ' › ' + esc(h.title) : '')).join('<br>') + '</div>';
           d.title = 'Click to show which sections';
           turn.insertBefore(d, out);
@@ -650,7 +869,7 @@ async function send() {
   if (!appended) history.push({ role: 'assistant', content: reply });
   controller = null;
   placePrompt(); input.focus();
-  saveChat();
+  saveChat(); persistChat();
   if (wrote) { refresh(); if ($('files').classList.contains('show')) showFiles(filesAt); }
   if (window.phxTurnDone) window.phxTurnDone(edited, turn);
 }
@@ -659,7 +878,7 @@ async function send() {
 function drawPrompt() {
   const v = input.value, at = input.selectionEnd == null ? v.length : input.selectionEnd;
   const caret = '<span class="caret"></span>';
-  if (!v) { mirror.innerHTML = caret + '<span class="ph">Ask anything</span>'; return; }
+  if (!v) { mirror.innerHTML = caret; return; }   // no placeholder: just the › and the cursor
   // A zero-width space keeps a trailing newline from collapsing.
   mirror.innerHTML = esc(v.slice(0, at)) + caret + esc(v.slice(at)) + (v.endsWith('\n') ? '\u200b' : '');
 }
@@ -839,6 +1058,14 @@ function alignChevrons() {
   // (baseline + descent), lifted 4px in all (#mirror -2px, .caret -2px; see chat.css).
   const size = parseFloat(getComputedStyle(mirror).fontSize), caretMid = x.fontBoundingBoxDescent - 0.525 * size - 4;
   document.documentElement.style.setProperty('--pchev-shift', (chevMid + caretMid).toFixed(2) + 'px');
+  // Settings header: centre the › on the capitals of "SETTINGS" (same glyph and size as the chat's ›).
+  const h2 = document.querySelector('#settingsModal header h2');
+  if (h2) {
+    const hs = getComputedStyle(h2);
+    ctx.font = hs.fontWeight + ' ' + hs.fontSize + ' ' + hs.fontFamily;
+    const S = ctx.measureText('S'), capMid = (S.actualBoundingBoxAscent - S.actualBoundingBoxDescent) / 2;
+    document.documentElement.style.setProperty('--hchev-shift', (chevMid - capMid).toFixed(2) + 'px');
+  }
 }
 applyLook();
 document.fonts.ready.then(alignChevrons);
@@ -1000,7 +1227,6 @@ function showGuard(g) {
 
 // Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
 if ($('side')) {
-  function runCmd(t) { input.value = t; send(); }
   $('navNew').onclick = () => newChat();
   $('navSettings').onclick = () => openSettings();
   // Model drop-down: the chat models in the models folder; picking one loads it.
@@ -1019,8 +1245,6 @@ if ($('side')) {
   };
   modelMenu.onclick = e => { const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
     if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; } if (b.dataset.m !== info.file && !controller) loadModel(b.dataset.m); };
-  $('navFiles').onclick = () => { if (!info.folder) systemLine('No folder connected — use /folder.'); else if ($('files').classList.contains('show')) $('files').classList.remove('show'); else showFiles(filesAt); };
-  $('navHelp').onclick = () => { if (promptLine.isConnected) runCmd('/help'); };
   document.addEventListener('click', e => { if (!e.target.closest('.mpick')) modelMenu.classList.remove('show'); });
 }
 
@@ -1070,6 +1294,8 @@ $('mSave').onclick = async () => {
   const kvIn = $('mKv').querySelector('input:checked'), before = ms(mmName);
   c.kv = kvIn && $('mKv').querySelector('input[value=q8]') ? kvIn.value : before.kv;   // only f16 offered: keep the preference
   c.system = $('mSystem').value;
+  const def = modelDefaults(mmName);
+  MODEL_KEYS.forEach(k => { if (c[k] === def[k] || (k === 'system' && c[k].trim() === String(def[k]).trim())) delete c[k]; });   // defaults stay live
   settings.models = settings.models || {}; settings.models[mmName] = c; save();
   closeModelSettings();
   // The loaded model picks up a new context or KV cache only on a reload.

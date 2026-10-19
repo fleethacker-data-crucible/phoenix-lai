@@ -10,15 +10,18 @@ namespace Phoenix
 {
     public static class ContextPlanner
     {
-        // Auto stops at 32K: small models use longer context poorly, and every token costs memory. A context typed in
-        // /settings can go up to the model's limit.
-        public const int Min = 2048, Step = 1024, Max = 32768;
+        // Auto goes up to 128K (or the model's trained limit, if lower) when the memory is there: a small model leaves
+        // room for a much longer context than a big one. A context typed in /settings can go up to the model's limit.
+        public const int Min = 2048, Step = 1024, Max = 131072;
         const long GpuMargin = 1536L << 20;      // docs-search embedder (~0.6 GB), prefill scratch, desktop growth
         const long CpuMargin = 2048L << 20;      // the rest of Windows and the user's programs
         const long CommitReserve = 3072L << 20;  // commit left for other programs (see Choose)
 
-        // Memory per context token, and context-independent cache memory, for this model on this path.
-        static void KvCost(GgufFile g, bool gpu, out long perToken, out long fixedBytes)
+        // Memory per context token, and context-independent cache memory, for this model on this path (Gemma's
+        // sliding-window rings sized for the current GemmaGpu.SwaSlack).
+        static void KvCost(GgufFile g, bool gpu, out long perToken, out long fixedBytes) { KvCost(g, gpu, GemmaGpu.SwaSlack, out perToken, out fixedBytes); }
+
+        static void KvCost(GgufFile g, bool gpu, int slack, out long perToken, out long fixedBytes)
         {
             fixedBytes = 0;
             string arch = g.GetString("general.architecture");
@@ -30,7 +33,7 @@ namespace Phoenix
                 {
                     if (c.KvSrc[l] != l) continue;   // E2B/E4B shared-KV layer: reads an earlier layer's cache
                     long kv = (long)c.NHeadKv[l] * c.HeadDim[l] * 2 * 2;   // K and V, fp16
-                    if (gpu && c.Swa[l]) fixedBytes += (c.NSwa + GemmaGpu.SwaSlack) * kv;
+                    if (gpu && c.Swa[l]) fixedBytes += (c.NSwa + slack) * kv;
                     else perToken += kv;
                 }
                 return;
@@ -57,10 +60,36 @@ namespace Phoenix
         public static long MinBytes(GgufFile g, string path, bool gpu, out long commitNeed)
         {
             long perToken, fixedBytes;
-            KvCost(g, gpu, out perToken, out fixedBytes);
+            KvCost(g, gpu, MinSlack, out perToken, out fixedBytes);   // the smallest rewind buffer a load can use
             long weights = Weights(g, path, gpu), kv = fixedBytes + (long)Min * perToken;
             commitNeed = CommitReserve + kv + (gpu ? weights : 0);
             return weights + kv + (gpu ? GpuMargin : CpuMargin);
+        }
+
+        // Gemma's rewind buffer (GemmaGpu.SwaSlack: positions its sliding-window rings keep beyond the window), sized to the
+        // memory at load. Bigger lets the next message rewind further without re-reading the whole conversation (each
+        // message's added sections are dropped from the history, so it rewinds to the previous message: ~2-4K tokens), but
+        // costs 12-320 KB per position (E2B .. 12B). Auto context: up to half the room left after the weights and the
+        // smallest cache; a typed context: what is left after it. Never below MinSlack (the old fixed size).
+        public const int MinSlack = 512, MaxSlack = 4096;
+
+        public static int ChooseSlack(GgufFile g, string path, long freeBytes, long commitBytes, int context, out string why)
+        {
+            why = null;
+            if (!GemmaConfig.IsGemma(g.GetString("general.architecture"))) return MinSlack;
+            long perToken, fixedMin, fixedMax;
+            KvCost(g, true, MinSlack, out perToken, out fixedMin);
+            KvCost(g, true, MinSlack + 1024, out perToken, out fixedMax);
+            long perSlack = (fixedMax - fixedMin) / 1024;   // bytes per extra position
+            if (perSlack <= 0) return MinSlack;
+            long weights = Weights(g, path, true);
+            long room = Math.Min(freeBytes - weights - GpuMargin, commitBytes - CommitReserve - weights) - fixedMin -
+                        (long)Math.Max(Min, context) * perToken;
+            if (context <= 0) room /= 2;   // auto: the other half goes to the context
+            long extra = Math.Max(0, Math.Min(MaxSlack - MinSlack, room / perSlack));
+            int slack = MinSlack + (int)(extra / 512 * 512);
+            why = "rewind buffer " + slack + " tokens (" + (slack * perSlack >> 20) + " MB)";
+            return slack;
         }
 
         static long Weights(GgufFile g, string path, bool gpu)

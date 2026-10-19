@@ -46,9 +46,12 @@ namespace Phoenix
         // Sliding-window layers keep a ring of the last NSwa + SwaSlack positions instead of the whole context (all caches
         // are fp16, packed): Gemma 4 12B at 32K context needs ~1.4 GB of cache instead of ~11 GB. The slack lets the chat
         // engine keep its cache when a new prompt rewinds up to SwaSlack tokens (MinReuse); a longer rewind re-reads it.
-        // 512: with exact-token reply reuse (Engine.ReplyIds) conversations rarely rewind further; 1536 cost Gemma 12B
-        // ~0.3 GB more VRAM for its 40 sliding-window layers. Static (not const) so tests can force the ring to wrap early.
-        public static int SwaSlack = 512;
+        // 4096 (was 512): each message's docs and project sections are dropped from the history on the next turn, so the
+        // next prompt rewinds to the start of the previous message (~2-3K tokens back). With 512 that re-read the whole
+        // conversation every turn on Gemma 12B (24-74 s, 2026-10-17); 4096 costs it ~1.1 GB of VRAM (320 KB per position
+        // over its sliding-window layers; E2B/E4B 12-40 MB per 1024), which ContextPlanner takes out of the auto context.
+        // Static (not const) so tests can force the ring to wrap early.
+        public static int SwaSlack = 512;   // set per load by ChatEngine from ContextPlanner.ChooseSlack (512..4096)
 
         // Per-kind (sliding / global) state: rope table, attention params, indirect grids, attention kernels.
         sealed class Kind
@@ -76,7 +79,10 @@ namespace Phoenix
         IntPtr _graph;
 
         // Batched prefill (KernelsPrefill): chunk buffers, allocated on first use.
-        public static int PrefillChunk = 512;        // tokens per chunk (larger chunks keep the GPU busier: 64 -> 241, 512 -> 328 tok/s)
+        int _chunk = 512;                            // current chunk size (adaptive, see Prefill)
+        const int ChunkMin = 32;
+        const double ChunkSlowMs = 400, ChunkFastMs = 150;
+        public static int PrefillChunk = 512;       // tokens per chunk (larger chunks keep the GPU busier: 64 -> 241, 512 -> 328 tok/s)
         const int LayersPerSubmit = 12;              // GPU submissions stay far below Windows' ~2 s timeout
         public static bool UsePrefill = true;
         const uint MmTok = 24;                       // tokens per prefill matmul tile (RX 6700 XT sweep: 16 6.0, 24 7.4, 32 6.6 TMAC/s)
@@ -96,8 +102,11 @@ namespace Phoenix
         public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx) : this(gpu, g, maxCtx, KvType.F16, KvType.F16) { }
         public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv) : this(gpu, g, maxCtx, kv, kv) { }
 
+        bool _locked;   // holds ModelLock (released in Dispose)
+
         public GemmaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv, KvType kvV)
         {
+            ModelLock.Check();   // one loaded model per machine: refuse before allocating anything
             _gpu = gpu;
             Kv = kv; KvV = kvV;
             C = GemmaConfig.FromGguf(g);
@@ -214,6 +223,7 @@ namespace Phoenix
                 }
             }
             catch { Dispose(); throw; }
+            ModelLock.Acquire(g.Path); _locked = true;
         }
 
         Kind MakeKind(bool swa, float* ropeFreqs)
@@ -612,7 +622,10 @@ namespace Phoenix
             {
                 while (i < end)
                 {
-                    int T = ImageTokens.Fit(tokens, i, PrefillChunk, end);   // an image stays in one chunk
+                    // Chunk size adapts so one submit stays short: attention work grows with the position (and with the
+                    // cache stride, i.e. the context size), and a 128K context made a 512-token chunk at position 20K
+                    // run past the Windows GPU timeout (device lost, 2026-10-17).
+                    int T = ImageTokens.Fit(tokens, i, Math.Min(PrefillChunk, _chunk), end);   // an image stays in one chunk
                     if (BidiImages)
                     {
                         // the two-way span covers one image per chunk: a second image starts the next chunk
@@ -623,7 +636,11 @@ namespace Phoenix
                     bool img = false;
                     for (int k = i; k < i + T && !img; k++) img = tokens[k] < 0;
                     if (T == 0 || (end - i < 8 && !img)) break;   // a short text tail goes through the decode pass
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                     logits = PrefillChunkRun(tokens, i, T);
+                    double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    if (ms > ChunkSlowMs && _chunk > ChunkMin) _chunk = Math.Max(ChunkMin, _chunk / 2);
+                    else if (ms < ChunkFastMs && T == _chunk && _chunk < PrefillChunk) _chunk = Math.Min(PrefillChunk, _chunk * 2);
                     i += T;
                 }
             }
@@ -809,7 +826,7 @@ namespace Phoenix
                     _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PlePostNorm }, new uint[] { (uint)d, eps, 1, Bits(l.OutScale) }, (uint)T, 1, 1);
                 }
 
-                if ((il + 1) % LayersPerSubmit == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
+                if ((il + 1) % _gpu.LayersPerSubmit(LayersPerSubmit) == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
             if (_allRows) { _gpu.SubmitAndWait(); return null; }   // PrefillRows: rows' logits on demand (RowLogits)
             RecordHead(T - 1);
@@ -946,6 +963,7 @@ namespace Phoenix
 
         public void Dispose()
         {
+            if (_locked) { _locked = false; ModelLock.Release(); }
             for (int i = _owned.Count - 1; i >= 0; i--) _owned[i].Dispose();
             _owned.Clear();
         }
