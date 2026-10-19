@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "phoenix-server",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-STA", "-File", "src\\run.ps1"],
+      "port": 8765
+    },
+    {
+      "name": "phoenix-oldrag",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-STA", "-File", ".claude\\rag-eval-oldroot\\src\\run.ps1"],
+      "port": 8765
+    }
+  ]
+}

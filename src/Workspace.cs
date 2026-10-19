@@ -1,4 +1,4 @@
-// A local folder the model may list, read and write through simple tags in its replies. C# 5 only.
+﻿// A local folder the model may list, read and write through simple tags in its replies. C# 5 only.
 //   <list path="."/>                      list a directory
 //   <read path="src/app.js"/>             read a text file
 //   <write path="index.html"> ... </write> create or overwrite a text file (previous version backed up)
@@ -23,6 +23,7 @@ namespace Phoenix
             public string Op, Path, Message, Content;   // Content: file text for read/list results fed back to the model
             public List<KeyValuePair<string, string>> Changes;   // edit: (find, replace) pairs
             public int From, To;                                  // read: a line range (To > 0)
+            public bool All, OutlineOnly;                       // read: lines="all" / answered with the outline only
             public string Query;                                  // search: the text to find
             public bool Ok;
         }
@@ -294,6 +295,33 @@ namespace Phoenix
 
         // Lines from..to (1-based, inclusive) of a file, numbered "120| text": small models lose track in big files, and
         // a range costs a fraction of the context of the whole file.
+        // Files longer than this are answered with their outline unless the model asks for lines="all".
+        public const int WholeReadLines = 300;
+        // The project index's outline of a file (full path -> "- Name (L12)" lines), set by the server; null = none.
+        public Func<string, string> Outline;
+
+        static int CountLines(string s) { int n = 1; foreach (char c in s) if (c == '\n') n++; return n; }
+
+        string OutlineFor(string rel, int lines)
+        {
+            string outline = null;
+            try { if (Outline != null) outline = Outline(Resolve(rel)); } catch { }
+            StringBuilder sb = new StringBuilder();
+            sb.Append(rel).Append(" has ").Append(lines).Append(" lines, too many to read whole. ");
+            if (outline != null)
+                sb.Append("Its outline (functions and types with their first line):\n").Append(outline);
+            else
+            {
+                // no outline (not indexed): the start of the file, numbered, to orient by
+                sb.Append("Its first 60 lines:\n");
+                string[] ls = Read(rel).Replace("\r\n", "\n").Split('\n');
+                for (int i = 0; i < Math.Min(60, ls.Length); i++) sb.Append(i + 1).Append("| ").Append(ls[i]).Append('\n');
+            }
+            sb.Append("Read the part you need with <read path=\"").Append(rel).Append("\" lines=\"START-END\"/> (numbered lines), ")
+              .Append("or <search query=\"...\" path=\"").Append(rel).Append("\"/>. Only if you truly need all of it: lines=\"all\".");
+            return sb.ToString();
+        }
+
         public string ReadLines(string rel, int from, int to)
         {
             string[] lines = Read(rel).Replace("\r\n", "\n").Split('\n');
@@ -312,8 +340,10 @@ namespace Phoenix
         public string Search(string query, string rel)
         {
             if (string.IsNullOrEmpty(query) || query.Trim().Length < 2) throw new ArgumentException("Search for at least 2 characters.");
+            // path= may be a folder (searched with its subfolders) or a single file
             string dir = Resolve(string.IsNullOrEmpty(rel) ? "." : rel);
-            if (!Directory.Exists(dir)) throw new DirectoryNotFoundException("No such folder: " + rel);
+            bool oneFile = File.Exists(dir);
+            if (!oneFile && !Directory.Exists(dir)) throw new DirectoryNotFoundException("No such file or folder: " + rel);
             StringBuilder sb = new StringBuilder();
             int hits = 0, files = 0;
             Stack<string> todo = new Stack<string>();
@@ -321,14 +351,15 @@ namespace Phoenix
             while (todo.Count > 0 && hits < MaxSearchHits)
             {
                 string d = todo.Pop();
-                foreach (string sub in Directory.GetDirectories(d))
-                {
-                    string n = System.IO.Path.GetFileName(sub);
-                    if (n == BackupDir || n == ".git" || n == ".phoenix" || n == "node_modules" || n == "bin" || n == "obj") continue;
-                    if ((File.GetAttributes(sub) & FileAttributes.ReparsePoint) != 0) continue;
-                    todo.Push(sub);
-                }
-                foreach (string f in Directory.GetFiles(d))
+                if (!oneFile)
+                    foreach (string sub in Directory.GetDirectories(d))
+                    {
+                        string n = System.IO.Path.GetFileName(sub);
+                        if (n == BackupDir || n == ".git" || n == ".phoenix" || n == "node_modules" || n == "bin" || n == "obj") continue;
+                        if ((File.GetAttributes(sub) & FileAttributes.ReparsePoint) != 0) continue;
+                        todo.Push(sub);
+                    }
+                foreach (string f in oneFile ? new[] { d } : Directory.GetFiles(d))
                 {
                     if (hits >= MaxSearchHits) break;
                     FileInfo fi = new FileInfo(f);
@@ -357,6 +388,24 @@ namespace Phoenix
 
         // The lines of a file most like the text the model tried to <find>, numbered, so a failed edit can be corrected
         // at once (small models misquote: wrong indentation, a changed word) instead of re-reading the whole file.
+        // After a failed <find>: a small file whole (numbered), else the closest lines, else the first lines. A small model
+        // retried the same stale <find> 6 times when it got nothing to compare against (2026-10-17).
+        static string CurrentLines(string text, string find)
+        {
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length <= 150)
+            {
+                StringBuilder sb = new StringBuilder("\nCurrent contents (" + lines.Length + " lines):\n");
+                for (int i = 0; i < lines.Length; i++) sb.Append(i + 1).Append("| ").Append(lines[i]).Append('\n');
+                return sb.ToString();
+            }
+            string near = ClosestLines(text.Replace("\r\n", "\n"), find.Replace("\r\n", "\n"));
+            if (near.Length > 0) return near;
+            StringBuilder head = new StringBuilder("\nIts first 40 lines (read other lines with lines=\"START-END\"):\n");
+            for (int i = 0; i < 40; i++) head.Append(i + 1).Append("| ").Append(lines[i]).Append('\n');
+            return head.ToString();
+        }
+
         static string ClosestLines(string text, string find)
         {
             string[] lines = text.Split('\n'), want = find.Split('\n');
@@ -390,7 +439,23 @@ namespace Phoenix
         // once; if it does not match exactly, a match ignoring leading / trailing whitespace on each line is tried (small
         // models often get indentation wrong). Much cheaper than <write> for a small change: only the changed part is
         // generated. The previous version goes to the backup folder, as with Write.
-        public string Edit(string rel, IList<KeyValuePair<string, string>> changes)
+        public string Edit(string rel, IList<KeyValuePair<string, string>> changes) { return Edit(rel, changes, false); }
+
+        // Whether every <edit> in a reply would apply to the files as they are now (nothing is written): null if they all
+        // would, else the first problem. Used to vet a code-check rewrite before it replaces a reply that works.
+        public string EditProblem(string reply)
+        {
+            foreach (Match m in EditTag.Matches(reply))
+            {
+                List<KeyValuePair<string, string>> ch = new List<KeyValuePair<string, string>>();
+                foreach (Match fr in FindReplace.Matches(m.Groups[2].Value)) ch.Add(new KeyValuePair<string, string>(fr.Groups[1].Value, fr.Groups[2].Value));
+                try { Edit(m.Groups[1].Value, ch, true); }
+                catch (Exception ex) { return ex.Message.Split('\n')[0]; }
+            }
+            return null;
+        }
+
+        string Edit(string rel, IList<KeyValuePair<string, string>> changes, bool dryRun)
         {
             string f = Resolve(rel);
             ShellGuard.CheckWrite(f);
@@ -400,7 +465,7 @@ namespace Phoenix
             string text = File.ReadAllText(f);
             bool crlf = text.Contains("\r\n");
             string t = text.Replace("\r\n", "\n");
-            int added = 0, removed = 0;
+            int added = 0, removed = 0, skipped = 0;
             foreach (KeyValuePair<string, string> c in changes)
             {
                 string find = c.Key.Replace("\r\n", "\n").Trim('\n'), repl = c.Value.Replace("\r\n", "\n").Trim('\n');
@@ -438,7 +503,11 @@ namespace Phoenix
                         for (int j = 0; j < want.Length && ok; j++) ok = lines[i + j].Trim() == want[j].Trim();
                         if (ok) { hits++; if (hit < 0) hit = i; }
                     }
-                    if (hits == 0) throw new ArgumentException("The <find> text was not found in " + Relative(f) + "; quote the file's lines exactly." + ClosestLines(t, find));
+                    // a model that repeats a change it already made (retry rounds resend every edit): the replacement is
+                    // there already, so this one is done, not a failure
+                    if (hits == 0 && repl.Trim().Length > 0 && LineMatches(lines, repl.Split('\n')) > 0) { skipped++; continue; }
+                    if (hits == 0) throw new ArgumentException("The <find> text was not found in " + Relative(f) + ": the file is not what you remember " +
+                        "(it may have changed since you last saw it). Copy <find> from its current lines below." + CurrentLines(t, find));
                     if (hits > 1) throw new ArgumentException("The <find> text occurs " + hits + " times in " + Relative(f) + "; include more surrounding lines.");
                     List<string> outL = new List<string>(lines);
                     outL.RemoveRange(hit, want.Length);
@@ -450,6 +519,8 @@ namespace Phoenix
             }
             byte[] data = new UTF8Encoding(false).GetBytes(crlf ? t.Replace("\n", "\r\n") : t);
             if (data.Length > MaxWriteBytes) throw new ArgumentException("File too large.");
+            if (dryRun) return null;
+            if (skipped == changes.Count) return "no change to " + Relative(f) + ": the edit was already applied";
             string backup = System.IO.Path.Combine(Root, BackupDir, DateTime.Now.ToString("yyyyMMdd-HHmmss"), Relative(f).Replace('/', '\\'));
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(backup));
             File.Copy(f, backup, true);
@@ -457,7 +528,20 @@ namespace Phoenix
             return "edited " + Relative(f) + " (+" + added + " -" + removed + " lines, previous version in " + Relative(backup) + ")";
         }
 
-        static readonly Regex EditTag = new Regex("<edit\\s+path\\s*=\\s*\"([^\"]+)\"\\s*>(.*?)</edit>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // How many places `want` occurs in `lines`, comparing lines without their indentation.
+        static int LineMatches(string[] lines, string[] want)
+        {
+            int hits = 0;
+            for (int i = 0; i + want.Length <= lines.Length; i++)
+            {
+                bool ok = true;
+                for (int j = 0; j < want.Length && ok; j++) ok = lines[i + j].Trim() == want[j].Trim();
+                if (ok) hits++;
+            }
+            return hits;
+        }
+
+        static readonly Regex EditTag =new Regex("<edit\\s+path\\s*=\\s*\"([^\"]+)\"\\s*>(.*?)</edit>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         static readonly Regex FindReplace = new Regex("<find>\\r?\\n?(.*?)</find>\\s*<replace>\\r?\\n?(.*?)</replace>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         // Deletes a file by moving it into the backup folder (recoverable; never a permanent delete). Files only.
@@ -476,8 +560,8 @@ namespace Phoenix
 
         static readonly Regex DeleteTag = new Regex("<delete\\s+path\\s*=\\s*\"([^\"]+)\"\\s*/?>", RegexOptions.IgnoreCase);
         static readonly Regex WriteTag = new Regex("<write\\s+path\\s*=\\s*\"([^\"]+)\"\\s*>\\r?\\n?(.*?)</write>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-        // <read path="x"/> or <read path="x" lines="120-180"/>
-        static readonly Regex ReadTag = new Regex("<read\\s+path\\s*=\\s*\"([^\"]+)\"(?:\\s+lines\\s*=\\s*\"\\s*(\\d+)\\s*-\\s*(\\d+)\\s*\")?\\s*/?>", RegexOptions.IgnoreCase);
+        // <read path="x"/>, <read path="x" lines="120-180"/> or <read path="x" lines="all"/> (a big file whole)
+        static readonly Regex ReadTag = new Regex("<read\\s+path\\s*=\\s*\"([^\"]+)\"(?:\\s+lines\\s*=\\s*\"\\s*(?:(\\d+)\\s*-\\s*(\\d+)|(all))\\s*\")?\\s*/?>", RegexOptions.IgnoreCase);
         static readonly Regex CommandTag = new Regex("<(" + string.Join("|", ShellGuard.CommandTags) + ")\\b[^>]*>", RegexOptions.IgnoreCase);
         static readonly Regex ListTag = new Regex("<list(?:\\s+path\\s*=\\s*\"([^\"]*)\")?\\s*/?>", RegexOptions.IgnoreCase);
         // <search query="text"/> or <search query="text" path="src"/>
@@ -520,6 +604,7 @@ namespace Phoenix
             {
                 Action a = new Action(); a.Op = "read"; a.Path = m.Groups[1].Value;
                 if (m.Groups[2].Success) { a.From = int.Parse(m.Groups[2].Value); a.To = int.Parse(m.Groups[3].Value); }
+                a.All = m.Groups[4].Success;
                 found.Add(new KeyValuePair<int, Action>(m.Index, a));
             }
             foreach (Match m in SearchTag.Matches(reply))
@@ -571,7 +656,19 @@ namespace Phoenix
                     else if (a.Op == "delete") { a.Message = Delete(a.Path); a.Content = null; }
                     else if (a.Op == "edit") { a.Message = Edit(a.Path, a.Changes); a.Content = null; }
                     else if (a.Op == "read" && a.To > 0) { a.Content = ReadLines(a.Path, a.From, a.To); a.Message = "read " + a.Path + " lines " + a.From + "-" + a.To; }
-                    else if (a.Op == "read") { a.Content = Read(a.Path); a.Message = "read " + a.Path + " (" + a.Content.Length + " chars)"; }
+                    else if (a.Op == "read")
+                    {
+                        a.Content = Read(a.Path);
+                        int lines = CountLines(a.Content);
+                        if (!a.All && lines > WholeReadLines)
+                        {
+                            // a big file: its outline instead of all of it, so the model reads just the lines it needs
+                            a.Content = OutlineFor(a.Path, lines);
+                            a.OutlineOnly = true;
+                            a.Message = "read " + a.Path + ": outline only (" + lines + " lines; read the lines you need)";
+                        }
+                        else a.Message = "read " + a.Path + " (" + a.Content.Length + " chars)";
+                    }
                     else if (a.Op == "search") { a.Content = Search(a.Query, a.Path); a.Message = "searched \"" + a.Query + "\"" + (a.Path != "." ? " in " + a.Path : ""); }
                     else { a.Content = List(a.Path); a.Message = "listed " + a.Path; }
                     a.Ok = true;
@@ -605,8 +702,8 @@ namespace Phoenix
                    "To act, put these tags in your reply:\n" +
                    "<list path=\".\"/>   list a folder\n" +
                    "<read path=\"relative/path\"/>   read a file\n" +
-                   "<read path=\"relative/path\" lines=\"120-180\"/>   read only those lines of a big file (numbered)\n" +
-                   "<search query=\"text\"/>   find text in every project file (path:line: text); add path=\"folder\" to search one folder\n" +
+                   "<read path=\"relative/path\" lines=\"120-180\"/>   read only those lines (numbered). A file over " + WholeReadLines + " lines read without lines= returns its outline (functions with line numbers): then read just the lines you need\n" +
+                   "<search query=\"text\"/>   find text in every project file (path:line: text); add path=\"folder or file\" to search only there\n" +
                    "<edit path=\"relative/path\">\n<find>\nexact lines now in the file\n</find>\n<replace>\nthe new lines\n</replace>\n</edit>   change part of an existing file " +
                    "(several <find>/<replace> pairs allowed; quote enough lines that the <find> text is unique)\n" +
                    "<write path=\"relative/path\">\nfull file content\n</write>   create a new file, or replace a whole file\n" +
@@ -617,6 +714,9 @@ namespace Phoenix
                    "Never say you will check, read or change a file without putting the tag in that same reply: act, don't announce. " +
                    "You cannot run commands, scripts or programs, and cannot create executable files; this is permanent. " +
                    ShellGuard.RunAdvice +
+                   "A project is active, so files are the result: when you create or change a file, do it with the tags only and do NOT " +
+                   "also show the code in a code block; after the tags say in one short sentence what you changed. Show code in a code " +
+                   "block only when the user asks to see it, or for code that is not meant for a file. " +
                    "Keep explanations short.\n\nExamples:\nUser: make hello.txt that says hi\nAssistant: <write path=\"hello.txt\">\nhi\n</write>\nCreated hello.txt.\n\n" +
                    "User: in hello.txt change hi to hello\nAssistant: <edit path=\"hello.txt\">\n<find>\nhi\n</find>\n<replace>\nhello\n</replace>\n</edit>\nChanged it.\n\n" +
                    "Project folder contents:\n" + StableList();

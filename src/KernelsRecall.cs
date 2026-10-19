@@ -79,8 +79,8 @@ namespace Phoenix
                     uint s = k.Select(k.F32, rot, k.Ld(cs, k.IAdd(k.IMul(jc, k.C(2)), k.C(1))), k.CF(0f));
                     uint a2 = k.F16(k.FSub(k.FMul(a, c), k.FMul(b, s)));
                     uint b2 = k.F16(k.FAdd(k.FMul(a, s), k.FMul(b, c)));
-                    SetHalf(k, kc, k.IAdd(k.IMul(iA, ring), slot), a2);
-                    SetHalf(k, kc, k.IAdd(k.IMul(iB, ring), slot), b2);
+                    k.StHalf(kc, k.IAdd(k.IMul(iA, ring), slot), a2);
+                    k.StHalf(kc, k.IAdd(k.IMul(iB, ring), slot), b2);
                 });
             });
             // V: whole words, pass 0 only
@@ -98,12 +98,5 @@ namespace Phoenix
             return k.Finish();
         }
 
-        static void SetHalf(KB k, KB.Buf b, uint hi, uint value)
-        {
-            uint wi = k.Shr(hi, k.C(1)), old = k.Ld(b, wi);
-            uint h = k.And(k.S.Glsl(k.U32, Spv.GlslPackHalf2x16, k.S.Value(Op.CompositeConstruct, k.S.TypeVector(k.F32, 2), value, k.CF(0))), k.C(0xFFFF));
-            uint odd = k.IEq(k.And(hi, k.C(1)), k.C(1));
-            k.St(b, wi, k.Select(k.U32, odd, k.Or(k.And(old, k.C(0xFFFF)), k.Shl(h, k.C(16))), k.Or(k.And(old, k.C(0xFFFF0000)), h)));
-        }
     }
 }

@@ -1,6 +1,5 @@
-// Deterministic checks on code the model wrote, run before the model checks it itself (small models often answer
-// "looks good" to code that would not compile). Findings are facts handed to the check prompt. C# 5 only.
-// Currently C#: types and LINQ methods used without the using directive that provides them.
+// Adds the using directives missing from C# the model wrote (types and LINQ methods used without the namespace that
+// provides them), in code, before anything else checks the reply. The other certain problems are CodeCheck's. C# 5 only.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -45,20 +44,12 @@ namespace Phoenix
             });
         }
 
-        // Problems found in the code blocks of a reply (empty when none or not C#).
-        public static List<string> Check(string code, bool isCSharp)
-        {
-            List<string> found = new List<string>();
-            if (!isCSharp) return found;
-            foreach (string ns in MissingNamespaces(code)) found.Add("`using " + ns + ";` is missing.");
-            return found;
-        }
-
         // Namespaces whose types / LINQ methods the code uses without a using directive.
         static List<string> MissingNamespaces(string code)
         {
             List<string> found = new List<string>();
-            string body = Regex.Replace(code, @"//[^\n]*|/\*[\s\S]*?\*/|@?""(?:[^""\\]|\\.|"""")*""", " ");   // no comments or strings
+            // no comments, strings or chars (a '"' char literal must not start a string: CSV code is full of them)
+            string body = Regex.Replace(code, @"//[^\n]*|/\*[\s\S]*?\*/|'(?:[^'\\\n]|\\.)+'|@""(?:[^""]|"""")*""|\$?""(?:[^""\\\n]|\\.)*""", " ");
             HashSet<string> usings = new HashSet<string>();
             foreach (Match m in Regex.Matches(body, @"^\s*using\s+(static\s+)?([\w.]+)\s*;", RegexOptions.Multiline)) usings.Add(m.Groups[2].Value);
             foreach (Match m in Regex.Matches(body, @"^\s*namespace\s+([\w.]+)", RegexOptions.Multiline)) usings.Add(m.Groups[1].Value);

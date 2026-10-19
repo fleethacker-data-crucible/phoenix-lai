@@ -187,6 +187,14 @@ namespace Phoenix
         public uint FToS(uint f) { return S.Value(Op.ConvertFToS, I32, f); }
         public uint AsU(uint i) { return S.Value(Op.Bitcast, U32, i); }
         public uint F16(uint f) { return S.Value(Op.QuantizeToF16, F32, f); }
+        // Stores value as fp16 into half-element hi of a u32 buffer (two halves per word, read-modify-write).
+        public void StHalf(Buf b, uint hi, uint value)
+        {
+            uint wi = Shr(hi, C(1)), old = Ld(b, wi);
+            uint h = And(S.Glsl(U32, Spv.GlslPackHalf2x16, S.Value(Op.CompositeConstruct, S.TypeVector(F32, 2), value, CF(0))), C(0xFFFF));
+            uint odd = IEq(And(hi, C(1)), C(1));
+            St(b, wi, Select(U32, odd, Or(And(old, C(0xFFFF)), Shl(h, C(16))), Or(And(old, C(0xFFFF0000)), h)));
+        }
         public uint Select(uint type, uint cond, uint a, uint b) { return S.Value(Op.Select, type, cond, a, b); }
         public uint Abs(uint f) { return S.Glsl(F32, Spv.GlslFAbs, f); }
         public uint Sign(uint f) { return S.Glsl(F32, Spv.GlslFSign, f); }

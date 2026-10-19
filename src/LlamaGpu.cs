@@ -48,8 +48,11 @@ namespace Phoenix
         public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx) : this(gpu, g, maxCtx, KvType.F16, KvType.F16) { }
         public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv) : this(gpu, g, maxCtx, kv, kv) { }
 
+        bool _locked;   // holds ModelLock (released in Dispose)
+
         public LlamaGpu(GpuDevice gpu, GgufFile g, int maxCtx, KvType kv, KvType kvV)
         {
+            ModelLock.Check();   // one loaded model per machine: refuse before allocating anything
             _gpu = gpu;
             Config = ModelConfig.FromGguf(g);
             NEmbd = Config.NEmbd; NFf = Config.NFf; NLayer = Config.NLayer; NHead = Config.NHead; NHeadKv = Config.NHeadKv;
@@ -136,6 +139,7 @@ namespace Phoenix
                 _xHost = new float[NEmbd]; _csHost = new float[NRot]; _logitsHost = new float[NVocab];
             }
             catch { Dispose(); throw; }
+            ModelLock.Acquire(g.Path); _locked = true;
         }
 
         static GgufTensor T(GgufFile g, string name)
@@ -629,7 +633,7 @@ namespace Phoenix
                 RowQuantK(KernelsQuant.Mode.SiluMul, _pG, _pU, T * NFf);
                 Mm(l.Down, _pX, T, true, true);                    // x += Down·(silu(gate)·up)
 
-                if ((il + 1) % LayersPerSubmit == 0 && il + 1 < NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
+                if ((il + 1) % _gpu.LayersPerSubmit(LayersPerSubmit) == 0 && il + 1 < NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
             if (_allRows) { _gpu.SubmitAndWait(); return null; }   // PrefillRows: rows' logits on demand (RowLogits)
             RecordHead(T - 1);
@@ -679,6 +683,7 @@ namespace Phoenix
 
         public void Dispose()
         {
+            if (_locked) { _locked = false; ModelLock.Release(); }
             for (int i = _owned.Count - 1; i >= 0; i--) _owned[i].Dispose();
             _owned.Clear();
         }

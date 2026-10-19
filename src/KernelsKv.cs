@@ -79,13 +79,6 @@ namespace Phoenix
             return Elem(k, t, vc, e, si);
         }
 
-        static void SetHalf(KB k, KB.Buf b, uint hi, uint value)
-        {
-            uint wi = k.Shr(hi, k.C(1)), old = k.Ld(b, wi);
-            uint h = k.And(k.S.Glsl(k.U32, Spv.GlslPackHalf2x16, k.S.Value(Op.CompositeConstruct, k.S.TypeVector(k.F32, 2), value, k.CF(0))), k.C(0xFFFF));
-            uint odd = k.IEq(k.And(hi, k.C(1)), k.C(1));
-            k.St(b, wi, k.Select(k.U32, odd, k.Or(k.And(old, k.C(0xFFFF)), k.Shl(h, k.C(16))), k.Or(k.And(old, k.C(0xFFFF0000)), h)));
-        }
 
         // fp16-rounded scale for a block whose largest |value| is amax, and its inverse (0 for an all-zero block).
         static void Scale(KB k, KvType t, uint amax, out uint d, out uint inv)
@@ -121,7 +114,7 @@ namespace Phoenix
                 }
                 // K: one element per row of the transposed cache (read-modify-write of its word)
                 if (kt == KvType.F16)
-                    for (uint e = 0; e < 32; e++) SetHalf(k, kc, k.IAdd(k.IMul(k.IAdd(b0, k.C(e)), ring), slot), kx[e]);
+                    for (uint e = 0; e < 32; e++) k.StHalf(kc, k.IAdd(k.IMul(k.IAdd(b0, k.C(e)), ring), slot), kx[e]);
                 else
                 {
                     uint kd, kinv;
@@ -144,7 +137,7 @@ namespace Phoenix
                             k.St(kc, wi, k.Or(k.And(k.Ld(kc, wi), k.S.Value(Op.Not, k.U32, mask)), k.Shl(nib, sh)));
                         }
                     }
-                    SetHalf(k, kc, k.IAdd(ScaleBase(k, kt, ring, kvDim), k.IAdd(k.IMul(k.Shr(b0, k.C(5)), ring), slot)), kd);
+                    k.StHalf(kc, k.IAdd(ScaleBase(k, kt, ring, kvDim), k.IAdd(k.IMul(k.Shr(b0, k.C(5)), ring), slot)), kd);
                 }
                 // V: the block is contiguous: 16 (fp16), 8 (Q8) or 4 (Q4) whole words
                 uint vBase = k.IAdd(k.IMul(slot, kvDim), b0);   // element index, a multiple of 32

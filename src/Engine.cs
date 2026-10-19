@@ -233,6 +233,8 @@ namespace Phoenix
             return GemmaConfig.IsGemma(g.GetString("general.architecture")) ? KvType.F16 : KvCache;
         }
 
+        bool _locked;   // holds ModelLock (released in Dispose)
+
         public static ChatEngine Load(string path, int contextLength, bool allowGpu, TextCallback log)
         {
             if (!File.Exists(path)) throw new FileNotFoundException("Model file not found.", path);
@@ -241,6 +243,7 @@ namespace Phoenix
 
         static ChatEngine LoadLocked(string path, int contextLength, bool allowGpu, TextCallback log)
         {
+            ModelLock.Check();   // another Phoenix process has a model loaded: refuse (the CPU path would double the RAM too)
             GgufFile g = GgufFile.Open(path);
             GpuDevice gpu = null;
             ILanguageModel model = null;
@@ -254,7 +257,18 @@ namespace Phoenix
                         string garch = g.GetString("general.architecture");
                         if (garch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
                         gpu = GpuDevice.Create();
+                        if (log != null) log(gpu.Describe());
                         int ctx = contextLength;
+                        ulong used0, budget0;
+                        if (GemmaConfig.IsGemma(garch))
+                        {
+                            // the rewind buffer first: the auto context is planned around it
+                            string swhy = null;
+                            GemmaGpu.SwaSlack = gpu.MemoryBudget(out used0, out budget0)
+                                ? ContextPlanner.ChooseSlack(g, path, (long)(budget0 - Math.Min(used0, budget0)), MemoryTrim.AvailableCommit(), ctx, out swhy)
+                                : ContextPlanner.MinSlack;
+                            if (log != null && swhy != null) log(swhy);
+                        }
                         if (ctx <= 0)
                         {
                             ulong used, budget;
@@ -298,7 +312,9 @@ namespace Phoenix
                     model = GemmaConfig.IsGemma(arch) ? (ILanguageModel)new GemmaCpu(g, contextLength) : new LlamaCpu(g, contextLength);
                     backend = "CPU";
                 }
-                return new ChatEngine(path, g, gpu, model, backend, contextLength);
+                ChatEngine eng = new ChatEngine(path, g, gpu, model, backend, contextLength);
+                ModelLock.Acquire(path); eng._locked = true;   // held until Dispose (the CPU path too)
+                return eng;
             }
             catch
             {
@@ -870,6 +886,7 @@ namespace Phoenix
 
         public void Dispose()
         {
+            if (_locked) { _locked = false; ModelLock.Release(); }
             if (_vision != null) { _vision.Dispose(); _vision = null; }
             _model.Dispose();
             if (_gpu != null) _gpu.Dispose();

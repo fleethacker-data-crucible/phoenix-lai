@@ -2,3 +2,9 @@
 *.gguf
 /logs/
 /docs/.index/
+/.claude/rag-eval-oldroot/
+/nvidia/results/
+/nvidia/logs/
+/Phoenix_LAI_Package.7z
+/Phoenix_LAI_Package.b64
+/.claude/worktrees/

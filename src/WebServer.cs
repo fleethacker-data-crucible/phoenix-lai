@@ -1,4 +1,4 @@
-// Loopback-only chat server: serves html\, streams chat, switches models, and lets the model work in a local folder.
+﻿// Loopback-only chat server: serves html\, streams chat, switches models, and lets the model work in a local folder.
 // C# 5 only. The ONLY file allowed to use networking or start a process (enforced by run.ps1): it listens on
 // 127.0.0.1 only, never makes outgoing connections, and only starts msedge.exe or chrome.exe (app window).
 using System;
@@ -43,6 +43,7 @@ namespace Phoenix
             Workspace.EnsureProjectsRoot();
             ChatEngine.KvCache = ReadKv();
             Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
+            CodeCheck.PsDataPath = Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs", "checkers", "ps51-commands.tsv");
             // An outdated or missing index is rebuilt in the background (otherwise the docs look empty and the model is
             // never told about them). The GPU embedder submits one layer per job and holds GpuGate, so it cannot collide
             // with a model upload (the 2026-10-16 driver reset); it falls back to the CPU on device loss.
@@ -226,6 +227,7 @@ namespace Phoenix
                             "Phoenix LAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
+                try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
                 lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
                 server.Log.Text("server stopped");
                 server.Log.Json("server_stop", null);
@@ -478,14 +480,22 @@ namespace Phoenix
         {
             object v;
             if (m == null || !m.TryGetValue("content", out v)) return "";
-            if (v is string) return (string)v;
+            return PartsText(v, "\n", "");
+        }
+
+        // Content given as a string, or the "text" parts of a list of parts joined by sep. A part with no "type"
+        // counts as text when untypedType is "text" (the OpenAI API), and is skipped when it is "" (the chat page).
+        static string PartsText(object c, string sep, string untypedType)
+        {
+            if (c is string) return (string)c;
+            List<object> parts = c as List<object>;
+            if (parts == null) return "";
             StringBuilder sb = new StringBuilder();
-            if (v is List<object>)
-                foreach (object o in (List<object>)v)
-                {
-                    Dictionary<string, object> part = o as Dictionary<string, object>;
-                    if (part != null && Json.GetStr(part, "type", "") == "text") { if (sb.Length > 0) sb.Append('\n'); sb.Append(Json.GetStr(part, "text", "")); }
-                }
+            foreach (object o in parts)
+            {
+                Dictionary<string, object> part = o as Dictionary<string, object>;
+                if (part != null && Json.GetStr(part, "type", untypedType) == "text") { if (sb.Length > 0) sb.Append(sep); sb.Append(Json.GetStr(part, "text", "")); }
+            }
             return sb.ToString();
         }
 
@@ -546,7 +556,7 @@ namespace Phoenix
                     _loadError = null;
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
                     _loadedSig = sig;
-                    if (_workspace != null) _engine.RecallDir = Path.Combine(_workspace.Root, ".phoenix", "recall");
+                    if (_workspace != null) _engine.RecallDir = Path.Combine(ProjectRootOf(_workspace) ?? _workspace.Root, ".phoenix", "recall");
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
                     // Warm up before reporting ready (the UI shows "loading" until then): first prompt runs at full speed.
@@ -657,6 +667,8 @@ namespace Phoenix
             {
                 // Only same-machine pages may talk to us (blocks DNS-rebinding and other sites' scripts).
                 string host = req.Headers["Host"] ?? "";
+                // HEAD (readiness checks): status only. A HEAD response may not carry a body, so Send would throw.
+                if (req.HttpMethod == "HEAD") { res.StatusCode = host == "127.0.0.1:" + Port ? 200 : 403; res.ContentLength64 = 0; res.OutputStream.Close(); return; }
                 if (host != "127.0.0.1:" + Port) { Send(res, 403, "text/plain", "Forbidden"); return; }
                 string origin = req.Headers["Origin"];
                 if (origin != null && origin != "http://127.0.0.1:" + Port) { Send(res, 403, "text/plain", "Forbidden"); return; }
@@ -689,6 +701,22 @@ namespace Phoenix
             string q = req.QueryString["path"];
 
             string page = req.QueryString["page"];
+            string chatsReply = ChatsApi(path, post, body, req.QueryString["id"]);
+            if (chatsReply != null) { SendJson(res, 200, chatsReply); return; }
+            string skillsReply = SkillsApi(path, post, body, req.QueryString);
+            if (skillsReply != null) { SendJson(res, 200, skillsReply); return; }
+            if (path == "/api/skill-assist" && post)
+            {
+                res.StatusCode = 200; res.ContentType = "text/event-stream; charset=utf-8"; res.Headers["Cache-Control"] = "no-store"; res.SendChunked = true;
+                SkillAssist(body, res.OutputStream);
+                return;
+            }
+            if (path == "/api/compact" && post)
+            {
+                res.StatusCode = 200; res.ContentType = "text/event-stream; charset=utf-8"; res.Headers["Cache-Control"] = "no-store"; res.SendChunked = true;
+                Compact(body, res.OutputStream);
+                return;
+            }
             if (path == "/api/bye") { if (page != null) lock (_pages) _pages.Remove(page); SendJson(res, 200, "{}"); return; }
             if (path == "/api/info")
             {
@@ -714,7 +742,8 @@ namespace Phoenix
                         if (!first) sb.Append(',');
                         first = false;
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576)
-                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false");
+                          .Append(",\"kvq\":").Append(SupportsQuantKv(f) ? "true" : "false")
+                          .Append(",\"defaults\":").Append(SystemPrompts.DefaultsJson(Path.GetFileName(f)));
                         string why = Unsupported(f);
                         if (why.Length > 0) sb.Append(",\"unsupported\":").Append(Json.Quote(why));
                         else if (freeMem >= 0)
@@ -776,6 +805,7 @@ namespace Phoenix
                 bool on = body.ContainsKey("on") && body["on"] is bool && (bool)body["on"];
                 _folderAccess = on;
                 if (!on) _workspace = null;
+                SwitchProjectIndex();
                 try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(FolderAccessFile, on ? "on" : "off"); } catch { }
                 Log.Text("folder access " + (on ? "ON" : "OFF (folder disconnected, file tools disabled)"));
                 SendJson(res, 200, Info());
@@ -786,9 +816,11 @@ namespace Phoenix
                 string folder = Json.GetStr(body, "path", "");
                 if (folder.Length > 0 && !_folderAccess) throw new InvalidOperationException("Folder access is off. Turn it on with /folder on.");
                 _workspace = folder.Length == 0 ? null : new Workspace(folder);
-                if (_workspace != null) RememberFolder(_workspace.Display);
+                if (_workspace != null) _workspace.Outline = delegate(string f) { ProjectIndex pi = _pindex; return pi != null ? pi.Outline(f) : null; };
+                if (_workspace != null) { RememberFolder(_workspace.Display); EnsureProjectLayout(ProjectRootOf(_workspace)); }
+                SwitchProjectIndex();
                 ChatEngine eRec = _engine;
-                if (eRec != null) eRec.RecallDir = _workspace != null ? Path.Combine(_workspace.Root, ".phoenix", "recall") : null;
+                if (eRec != null) eRec.RecallDir = _workspace != null ? Path.Combine(ProjectRootOf(_workspace) ?? _workspace.Root, ".phoenix", "recall") : null;
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
                 SendJson(res, 200, Info());
@@ -817,6 +849,25 @@ namespace Phoenix
                     Log.Text("browser set to " + b);
                 }
                 SendJson(res, 200, BrowserJson());
+                return;
+            }
+            if (path == "/api/gpu")
+            {
+                // /gpu [auto|amd|nvidia] [safe|fast]: which GPU and how carefully to drive it (GpuDevice.ReadProfile); used
+                // from the next model load
+                string gp; bool gs;
+                GpuDevice.ReadProfile(out gp, out gs);
+                if (post)
+                {
+                    string p2 = Json.GetStr(body, "profile", gp).Trim().ToLowerInvariant();
+                    string s2 = Json.GetStr(body, "safe", gs ? "on" : "off").Trim().ToLowerInvariant();
+                    GpuDevice.WriteProfile(p2, s2 == "on" || s2 == "true" || s2 == "safe");
+                    GpuDevice.ReadProfile(out gp, out gs);
+                    Log.Text("GPU profile set to " + gp + (gs ? " safe" : "") + " (used from the next model load)");
+                }
+                ChatEngine ge = _engine;
+                SendJson(res, 200, "{\"profile\":" + Json.Quote(gp) + ",\"safe\":" + (gs ? "true" : "false") + ",\"file\":" + Json.Quote(GpuDevice.ProfileFile) +
+                    ",\"backend\":" + (ge != null ? Json.Quote(ge.Backend) : "null") + "}");
                 return;
             }
             if (path == "/api/vram") { SendJson(res, 200, VramProcessesJson()); return; }
@@ -948,7 +999,7 @@ namespace Phoenix
 
         const int MaxRulesChars = 16000;
 
-        // RULES.md files that apply right now: the app's own (next to src\ and html\) and the connected folder's.
+        // RULES.md files that apply right now: the app's own (next to src\ and html\) and the active project's (its root).
         List<KeyValuePair<string, string>> RulesFiles()
         {
             List<KeyValuePair<string, string>> found = new List<KeyValuePair<string, string>>();
@@ -957,7 +1008,7 @@ namespace Phoenix
             Workspace w = _workspace;
             if (w != null)
             {
-                string folderRules = Path.Combine(w.Root, "RULES.md");
+                string folderRules = Path.Combine(ProjectRootOf(w) ?? w.Root, "RULES.md");   // the project's RULES.md, even in a subfolder
                 if (File.Exists(folderRules) && !string.Equals(Path.GetFullPath(folderRules), Path.GetFullPath(appRules), StringComparison.OrdinalIgnoreCase))
                     found.Add(new KeyValuePair<string, string>("folder", folderRules));
             }
@@ -972,7 +1023,7 @@ namespace Phoenix
             foreach (KeyValuePair<string, string> f in files)
             {
                 string text;
-                try { text = File.ReadAllText(f.Value, Encoding.UTF8).Trim(); } catch { continue; }
+                try { text = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(f.Value, Encoding.UTF8), @"<!--[\s\S]*?-->", "").Trim(); } catch { continue; }
                 if (text.Length > MaxRulesChars) text = text.Substring(0, MaxRulesChars);
                 if (text.Length > 0) sb.Append('\n').Append(text).Append('\n');
             }
@@ -1004,6 +1055,7 @@ namespace Phoenix
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
                    ",\"vision\":" + (e != null && e.HasVision ? "true" : "false") +
+                   ",\"user\":" + Json.Quote(Environment.UserName) + ",\"machine\":" + Json.Quote(Environment.MachineName) +
                    ",\"context\":" + (e != null ? e.ContextLength : ContextLength) + ",\"contextAuto\":" + (ContextLength <= 0 ? "true" : "false") +
                    ",\"loading\":" + (_loading != null ? Json.Quote(_loading) : "null") +
                    ",\"loadError\":" + (_loadError != null ? Json.Quote(_loadError) : "null") +
@@ -1085,7 +1137,7 @@ namespace Phoenix
             return sb.Append(']').ToString();
         }
 
-        // POST /api/chat {messages:[{role,content}], temperature, top_k, top_p, repeat_penalty, max_tokens}
+        // POST /api/chat {messages:[{role,content}], temperature, top_k, top_p, repeat_penalty, max_tokens, skills (default true)}
         // Server-sent events: {"t":text} tokens, {"tool":{op,path,ok,msg}} file actions, {"step":n} a new model turn
         // after tool results, then {"done":true, append:[messages to add to history], ...stats}.
         void Chat(Dictionary<string, object> o, HttpListenerResponse res)
@@ -1188,14 +1240,25 @@ namespace Phoenix
                         if (pct / 5 != lastPct / 5) { lastPct = pct; write("{\"pf\":" + pct + "}"); }
                     };
                     Workspace ws = _folderAccess ? _workspace : null;
-                    List<RagHit> hits = PrepareMessages(msgs, ws, rid, true);
+                    List<SkillMatch> skillsUsed;
+                    List<RagHit> hits = PrepareMessages(msgs, ws, rid, true, !(o.ContainsKey("skills") && o["skills"] is bool && !(bool)o["skills"]), out skillsUsed);
                     if (hits.Count > 0) write("{\"rag\":" + HitsJson(hits, false) + "}");
+                    if (skillsUsed.Count > 0)
+                    {
+                        StringBuilder sk = new StringBuilder("{\"skills\":[");
+                        for (int i = 0; i < skillsUsed.Count; i++)
+                            sk.Append(i > 0 ? "," : "").Append("{\"name\":").Append(Json.Quote(skillsUsed[i].Skill.Name)).Append(",\"scope\":").Append(Json.Quote(skillsUsed[i].Skill.Scope))
+                              .Append(",\"called\":").Append(skillsUsed[i].Explicit ? "true" : "false").Append('}');
+                        write(sk.Append("]}").ToString());
+                    }
 
                     // Code requests: every step is generated out of sight ("w" events, a collapsed box in the UI), the code is
                     // then checked against the syntax reference, and only the checked (or corrected) reply is shown.
                     bool codeMode = Rag.IsCodeRequest(lastUser);
                     bool nudged = false;
                     StringBuilder append = new StringBuilder("[");
+                    List<string> changedFiles = new List<string>();   // files the model wrote, edited or deleted (re-indexed at the end)
+                    Dictionary<string, int> failures = new Dictionary<string, int>();   // failed tool calls this turn (loop guard)
                     GenerationStats st = null;
                     int totalTokens = 0;
                     double genSeconds = 0;
@@ -1238,9 +1301,21 @@ namespace Phoenix
                         if (!gone && HasCode(replyText))   // every reply with code is checked, whatever the request looked like
                         {
                             GenerationStats cst;
-                            string checkedText = CheckCode(rid, msgs, replyText, s, maxTokens, write, delegate { return gone; }, out cst);
+                            string checkedText = CheckCode(rid, msgs, replyText, hits, lastUser, s, maxTokens, write, delegate { return gone; }, out cst);
                             totalTokens += cst.GeneratedTokens;
                             genSeconds += cst.GenerateSeconds;
+                            // A rewrite whose <edit> would not apply to the file (it quoted lines that are not there) never
+                            // replaces a reply whose edit does apply: the original is kept and the line says it is unconfirmed.
+                            if (checkedText != replyText && ws != null)
+                            {
+                                string bad = ws.EditProblem(checkedText);
+                                if (bad != null && ws.EditProblem(replyText) == null)
+                                {
+                                    Log.Text("#" + rid + " CHECK rewrite discarded (its edit would fail: " + bad + "); kept the original reply");
+                                    write("{\"phase\":\"unsure\"}");
+                                    checkedText = replyText;
+                                }
+                            }
                             if (checkedText != replyText) { replyText = checkedText; write("{\"replace\":" + Json.Quote(replyText) + "}"); }
                         }
                         msgs.Add(new ChatMessage("assistant", replyText));
@@ -1287,6 +1362,8 @@ namespace Phoenix
                         StringBuilder results = new StringBuilder("Tool results:\n");
                         foreach (Workspace.Action a in actions)
                         {
+                            if (a.Ok && (a.Op == "write" || a.Op == "edit" || a.Op == "delete") && ws != null)
+                                try { changedFiles.Add(ws.Resolve(a.Path)); } catch { }
                             write("{\"tool\":{\"op\":" + Json.Quote(a.Op) + ",\"path\":" + Json.Quote(a.Path) + ",\"ok\":" + (a.Ok ? "true" : "false") +
                                   ",\"msg\":" + Json.Quote(a.Message) + "}}");
                             Log.Text("#" + rid + " TOOL " + (a.Ok ? "ok   " : "FAIL ") + a.Message);
@@ -1295,7 +1372,7 @@ namespace Phoenix
                             results.Append("- ").Append(a.Message).Append('\n');
                             if (a.Content != null)
                             {
-                                if (a.Op == "read" && a.To == 0) _engine.RegisterRecall(a.Content);   // Instant Recall for this file text (whole files only)
+                                if (a.Op == "read" && a.To == 0 && !a.OutlineOnly) _engine.RegisterRecall(a.Content);   // Instant Recall for this file text (whole files only)
                                 results.Append("```\n").Append(a.Content).Append("\n```\n");
                                 needsAnswer = true;
                             }
@@ -1303,10 +1380,29 @@ namespace Phoenix
                         }
                         // Reads, listings and failures go back to the model; plain successful writes end the turn.
                         if (!needsAnswer) break;
+                        // The same failure twice in one turn: the model is going in circles, so stop and say so.
+                        bool repeated = false;
+                        foreach (Workspace.Action a in actions)
+                        {
+                            if (a.Ok) continue;
+                            string sig = a.Op + "|" + a.Path + "|" + (a.Message.Length > 80 ? a.Message.Substring(0, 80) : a.Message);
+                            int seen; failures.TryGetValue(sig, out seen); failures[sig] = seen + 1;
+                            if (seen + 1 >= 2) repeated = true;
+                        }
+                        if (repeated)
+                        {
+                            string note = "Stopped: the same change failed twice (" + actions.Find(delegate(Workspace.Action x) { return !x.Ok; }).Message.Split('\n')[0] +
+                                          "). Ask again, or say which lines to change.";
+                            Log.Text("#" + rid + " LOOP " + note);
+                            write("{\"tool\":{\"op\":\"stop\",\"path\":\"\",\"ok\":false,\"msg\":" + Json.Quote(note) + "}}");
+                            break;
+                        }
                         msgs.Add(new ChatMessage("user", results.ToString()));
                         append.Append(",{\"role\":\"user\",\"content\":").Append(Json.Quote(results.ToString())).Append('}');
                     }
                     append.Append(']');
+                    string indexed = IndexModelChanges(changedFiles, rid);
+                    if (indexed != null) write(indexed);
                     double tps = genSeconds > 0 ? totalTokens / genSeconds : 0;
                     Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture, "#{0} DONE total {1} ms, {2} tokens generated, {3:F1} tok/s",
                         rid, ChatLog.Ms(total.Elapsed.TotalSeconds), totalTokens, tps));
@@ -1353,7 +1449,26 @@ namespace Phoenix
         // will reuse. Returns the docs sections added (log: write the RULES / RAG log lines).
         List<RagHit> PrepareMessages(List<ChatMessage> msgs, Workspace ws, int rid, bool log)
         {
+            List<SkillMatch> skillsUsed;
+            return PrepareMessages(msgs, ws, rid, log, true, out skillsUsed);
+        }
+
+        // useSkills false: no skill catalog or skill text (the chat request's "skills": false, used by the RAG evaluation).
+        List<RagHit> PrepareMessages(List<ChatMessage> msgs, Workspace ws, int rid, bool log, bool useSkills, out List<SkillMatch> skillsUsed)
+        {
+            skillsUsed = new List<SkillMatch>();
+            // what the user typed, before docs and project excerpts are added to it (skills match only this)
+            int oui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
+            string userText = oui >= 0 ? msgs[oui].Text : "";
             List<RagHit> hits = new List<RagHit>();
+            // The chat page sends the model's system prompt (its default or the user's edit). Requests without one (API,
+            // VS Code) get the default: short replies keep each turn fast and within the cache's rewind buffer (GemmaGpu.SwaSlack).
+            int bi = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system" && m.Text != null && m.Text.Trim().Length > 0; });
+            if (bi < 0)
+            {
+                msgs.RemoveAll(delegate(ChatMessage m) { return m.Role == "system"; });
+                msgs.Insert(0, new ChatMessage("system", SystemPrompts.For(_engine != null ? Path.GetFileName(_engine.ModelPath) : null)));
+            }
             List<KeyValuePair<string, string>> rulesFiles = RulesFiles();
             string rules = RulesPrompt(rulesFiles);
             if (rules != null)
@@ -1376,6 +1491,17 @@ namespace Phoenix
                 if (si >= 0) msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + tools);
                 else msgs.Insert(0, new ChatMessage("system", tools));
             }
+            else
+            {
+                // No project active: files can only be made inside a project, so the model sends the user to create one.
+                const string noProject = "No project is active, so you cannot create or save files: never use file tags. When the user " +
+                    "asks for code, a script, a page or any other file, write it in a code block in your reply (complete, ready to copy). " +
+                    "When they asked for a file to be created or saved, end with one short sentence saying that to save it as a file they " +
+                    "create or select a project first (the + next to Projects in the sidebar, then click the project).";
+                int si = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                if (si >= 0) msgs[si] = new ChatMessage("system", msgs[si].Text + "\n\n" + noProject);
+                else msgs.Insert(0, new ChatMessage("system", noProject));
+            }
             // Retrieved docs go into the newest user message only (not the system prompt), so the cached
             // conversation prefix stays valid and old turns don't keep spending context on old references.
             string libraryNote = Rag.LibraryNote();
@@ -1385,6 +1511,8 @@ namespace Phoenix
                 if (si2 >= 0) msgs[si2] = new ChatMessage("system", msgs[si2].Text + "\n\n" + libraryNote);
                 else msgs.Insert(0, new ChatMessage("system", libraryNote));
             }
+            int pui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
+            string projQuery = pui >= 0 && ws != null ? msgs[pui].Text : null;
             if (Rag.Enabled)
             {
                 int ui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
@@ -1406,6 +1534,35 @@ namespace Phoenix
                             foreach (RagHit h in hits) srcs.Add(h.File + (h.Title.Length > 0 ? " › " + h.Title : "") + " (" + h.Score.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + ")");
                             Log.Text("#" + rid + " RAG " + hits.Count + " chunks in " + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + " ms: " + string.Join("; ", srcs.ToArray()));
                             Log.Json("rag", "\"id\":" + rid + ",\"ms\":" + ChatLog.Ms(rsw.Elapsed.TotalSeconds) + ",\"hits\":" + HitsJson(hits, false));
+                        }
+                    }
+                }
+            }
+            AddProjectHits(msgs, pui, projQuery, rid, log);
+            // Skills: the catalog goes into the system prompt, the matched skills in front of the newest user message (last,
+            // so they come before the docs and project excerpts).
+            List<Skill> skills = null;
+            try { if (useSkills) skills = AllSkills(); } catch (Exception ex) { if (log) Log.Text("#" + rid + " SKILLS could not be read: " + ex.Message); }
+            string catalog = skills != null ? Skills.CatalogNote(skills) : null;
+            if (catalog != null)
+            {
+                int si3 = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                if (si3 >= 0) msgs[si3] = new ChatMessage("system", msgs[si3].Text + "\n\n" + catalog);
+                else msgs.Insert(0, new ChatMessage("system", catalog));
+                int ui2 = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
+                if (ui2 >= 0)
+                {
+                    skillsUsed = Skills.Match(skills, userText);
+                    if (skillsUsed.Count > 0)
+                    {
+                        List<byte[]> keepImg2 = msgs[ui2].Images;
+                        msgs[ui2] = new ChatMessage("user", Skills.Wrap(skillsUsed, msgs[ui2].Text));
+                        msgs[ui2].Images = keepImg2;
+                        if (log)
+                        {
+                            List<string> used = new List<string>();
+                            foreach (SkillMatch m in skillsUsed) used.Add(m.Skill.Scope + " " + m.Skill.Name + (m.Explicit ? " (called)" : " (matched " + string.Join(", ", m.Terms.ToArray()) + ")"));
+                            Log.Text("#" + rid + " SKILLS " + string.Join("; ", used.ToArray()));
                         }
                     }
                 }
@@ -1470,17 +1627,65 @@ namespace Phoenix
                    reply.IndexOf("<replace>", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        // Second pass for a reply with code: the model checks its own code against the syntax-reference sections that
-        // match the code and answers LOOKS GOOD or with the corrected reply. Streams "w" events and the phase.
-        // Returns the reply to show: the draft when it passed (or the check went off the rails), else the correction.
-        string CheckCode(int rid, List<ChatMessage> msgs, string draft, SamplerSettings s, int maxTokens, TextCallback write, CancelCheck cancel, out GenerationStats cst)
+        // Second pass for a reply with code. 1. Certain problems: missing usings are fixed in code; CodeCheck finds what
+        // would not compile or run in the target (C# 6+ syntax for C# 5, PS 7 syntax, invented commands, parameters and
+        // framework members, SQL from the wrong dialect, unbalanced brackets) and the model is told exactly what to fix,
+        // up to two rounds, keeping a rewrite only when it has fewer problems. 2. Languages CodeCheck does not cover get
+        // the model's own review against the syntax-reference sections (LOOKS GOOD or a corrected reply); covered ones
+        // skip it when clean (it rarely found anything and doubled the reply time). Streams "w" events and the phase.
+        // userText: what the user typed (target versions and SQL dialect come from it). Returns the reply to show.
+        string CheckCode(int rid, List<ChatMessage> msgs, string draft, List<RagHit> sentHits, string userText, SamplerSettings s, int maxTokens, TextCallback write, CancelCheck cancel, out GenerationStats cst)
         {
             write("{\"phase\":\"checking\",\"lang\":" + Json.Quote(Rag.LanguageName(draft)) + "}");
             Stopwatch sw = Stopwatch.StartNew();
-            // Certain problems (missing usings) are fixed in code first; the model then judges the fixed version.
+            cst = new GenerationStats();
+            SamplerSettings cs = s.Clone();
+            cs.Temperature = Math.Min(cs.Temperature, 0.2f);
             List<string> lint = new List<string>();
-            draft = CodeLint.FixUsings(draft, lint);
-            if (lint.Count > 0) write("{\"w\":" + Json.Quote("\n\n— fixed: " + string.Join(", ", lint.ToArray()) + " —") + "}");
+            draft = CodeCheck.AutoFix(CodeLint.FixUsings(draft, lint), userText, lint);
+            if (lint.Count > 0) write("{\"w\":" + Json.Quote("— fixed: " + string.Join(", ", lint.ToArray()) + " —\n") + "}");
+
+            // 1. certain problems
+            List<string> langs;
+            List<CodeFinding> found = CodeCheck.Find(draft, userText, out langs);
+            int firstFound = found.Count, rounds = 0;
+            while (found.Count > 0 && rounds < 2 && !cancel())
+            {
+                rounds++;
+                StringBuilder list = new StringBuilder("Checker: " + found.Count + " problem" + (found.Count > 1 ? "s" : "") + " to fix:\n");
+                foreach (CodeFinding f in found) list.Append("- ").Append(f.ToString()).Append('\n');
+                write("{\"w\":" + Json.Quote(list.ToString() + "\n") + "}");
+                List<ChatMessage> fix = new List<ChatMessage>(msgs);
+                fix.Add(new ChatMessage("assistant", draft));
+                fix.Add(new ChatMessage("user", CodeCheck.FixPrompt(found)));
+                StringBuilder rewrite = new StringBuilder();
+                GenerationStats g = _engine.Generate(fix, cs, maxTokens, delegate(string piece) { rewrite.Append(piece); write("{\"w\":" + Json.Quote(piece) + "}"); }, cancel);
+                AddStats(cst, g);
+                write("{\"w\":\"\\n\\n\"}");
+                string v = rewrite.ToString().Trim();
+                if (!HasCode(v) || Workspace.QueryTagEnd(v) >= 0) break;
+                v = CodeCheck.AutoFix(CodeLint.FixUsings(v, new List<string>()), userText, new List<string>());
+                List<string> l2;
+                List<CodeFinding> after = CodeCheck.Find(v, userText, out l2);
+                if (after.Count >= found.Count) break;   // no better: keep the previous version
+                draft = v; found = after;
+            }
+            bool covered = langs.Count > 0;
+            foreach (string l in langs) if (!CodeCheck.Covers(l)) covered = false;
+            if (firstFound > 0 || covered)
+            {
+                string outcome = found.Count > 0 ? "unsure" : firstFound > 0 || lint.Count > 0 ? "wrong" : "good";
+                if (covered || found.Count > 0)
+                {
+                    write("{\"phase\":\"" + outcome + "\",\"ref\":" + (sentHits != null && sentHits.Count > 0 ? "true" : "false") + ",\"docs\":" + DocsJson(sentHits, null) + "}");
+                    Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture, "#{0} CHECK {1} in {2} ms: {3} certain problems found, {4} left after {5} fix round(s); lint {6}{7}",
+                        rid, outcome, ChatLog.Ms(sw.Elapsed.TotalSeconds), firstFound, found.Count, rounds, lint.Count == 0 ? "clean" : string.Join(" ", lint.ToArray()),
+                        found.Count > 0 ? "\n" + CodeCheck.FixPrompt(found) : ""));
+                    return draft;
+                }
+            }
+
+            // 2. the model reviews its own code (languages without a thorough checker)
             string code = CodeOf(draft);
             // Only sections that are not already in the conversation, at most two: the ones sent with the request are
             // still in the model's cache, so re-sending them would cost seconds of prompt reading (and push Gemma's
@@ -1493,7 +1698,9 @@ namespace Phoenix
                 foreach (RagHit h in Rag.Search(code, null))
                     if (hits.Count < 2 && sent.IndexOf(h.Text.Trim(), StringComparison.Ordinal) < 0) hits.Add(h);
             }
-            bool hadSections = msgs.Exists(delegate(ChatMessage m) { return m.Role == "user" && m.Text.StartsWith("Reference sections from my syntax library"); });
+            // docs sections in the newest user message (tool-result messages are skipped)
+            int lastUser = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user" && !m.Text.StartsWith("Tool results:"); });
+            bool hadSections = lastUser >= 0 && msgs[lastUser].Text.Contains("Reference sections from my syntax library");
             StringBuilder p = new StringBuilder("Check the code in your reply above for mistakes: syntax errors, wrong type or method names, " +
                 "wrong API usage, and logic errors" + (hadSections ? ", using the reference sections in my message where they apply" : "") +
                 ". Do not change anything that is already correct, and do not use <read> or <list>.");
@@ -1511,35 +1718,46 @@ namespace Phoenix
             check.Add(new ChatMessage("user", p.ToString()));
             write("{\"w\":" + Json.Quote("Checking against " + (hadSections ? "the reference sections sent with the request" : "the code alone") +
                 (hits.Count > 0 ? " and " + hits.Count + " more" : "") + (lint.Count > 0 ? "; fixed first: " + string.Join(", ", lint.ToArray()) : "") + ".\n\n") + "}");
-            SamplerSettings cs = s.Clone();
-            cs.Temperature = Math.Min(cs.Temperature, 0.2f);
             StringBuilder verdict = new StringBuilder();
-            cst = _engine.Generate(check, cs, maxTokens, delegate(string piece)
+            GenerationStats rs = _engine.Generate(check, cs, maxTokens, delegate(string piece)
             {
                 verdict.Append(piece);
                 write("{\"w\":" + Json.Quote(piece) + "}");
             }, cancel);
-            string v = verdict.ToString().Trim();
-            bool good = v.TrimStart('*', '"', '`', ' ').StartsWith("LOOKS GOOD", StringComparison.OrdinalIgnoreCase);
+            AddStats(cst, rs);
+            string vv = verdict.ToString().Trim();
+            bool good = vv.TrimStart('*', '"', '`', ' ').StartsWith("LOOKS GOOD", StringComparison.OrdinalIgnoreCase);
             // A correction must keep the reply's form: code, and no file queries (those would start another round).
-            bool fixedIt = !good && HasCode(v) && Workspace.QueryTagEnd(v) < 0;
-            if (fixedIt) v = CodeLint.FixUsings(v, new List<string>());   // the rewrite may drop usings again
+            bool fixedIt = !good && HasCode(vv) && Workspace.QueryTagEnd(vv) < 0;
+            if (fixedIt) vv = CodeLint.FixUsings(vv, new List<string>());   // the rewrite may drop usings again
             // Verdict for the status line: good (green) = passed; fixed (gold) = the check found and corrected possible
-            // mistakes; wrong (red) = definite syntax errors (found by CodeLint) that were corrected; unsure (gold) = the
-            // check gave no clear answer and the code was kept. ref: whether syntax-reference sections were used.
-            string outcome = lint.Count > 0 ? "wrong" : good ? "good" : fixedIt ? "fixed" : "unsure";
-            write("{\"phase\":\"" + outcome + "\",\"ref\":" + (hits.Count > 0 || hadSections ? "true" : "false") + "}");
+            // mistakes; wrong (red) = definite errors (found by CodeLint / CodeCheck) that were corrected; unsure (gold) =
+            // the check gave no clear answer and the code was kept. ref: whether syntax-reference sections were used.
+            string result = lint.Count > 0 || firstFound > 0 ? "wrong" : good ? "good" : fixedIt ? "fixed" : "unsure";
+            write("{\"phase\":\"" + result + "\",\"ref\":" + (hits.Count > 0 || hadSections ? "true" : "false") + ",\"docs\":" + DocsJson(hadSections ? sentHits : null, hits) + "}");
             Log.Text(string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "#{0} CHECK {1} in {2} ms ({3} reference sections, lint {4}; prompt {5} new + {6} cached tokens, {7} generated){8}",
+                "#{0} CHECK {1} in {2} ms ({3} reference sections, lint {4}, {9} certain problems fixed; prompt {5} new + {6} cached tokens, {7} generated){8}",
                 rid, good ? "looks good" : fixedIt ? "corrected the code" : "unclear verdict, kept the draft", ChatLog.Ms(sw.Elapsed.TotalSeconds),
-                hits.Count, lint.Count == 0 ? "clean" : string.Join(" ", lint.ToArray()), cst.PromptTokens, cst.ReusedTokens, cst.GeneratedTokens, good ? "" : "\n" + v));
-            return fixedIt ? v : draft;
+                hits.Count, lint.Count == 0 ? "clean" : string.Join(" ", lint.ToArray()), rs.PromptTokens, rs.ReusedTokens, rs.GeneratedTokens, good ? "" : "\n" + vv, firstFound));
+            return fixedIt ? vv : draft;
         }
 
-        static bool IsCSharp(string reply, string code)
+        static void AddStats(GenerationStats total, GenerationStats g)
         {
-            return System.Text.RegularExpressions.Regex.IsMatch(reply, @"```\s*(csharp|cs|c#)\b|<write\s+path\s*=\s*""[^""]*\.cs""", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
-                   System.Text.RegularExpressions.Regex.IsMatch(code, @"\busing System\b|\bnamespace\s+\w|\bpublic\s+(static\s+)?(class|void|async)\b");
+            if (g == null) return;
+            total.PromptTokens += g.PromptTokens; total.ReusedTokens += g.ReusedTokens; total.GeneratedTokens += g.GeneratedTokens;
+            total.PromptSeconds += g.PromptSeconds; total.GenerateSeconds += g.GenerateSeconds;
+        }
+
+        // The library documents a check had in front of it, as a JSON array of file names.
+        static string DocsJson(List<RagHit> a, List<RagHit> b)
+        {
+            List<string> docs = new List<string>();
+            foreach (List<RagHit> l in new List<RagHit>[] { a, b })
+                if (l != null) foreach (RagHit h in l) { string f = Path.GetFileName(h.File); if (!docs.Contains(f)) docs.Add(f); }
+            StringBuilder dj = new StringBuilder("[");
+            for (int i = 0; i < docs.Count; i++) dj.Append(i > 0 ? "," : "").Append(Json.Quote(docs[i]));
+            return dj.Append(']').ToString();
         }
 
         // The code in a reply (fenced blocks and <write> bodies) as the reference-search query.
