@@ -28,9 +28,11 @@ namespace Phoenix
         public string TestedAt = "";
         public bool Has(string feature) { bool v; return Features == null || !Features.TryGetValue(feature, out v) || v; }
         // Local context (docs-search sections, syntax sheets, RULES.md, project files and file tools, skills) goes only to
-        // a provider that allows it. For now only the Phoenix Local Server (this PC) does; every other provider gets just
-        // what the user types (the toggle in its window is shown off and greyed out).
-        public bool SendsLocalContext { get { return IsPhoenix; } }
+        // a provider that allows it: always the Phoenix Local Server (this PC); any other provider only when the user
+        // switched "send local context" on in its window (approved 2026-10-22; off by default, saved in providers.json).
+        // Without it a provider gets just what the user types.
+        public bool LocalContext;
+        public bool SendsLocalContext { get { return IsPhoenix || LocalContext; } }
     }
 
     public static class Providers
@@ -79,6 +81,7 @@ namespace Phoenix
                                 foreach (KeyValuePair<string, object> kv in f) if (kv.Value is bool) p.Features[kv.Key] = (bool)kv.Value;
                             }
                             p.TestedAt = Json.GetStr(d, "testedAt", "");
+                            p.LocalContext = d.ContainsKey("localContext") && d["localContext"] is bool && (bool)d["localContext"];
                             list.Add(p);
                         }
                 }
@@ -126,6 +129,7 @@ namespace Phoenix
                 sb.Append("{\"id\":").Append(Json.Quote(p.Id)).Append(",\"name\":").Append(Json.Quote(p.Name)).Append(",\"url\":").Append(Json.Quote(p.Url))
                   .Append(",\"model\":").Append(Json.Quote(p.Model));
                 if (p.Features != null) sb.Append(",\"features\":").Append(FeaturesJson(p)).Append(",\"testedAt\":").Append(Json.Quote(p.TestedAt));
+                if (p.LocalContext && !p.IsPhoenix) sb.Append(",\"localContext\":true");
                 sb.Append('}');
             }
             lock (_fileLock)
@@ -374,6 +378,8 @@ namespace Phoenix
                     p.Url = NormUrl(Json.GetStr(body, "url", ""));
                 }
                 p.Model = Json.GetStr(body, "model", "").Trim();
+                // Phoenix always gets local context; another provider only when the user switched it on in its window
+                if (!p.IsPhoenix && body != null && body.ContainsKey("localContext") && body["localContext"] is bool) p.LocalContext = (bool)body["localContext"];
                 // The key goes straight into Credential Manager; the store file never holds it.
                 string key = Json.GetStr(body, "key", null);
                 bool clear = body != null && body.ContainsKey("clearKey") && body["clearKey"] is bool && (bool)body["clearKey"];
@@ -381,7 +387,8 @@ namespace Phoenix
                 else if (clear) CredStore.Delete(p.Id);
                 ForgetKey(p.Id);
                 Save(list);
-                if (log != null) log("provider " + (added ? "added" : "saved") + ": " + p.Name + " (" + p.Url + (CredStore.Has(p.Id) ? ", key in Credential Manager" : ", no key") + ")");
+                if (log != null) log("provider " + (added ? "added" : "saved") + ": " + p.Name + " (" + p.Url + (CredStore.Has(p.Id) ? ", key in Credential Manager" : ", no key") +
+                    (p.SendsLocalContext ? ", local context ON" : ", local context off") + ")");
                 return "{\"provider\":" + Json1(p) + "}";
             }
             if (path == "/client/provider-delete" && post)
@@ -476,13 +483,19 @@ namespace Phoenix
             HttpWebRequest o = (HttpWebRequest)WebRequest.Create(CheckTarget(url));
             o.AllowAutoRedirect = false;
             o.Proxy = o.RequestUri.IsLoopback ? null : WebRequest.DefaultWebProxy;
-            o.KeepAlive = true;
+            // Pooled connections only on this PC / the LAN: an internet gateway drops idle connections without telling us,
+            // and a request sent on one never gets an answer (a second message 20 s after the first hung on 2026-10-22).
+            o.KeepAlive = IsLocal(url);
             o.Timeout = 30000;
             o.ReadWriteTimeout = 600000;   // a long reply streams for minutes
             o.AllowReadStreamBuffering = false;
             o.UserAgent = "PhoenixLAI-Client";
             return o;
         }
+
+        // How long to wait for a provider to start answering (the reply itself may then stream for minutes): a local one may
+        // first load a model; an internet one that is silent for 90 s is not going to answer, so say so instead of waiting.
+        public static int AnswerTimeout(Provider p) { return IsLocal(p.Url) ? 600000 : 90000; }
 
         static Uri CheckTarget(string url)
         {
@@ -555,7 +568,7 @@ namespace Phoenix
             {
                 HttpWebRequest o = Outgoing(p.Url + sub);
                 o.Method = method;
-                o.Timeout = 300000;   // the first chat may load a model
+                o.Timeout = AnswerTimeout(p);
                 if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
                 if (json != null)
                 {
@@ -1049,7 +1062,7 @@ namespace Phoenix
             done = false;
             HttpWebRequest o = Providers.Outgoing(p.Url + "/chat/completions");
             o.Method = "POST";
-            o.Timeout = 600000;
+            o.Timeout = Providers.AnswerTimeout(p);
             o.Accept = "text/event-stream";
             if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
             byte[] b = Encoding.UTF8.GetBytes(json);

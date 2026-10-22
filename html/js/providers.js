@@ -72,7 +72,16 @@
   };
   document.addEventListener('click', e => { if (!e.target.closest('.dd')) $('pModelMenu').classList.remove('show'); });
   $('pModelMenu').addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); $('pModelMenu').classList.remove('show'); $('pModelBtn').focus(); } });
-  function form() { return { id: editing ? editing.id : undefined, name: $('pName').value.trim(), url: $('pUrl').value.trim(), model: $('pModel').value }; }
+  function form() { return { id: editing ? editing.id : undefined, name: $('pName').value.trim(), url: $('pUrl').value.trim(), model: $('pModel').value, localContext: $('pLocal').checked }; }
+  function drawLocalNote() {
+    const on = $('pLocal').checked, here = editing && editing.phoenix;
+    $('pLocalNote').textContent = on
+      ? (here ? ' · docs sections, syntax sheets, RULES.md, project files and skills go with each message (this PC only)'
+              : ' · ON: file tools work, and project files the model reads, RULES.md, docs sections and skills are SENT TO THIS PROVIDER')
+      : ' · off: this provider gets only what you type (no docs, project files, RULES.md or skills; no file tools)';
+    $('pLocalNote').classList.toggle('warn', on && !here);
+  }
+  $('pLocal').addEventListener('change', drawLocalNote);
   function openProvider(p) {
     editing = p;
     $('pName').value = p ? p.name : '';
@@ -81,11 +90,13 @@
     $('pKey').placeholder = p && p.hasKey ? '•••••••• stored in Credential Manager (paste a new key to replace it)' : 'paste the key (optional)';
     $('pClear').checked = false; $('pClearRow').style.display = p && p.hasKey ? '' : 'none';
     $('pDelete').style.display = p && !p.phoenix ? '' : 'none';
-    // local context: fixed for now (on for the Phoenix Local Server, off for every other provider), so the toggle is greyed out
-    $('pLocal').checked = !!(p && p.localContext);
-    $('pLocalNote').textContent = p && p.localContext
-      ? ' · docs sections, syntax sheets, RULES.md, project files and skills go with each message (this PC only)'
-      : ' · off: this provider gets only what you type (no docs, project files, RULES.md or skills; no file tools)';
+    // local context: always on for the Phoenix Local Server (greyed out); off by default for every other provider, saved with it
+    const builtIn = !!(p && p.phoenix);
+    $('pLocal').checked = builtIn || !!(p && p.localContext);
+    $('pLocal').disabled = builtIn;
+    $('pLocalRow').classList.toggle('locked', builtIn);
+    $('pLocalRow').title = builtIn ? 'Always on: the Phoenix Local Server runs on this PC' : '';
+    drawLocalNote();
     $('pName').readOnly = $('pUrl').readOnly = !!(p && p.phoenix);   // built in: fixed name and address
     drawFeatures(p ? p.features : null, p && p.testedAt ? 'from the test on ' + p.testedAt : null);
     fillModels([], p ? p.model : '');
