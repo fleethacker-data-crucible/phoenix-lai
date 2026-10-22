@@ -2,7 +2,7 @@
 // into the system prompt, the model answers a call as <tool_call>{"name": ..., "arguments": {...}}</tool_call>, and the
 // reply is parsed back into OpenAI tool_calls. Earlier calls and tool results in the history are rendered in the same
 // text form, so the model sees its own format. C# 5 only. The server only describes and parses calls: it never runs a
-// tool (the client does, e.g. VS Code with its own approvals), so ShellGuard's rule for the studio's model is unchanged.
+// tool (the client does, e.g. VS Code with its own approvals), so ShellGuard's rule for the Phoenix Client's model is unchanged.
 using System;
 using System.Collections.Generic;
 using System.Text;

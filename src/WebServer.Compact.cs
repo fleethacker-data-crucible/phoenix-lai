@@ -55,6 +55,7 @@ namespace Phoenix
                 if (lines.Count == 0) throw new InvalidOperationException("Nothing to compact yet.");
                 lock (_engineLock)
                 {
+                    EnsureClientModel();
                     if (_engine == null) throw new InvalidOperationException("No model loaded.");
                     _engine.PrefillProgress = null;
                     // Parts sized to about a third of the context (~3.5 characters a token), leaving room for the summary

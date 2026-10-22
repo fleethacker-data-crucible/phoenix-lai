@@ -68,7 +68,8 @@ function statusItem(icon, text, lower) {
 }
 function drawStatus(offline) {
   // Top bar: model drop-down, then speed | tokens | rag | memory. Left panel: the video card. All plain grey.
-  const tm = $('topModel'); if (tm) tm.textContent = offline ? 'server offline' : info.file ? String(info.file).split(/[\\/]/).pop().replace(/\.gguf$/i, '') : 'Select model';
+  const pDown = window.activeProviderDown && window.activeProviderDown();
+  const tm = $('topModel'); if (tm) tm.textContent = offline ? 'server offline' : pDown ? (info.provider ? info.provider.name : 'provider') + ' offline' : info.file ? String(info.file).split(/[\\/]/).pop().replace(/\.gguf$/i, '') : 'Select model';
   const top = [], hw = [];
   if (!offline) {
     if (lastTps) top.push(statusItem('speed', lastTps + ' t/s avg'));
@@ -79,23 +80,13 @@ function drawStatus(offline) {
       top.push(statusItem('rag', !rg.enabled ? 'rag off' + (rg.chunks ? ': ' + docs : '') : rg.indexing ? 'indexing: ' + rg.indexing
         : rg.error ? 'rag error: ' + rg.error : !rg.chunks ? 'rag: not indexed (/index)' : 'rag: ' + docs + (rg.vectors ? ' · hybrid' : ' · keywords only')));
     }
-    // Memory the model lives in: VRAM in GPU mode, system RAM in CPU mode, as "this app uses / this app could have"
-    // (both live: the right side drops when other programs take memory).
-    const gb = b => (b / 1073741824).toFixed(1);
-    const cpu = info.device === 'cpu', mem = cpu ? 'ram' : 'vram', micon = cpu ? 'ram' : 'gpu';
-    if (info.loading) top.push(statusItem(micon, mem + ': loading…'));
-    else if (info.loadError) top.push(statusItem(micon, mem + ': load failed'));
-    else if (cpu && info.ram && info.file) top.push(statusItem(micon, 'ram ' + gb(info.ram.used) + '/' + gb(info.ram.avail) + ' GB'));
-    else if (!cpu && info.vram) top.push(statusItem(micon, 'vram ' + gb(info.vram.used) + '/' + gb(info.vram.budget) + ' GB'));
-    else top.push(statusItem(micon, mem + ': no model'));
-    // Video card (GPU mode only; in CPU mode the RAM item says it all).
-    const onGpu = info.backend && /^GPU/.test(info.backend);
-    if (!cpu) hw.push(statusItem('gpu', info.loading ? 'detecting gpu…' : info.loadError ? 'gpu error' : onGpu ? info.backend.replace(/^GPU: /, '')
-      : info.backend ? 'gpu unavailable: on cpu' : 'gpu idle', true));
+    // The provider the model runs on (the Phoenix server, LM Studio, a cloud API...): its name, and whether it answered.
+    const pv = info.provider;
+    if (pv) top.push(statusItem('pc', pv.name + (info.providerError ? ': not answering' : info.loadError ? ': ' + info.loadError : '')));
   }
-  // who and where: the Windows user and the computer's name, above the video card
-  if (info.machine) hw.unshift(statusItem('pc', info.machine));
-  if (info.user) hw.unshift(statusItem('user', info.user));
+  // where and who: the computer's name, then the Windows user
+  if (info.machine) hw.push(statusItem('pc', info.machine));
+  if (info.user) hw.push(statusItem('user', info.user));
   const sh = $('sideHw'); if (sh) sh.innerHTML = hw.map(t => '<div>' + t + '</div>').join('');
   const ts = $('topSpeed'); if (ts) ts.innerHTML = top.join('<span class="sep">|</span>');
 }
@@ -113,7 +104,7 @@ async function refresh() {
   try { info = await api('/api/info?page=' + PAGE_ID); } catch (e) { drawStatus(true); return; }
   if (info.focus) bringForward();
   drawStatus(false);
-  if (info.version) document.title = 'Phoenix LAI v.' + info.version;
+  if (info.version) document.title = 'Phoenix Client v.' + info.version;
   if (info.loading || (info.rag && info.rag.indexing)) setTimeout(refresh, 700);
 }
 // Keep the status line (git changes, model state) current.
@@ -456,6 +447,8 @@ async function loadRecentFolders() { try { recentFolders = (await api('/api/rece
 loadRecentFolders();
 // Chat models in the models folder (embedding models, used for docs search, can't chat). Refreshed when needed.
 let chatModels = [];
+// Phoenix Client: every provider with its state ("up" / "down" / "busy" / "unknown"), saved features and models.
+let modelGroups = [];
 // A model's display name: its .gguf file name (the name inside the file is often just a build folder).
 function fileLabel(f) { return String(f || '').split(/[\\/]/).pop().replace(/\.gguf$/i, ''); }
 // Size in billions of parameters from the file name ("E4B" = 4, "12B" = 12, "26B" = 26); unknown sizes sort last.
@@ -463,17 +456,19 @@ function modelSize(name) { const m = /(?:^|[-_.])E?(\d+(?:\.\d+)?)B(?=[-_.]|$)/i
 // mmproj files are image/audio projectors for a chat model, not models you can chat with.
 async function loadModelList() {
   try {
-    chatModels = (await api('/api/models')).models.filter(m => !/embed|mmproj/i.test(m.name))
+    const j = await api('/api/models');
+    chatModels = j.models.filter(m => !/embed|mmproj/i.test(m.name))
       .sort((a, b) => modelSize(a.name) - modelSize(b.name) || a.name.localeCompare(b.name));
+    modelGroups = j.groups || [];
   } catch (e) {}
 }
 loadModelList();
-async function loadModel(name, ctx) {
+async function loadModel(name, ctx, provider) {
   systemLine('Loading ' + name + (ctx ? ', context ' + ctx : '') + '…');
   setTimeout(refresh, 300);
   const t0 = performance.now();
   const cfg = ms(name);
-  try { info = await api('/api/load', { name, context: ctx === undefined ? cfg.context : ctx, kv: cfg.kv }); }
+  try { info = await api('/api/load', { name, context: ctx === undefined ? cfg.context : ctx, kv: cfg.kv, provider }); }
   catch (e) { systemLine('Could not load: ' + e.message); return false; }
   systemLine('Loaded ' + fileLabel(info.file || name) + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + Number(info.context).toLocaleString() + (info.contextAuto ? ' (auto)' : '') + '.');
   if (info.memWarning) systemLine('⚠ ' + info.memWarning);
@@ -514,8 +509,9 @@ const COMMANDS = [
       const r = await api('/api/rag?q=' + encodeURIComponent(arg));
       systemLine(r.hits.length ? r.hits.length + ' chunks in ' + r.ms + ' ms: ' + r.hits.map(h => '[' + h.n + '] ' + h.file + (h.title ? ' › ' + h.title : '') + ' (' + h.score + ')').join('  ') : 'No matching docs (' + r.ms + ' ms).');
     } },
-  { name: '/recall', use: '/recall', desc: 'Instant Recall: pre-read every file of the project once, so the model can open them instantly later',
-    run: async () => { await api('/api/recall', {}); systemLine('Instant Recall: pre-reading the project in the background (a chat message pauses it). Files read once open instantly afterwards, in any chat.'); refresh(); } },
+  // Instant Recall needs the local engine's cache, which a /v1 provider does not expose (Phoenix Client, 2026-10-20):
+  // { name: '/recall', use: '/recall', desc: 'Instant Recall: pre-read every file of the project once, so the model can open them instantly later',
+  //   run: async () => { await api('/api/recall', {}); systemLine('Instant Recall: pre-reading the project in the background (a chat message pauses it). Files read once open instantly afterwards, in any chat.'); refresh(); } },
   { name: '/mode', use: '/mode auto|accept', desc: 'accept = approve each file read / write the model wants to do; auto = no prompts', arg: true,
     options: () => [{ value: 'auto', desc: 'no prompts' + (info.mode !== 'accept' ? ' (current)' : '') }, { value: 'accept', desc: 'Accept / Deny every file action' + (info.mode === 'accept' ? ' (current)' : '') }],
     run: async arg => {
@@ -531,26 +527,31 @@ const COMMANDS = [
       try { await api('/api/debug', { on: v === 'on' }); await refresh(); systemLine('Debug logging ' + (v === 'on' ? 'on: every step and every error goes to the session log in logs\.' : 'off.')); }
       catch (e) { systemLine('Could not change debug logging: ' + e.message); }
     } },
-  { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
-    options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'processor (slow; no video card needed)' + (info.device === 'cpu' ? ' (current)' : '') }],
-    run: async arg => {
-      const d = (arg || '').trim().toLowerCase();
-      if (d !== 'gpu' && d !== 'cpu') { systemLine('Running on ' + (info.device === 'cpu' ? 'CPU' : 'GPU') + (info.backend ? ' (' + info.backend + ')' : '') + '. Use /device gpu or /device cpu.'); return; }
-      if (info.model) systemLine('Switching to ' + d.toUpperCase() + ' and reloading ' + info.file + '…');
-      try { info = await api('/api/device', { device: d }); } catch (e) { systemLine('Could not switch: ' + e.message); return; }
-      ctxUsed = 0; await refresh();
-      systemLine('Now on ' + d.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
-    } },
-  { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
-    run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
-  { name: '/vram', use: '/vram', desc: 'video memory: what Phoenix LAI uses, what is free, and which programs use the most',
-    run: async () => {
-      const r = await api('/api/vram'), v = (await api('/api/info')).vram, gb = b => (b / 1073741824).toFixed(2) + ' GB';
-      let txt = v ? 'Phoenix LAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
-      if (r.processes) txt += 'Largest users of video memory:\n' + r.processes.map(p => '  ' + gb(p.bytes).padStart(9) + '  ' + p.name).join('\n');
-      else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
-      systemLine(txt);
-    } },
+  // CPU mode (off, 2026-10-20): models run on the GPU only, so /device is gone. Kept here, commented out:
+  // { name: '/device', use: '/device gpu|cpu', desc: 'run the model on the GPU or the CPU (reloads the current model)', arg: true,
+  //   options: () => [{ value: 'gpu', desc: 'video card (fast)' + (info.device !== 'cpu' ? ' (current)' : '') }, { value: 'cpu', desc: 'processor (slow; no video card needed)' + (info.device === 'cpu' ? ' (current)' : '') }],
+  //   run: async arg => {
+  //     const d = (arg || '').trim().toLowerCase();
+  //     if (d !== 'gpu' && d !== 'cpu') { systemLine('Running on ' + (info.device === 'cpu' ? 'CPU' : 'GPU') + (info.backend ? ' (' + info.backend + ')' : '') + '. Use /device gpu or /device cpu.'); return; }
+  //     if (info.model) systemLine('Switching to ' + d.toUpperCase() + ' and reloading ' + info.file + '…');
+  //     try { info = await api('/api/device', { device: d }); } catch (e) { systemLine('Could not switch: ' + e.message); return; }
+  //     ctxUsed = 0; await refresh();
+  //     systemLine('Now on ' + d.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
+  //   } },
+  // The server's model memory is the server's business (its console: load, unload, vram), not the client's:
+  // { name: '/unload', use: '/unload', desc: 'unload the model and free its video memory (/model loads one again)',
+  //   run: async () => { info = await api('/api/unload', {}); history = []; ctxUsed = 0; systemLine('Model unloaded; its video memory is free.'); refresh(); } },
+  // { name: '/vram', use: '/vram', desc: 'video memory: what Phoenix LAI uses, what is free, and which programs use the most',
+  //   run: async () => {
+  //     const r = await api('/api/vram'), v = (await api('/api/info')).vram, gb = b => (b / 1073741824).toFixed(2) + ' GB';
+  //     let txt = v ? 'Phoenix LAI uses ' + gb(v.used) + ' of the ' + gb(v.budget) + ' it may use now (the rest of the card is taken by other programs).\n' : 'No GPU model loaded.\n';
+  //     if (r.processes) txt += 'Largest users of video memory:\n' + r.processes.map(p => '  ' + gb(p.bytes).padStart(9) + '  ' + p.name).join('\n');
+  //     else if (r.error) txt += 'Per-program use unavailable: ' + r.error;
+  //     systemLine(txt);
+  //   } },
+  { name: '/provider', use: '/provider <name>', desc: 'switch to another OpenAI /v1 provider (Providers in the left panel; + adds one)', arg: true,
+    options: () => (window.providerNames ? window.providerNames() : []).map(n => ({ value: n, desc: '' })),
+    run: async arg => { if (window.useProviderNamed) await window.useProviderNamed(arg); } },
   { name: '/skills', use: '/skills [name]', desc: 'open the Skill Builder (a skill is called in chat with /<skill-name>)', arg: true,
     options: () => (window.skillNames ? window.skillNames() : []).map(n => ({ value: n, desc: 'edit' })),
     run: arg => {   // no name: the builder as it was (or the first skill)
@@ -621,7 +622,7 @@ async function openSettings() {
   const rg = info.rag || {};
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
   lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid, light: settings.light };
-  $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
+  // (answer while I type needs the local engine's cache) $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
   $('sTypeEffect').checked = settings.typeEffect !== false; $('sTypeEffect').onchange = () => { settings.typeEffect = $('sTypeEffect').checked; save(); };
   $('sBanner').checked = !!settings.banner;
   if ($('sGrid')) {   // not in the VS Code panel, which takes VS Code's theme
@@ -642,13 +643,13 @@ async function openSettings() {
   radios('sBrowser', [{ value: 'chrome', label: 'Chrome' }, { value: 'edge', label: 'Edge' }, { value: 'auto', label: 'Auto' }], b.browser);
   $('browserNote').textContent = (b.browser === 'auto' ? 'Chrome first, Edge if Chrome is missing' + (b.used ? ' (now: ' + b.used + ')' : '') + ' · '
     : b.installed ? '' : b.fallback ? b.browser + ' is not installed, so ' + b.fallback + ' is used · ' : 'neither browser found · ') + 'used from the next start';
-  radios('sDevice', [{ value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }], info.device === 'cpu' ? 'cpu' : 'gpu');
-  let g = { profile: 'auto', safe: false };
-  try { g = await api('/api/gpu'); } catch (e) {}
-  openedGpu = g;
-  radios('sGpu', [{ value: 'amd', label: 'AMD' }, { value: 'nvidia', label: 'NVIDIA' }, { value: 'auto', label: 'Auto' }], g.profile);
-  $('sGpuSafe').checked = !!g.safe;
-  $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
+  // CPU mode (off): radios('sDevice', [{ value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }], info.device === 'cpu' ? 'cpu' : 'gpu');
+  // (server GPU setting) let g = { profile: 'auto', safe: false };
+  // (server GPU setting) try { g = await api('/api/gpu'); } catch (e) {}
+  // (server GPU setting) openedGpu = g;
+  // (server GPU setting) radios('sGpu', [{ value: 'amd', label: 'AMD' }, { value: 'nvidia', label: 'NVIDIA' }, { value: 'auto', label: 'Auto' }], g.profile);
+  // (server GPU setting) $('sGpuSafe').checked = !!g.safe;
+  // (server GPU setting) $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
   $('settingsModal').classList.add('show');
   $('settingsBody').scrollTop = 0;
 }
@@ -664,17 +665,18 @@ $('applySettings').addEventListener('click', async () => {
     await api('/api/rag', { enabled: $('sRag').checked });
     const br = radioValue('sBrowser');
     if (br && br !== openedBrowser) { await api('/api/browser', { browser: br }); systemLine('Browser set to ' + br + ' — used from the next start.'); }
-    const dev = radioValue('sDevice');
-    if (dev && dev !== (info.device === 'cpu' ? 'cpu' : 'gpu') && !controller) {
-      systemLine('Switching to ' + dev.toUpperCase() + (info.file ? ' and reloading ' + info.file + '…' : '.'));
-      info = await api('/api/device', { device: dev }); ctxUsed = 0;
-      systemLine('Now on ' + dev.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
-    }
-    const gp = radioValue('sGpu'), gs = $('sGpuSafe').checked;
-    if (openedGpu && gp && (gp !== openedGpu.profile || gs !== !!openedGpu.safe)) {
-      await api('/api/gpu', { profile: gp, safe: gs ? 'on' : 'off' });
-      systemLine('GPU profile set to ' + gp + (gs ? ' (safe kernels)' : '') + ' — used from the next model load (/model).');
-    }
+    // CPU mode (off): the device setting is gone.
+    // const dev = radioValue('sDevice');
+    // if (dev && dev !== (info.device === 'cpu' ? 'cpu' : 'gpu') && !controller) {
+    //   systemLine('Switching to ' + dev.toUpperCase() + (info.file ? ' and reloading ' + info.file + '…' : '.'));
+    //   info = await api('/api/device', { device: dev }); ctxUsed = 0;
+    //   systemLine('Now on ' + dev.toUpperCase() + (info.backend ? ': ' + fileLabel(info.file) + ' runs on ' + info.backend : ' (applies to the next model you load)') + '.');
+    // }
+    // (server GPU setting) const gp = radioValue('sGpu'), gs = $('sGpuSafe').checked;
+    // (server GPU setting) if (openedGpu && gp && (gp !== openedGpu.profile || gs !== !!openedGpu.safe)) {
+    // (server GPU setting) await api('/api/gpu', { profile: gp, safe: gs ? 'on' : 'off' });
+    // (server GPU setting) systemLine('GPU profile set to ' + gp + (gs ? ' (safe kernels)' : '') + ' — used from the next model load (/model).');
+    // }
   } catch (e) {}
   closeSettings(true);
   refresh();
@@ -1028,6 +1030,7 @@ input.addEventListener('input', () => { unquoteFolderPath(); cmdSel = 0; cmdNavi
 let pretypeTimer = 0, lastPretyped = '';
 function schedulePretype() {
   clearTimeout(pretypeTimer);
+  return;   // answer while I type needs the local engine's cache, which a /v1 provider does not expose
   if (!settings.pretype) return;
   pretypeTimer = setTimeout(() => {
     const text = input.value.trim();
@@ -1240,18 +1243,37 @@ if ($('side')) {
   const modelMenu = $('modelMenu');
   $('modelPick').onclick = async e => {
     e.stopPropagation();
+    if ($('modelPick').classList.contains('dis')) return;   // no provider online
     if (modelMenu.classList.toggle('show')) {
       await loadModelList();
+      // Phoenix Client: every provider's models, grouped; an offline provider and its models are greyed out
+      if (modelGroups.length) {
+        const off = ['down', 'unknown'];
+        modelMenu.innerHTML = modelGroups.map(g => {
+          const dead = off.includes(g.state), isActive = info.provider && g.provider.id === info.provider.id;
+          const missing = g.provider.features ? Object.keys(g.provider.features).filter(k => !g.provider.features[k]) : null;
+          const tip = g.provider.name + ' · ' + (dead ? (g.state === 'down' ? 'offline' : 'checking…') : 'online') +
+            (missing ? (missing.length ? ' · not available: ' + missing.map(k => window.featureLabel ? window.featureLabel(k) : k).join(', ') : ' · every tested feature available') : ' · not tested yet (Test in its edit window)');
+          return '<div class="mgroup st-' + g.state + '" title="' + esc(tip) + '"><i class="cdot"></i>' + esc(g.provider.name) + (dead ? ' <span class="mstate">' + (g.state === 'down' ? 'offline' : 'checking…') + '</span>' : '') + '</div>' +
+            (g.models.length ? g.models.map(m => '<button data-m="' + esc(m.name) + '" data-p="' + esc(g.provider.id) + '"' +
+              (dead ? ' class="off" title="' + esc(g.provider.name + ' is offline') + '"' : isActive && m.name === info.file ? ' class="on"' : '') + '><span>' + esc(m.name) + '</span>' +
+              (isActive ? '<span class="mgear" title="Settings for this model">' + GEAR_ICON + '</span>' : '') + '</button>').join('')
+              : '<div class="none">' + (dead ? 'offline' : 'no chat models') + '</div>');
+        }).join('');
+        return;
+      }
       // models the server cannot run are greyed out (hover says why) and cannot be picked
       modelMenu.innerHTML = chatModels.length ? chatModels.map(m => '<button data-m="' + esc(m.name) + '"' +
         (m.unsupported ? ' class="off" title="' + esc('Not supported: ' + m.unsupported) + '"' : m.name === info.file ? ' class="on"'
           : m.tooBig ? ' class="big" title="' + esc('Will not fit in the memory free now: ' + m.tooBig) + '"' : '') + '>' +
         '<span>' + esc(m.name.replace(/\.gguf$/i, '')) + '</span><span class="mgear" title="Settings for this model">' + GEAR_ICON + '</span></button>').join('')
-        : '<div class="none">No .gguf files in the models folder.</div>';
+        : '<div class="none">' + esc(info.providerError ? (info.provider ? info.provider.name : 'The provider') + ': ' + info.providerError : 'No models from ' + (info.provider ? info.provider.name : 'the provider') + '.') + '</div>';
     }
   };
   modelMenu.onclick = e => { const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
-    if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; } if (b.dataset.m !== info.file && !controller) loadModel(b.dataset.m); };
+    if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; }
+    const otherProvider = b.dataset.p && info.provider && b.dataset.p !== info.provider.id;
+    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, undefined, b.dataset.p).then(() => window.providersChanged && window.providersChanged()); };
   document.addEventListener('click', e => { if (!e.target.closest('.mpick')) modelMenu.classList.remove('show'); });
 }
 

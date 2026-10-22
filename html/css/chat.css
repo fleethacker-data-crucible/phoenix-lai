@@ -36,8 +36,31 @@ body {
 #side .sgroup { color: var(--dim); font-size: 13px; margin: 22px 8px 6px; }
 #side .sempty { color: var(--dim); font-size: 12px; padding: 0 8px; }
 #side .sgroup { display: flex; align-items: center; justify-content: space-between; }
-#newProject { border: 0; background: none; color: var(--dim); font-size: 17px; line-height: 1; padding: 0 4px; cursor: pointer; }
-#newProject:hover { color: var(--text); }
+#newSkill, #newProject, #newProvider { border: 0; background: none; color: var(--dim); padding: 0 4px; cursor: pointer; display: grid; }
+#newSkill:hover, #newProject:hover, #newProvider:hover { color: var(--text); }
+#providerList .sitem .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+#providerList .sitem.on { background: rgba(255,255,255,.06); }
+#providerList .sitem.st-up { color: #4caf50; } #providerList .sitem.st-up .cdot { background: #4caf50; }
+#providerList .sitem.st-down { color: #e05555; } #providerList .sitem.st-down .cdot { background: #e05555; }
+#providerList .sitem.st-busy { color: #4a9eff; } #providerList .sitem.st-busy .cdot { background: #4a9eff; box-shadow: 0 0 6px #4a9eff; }
+#providerList .sitem.st-unknown { color: var(--dim); }
+#side .sitem .cedit { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: none; color: var(--dim); }
+#side .sitem:hover .cedit { display: block; }
+#side .sitem .cedit:hover svg { color: var(--text); }
+#pModel { flex: 1; min-width: 0; font: 14px var(--chat); color: var(--you); background: var(--settings-bg); border: 0; border-bottom: 1px solid var(--line-strong); padding: 4px 0; outline: none; }
+.ctests { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.ctests .row { display: grid; grid-template-columns: 18px 230px 70px 1fr; gap: 6px; align-items: baseline; }
+.ctests .row .d { color: var(--dim); overflow-wrap: anywhere; }
+.ctests .ok { color: #4caf50; } .ctests .fail { color: #e05555; } .ctests .warn { color: var(--accent); } .ctests .na { color: var(--dim); }
+.ctests .ms { color: var(--dim); text-align: right; }
+.ctests .pinfo { margin-top: 6px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 6px; }
+.ctests .pinfo > summary, .ctests .praw > summary { cursor: pointer; color: var(--text); }
+.ctests .praw > summary { color: var(--dim); margin-top: 4px; }
+.ctests .kv { display: grid; grid-template-columns: minmax(120px, 230px) 1fr; gap: 2px 10px; margin: 4px 0 0 18px; }
+.ctests .kv .k { color: var(--dim); overflow-wrap: anywhere; }
+.ctests .kv span:not(.k) { overflow-wrap: anywhere; }
+.ctests pre { max-height: 320px; overflow: auto; margin: 4px 0 0 18px; padding: 6px 8px; background: rgba(0,0,0,.25); border-radius: 4px; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .ctests .row { grid-template-columns: 18px 1fr 60px; } .ctests .row .d { grid-column: 2 / 4; } }
 #side .slist { display: flex; flex-direction: column; gap: 1px; max-height: 30%; overflow-y: auto; }
 #side .slist.recents { max-height: none; flex: 1; min-height: 0; }
 #side .sitem { position: relative; display: flex; align-items: center; gap: 8px; border: 0; padding: 5px 8px; text-align: left; color: var(--text); font-size: 13px; border-radius: 6px; cursor: pointer; min-width: 0; }
@@ -76,6 +99,18 @@ body {
 #modelMenu button.off { color: #55545c; cursor: default; background: none; }   /* the server cannot run it */
 #modelMenu button.off .mgear { display: none; }
 #modelMenu button.big { color: #e05555; }   /* the server can run it, but it does not fit the memory free now */
+#modelPick.dis { color: var(--dim); cursor: not-allowed; opacity: .55; }
+#modelMenu .mgroup { display: flex; align-items: center; gap: 7px; padding: 8px 10px 3px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); cursor: default; }
+#modelMenu .mgroup .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+#modelMenu .mgroup.st-up .cdot { background: #4caf50; } #modelMenu .mgroup.st-busy .cdot { background: #4a9eff; }
+#modelMenu .mgroup.st-down .cdot { background: #e05555; } #modelMenu .mgroup.st-down { color: #8a5a5a; }
+#modelMenu .mgroup .mstate { text-transform: none; letter-spacing: 0; }
+.feats { display: flex; flex-wrap: wrap; gap: 5px; font-size: 12px; }
+.feats .feat { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+.feats .feat.yes { color: #4caf50; border-color: rgba(76,175,80,.4); }
+.feats .feat.no { color: #6b6a73; text-decoration: line-through; }
+.feats .feat.unk { color: var(--dim); border-style: dashed; }
+.feats .fnote { flex-basis: 100%; }
 #modelMenu .none { padding: 6px 10px; color: var(--dim); font-size: 13px; }
 @media (max-width: 760px) { :root { --side: 0px; } #side { display: none; } }
 .wrap { width: min(760px, calc(100% - 32px)); display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -215,7 +250,7 @@ button:disabled { opacity: .45; cursor: default; }
 
 /* Message box: a gold › and your text. */
 .promptline { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: baseline; }
-/* Studio window (#main; the VS Code page styles its own): a rounded box locked 30px above the window bottom, centred on
+/* Phoenix Client window (#main; the VS Code page styles its own): a rounded box locked 30px above the window bottom, centred on
    the chat area; taller text grows it upward. Padding gives the caret 14px above, 15px left and below. */
 #main .promptline { background: var(--box); border: 1px solid var(--line); border-radius: var(--r); padding: 6.7px 14px 5px; cursor: text;
                     position: fixed; bottom: 30px; left: calc(var(--side) + (100vw - var(--side)) / 2); transform: translateX(-50%);
@@ -255,6 +290,10 @@ button:disabled { opacity: .45; cursor: default; }
 .modal.show { backdrop-filter: blur(6px); visibility: visible; transition: backdrop-filter .25s ease, visibility 0s; }
 .modal > .window { opacity: 0; transform: translateY(6px); transition: opacity .2s ease, transform .2s ease; }
 .modal.show > .window { opacity: 1; transform: none; }
+#downModal { z-index: 50; }
+#downModal.show { backdrop-filter: blur(3px); background: rgba(0,0,0,.25); }
+#downModal .downbox { width: min(440px, calc(100vw - 32px)); }
+#downModal .body p { margin: 4px 0; line-height: 1.5; }
 .window { width: min(560px, calc(100% - 32px)); max-height: 86vh; overflow-y: auto; background: var(--panel-solid); border: 1px solid var(--line-strong);
           border-radius: var(--r); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
 .window header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line);
@@ -281,9 +320,9 @@ html { color-scheme: dark; }
 .note { color: var(--dim); font-size: 12px; margin-top: 8px; }
 
 /* Settings window: same look as the chat (Syne Mono, gold accents, thin lines, no boxes). */
-.window.settings { width: min(640px, calc(100% - 32px)); font-family: var(--chat); background: var(--settings-bg); border-color: rgba(var(--accent-rgb),.28);
-                   box-shadow: 0 24px 70px rgba(0,0,0,.7), 0 0 0 1px rgba(var(--accent-rgb),.06) inset; }
-.settings header { background: var(--settings-bg); border-bottom-color: rgba(var(--accent-rgb),.18); }
+.window.settings { width: min(640px, calc(100% - 32px)); font-family: var(--chat); background: var(--settings-bg); border-color: var(--line-strong);
+                   box-shadow: 0 24px 70px rgba(0,0,0,.7); }
+.settings header { background: var(--settings-bg); border-bottom-color: var(--line); }
 .settings header h2 { font: 15px var(--chat); color: var(--accent); letter-spacing: .5px; display: flex; align-items: baseline; gap: 10px; }
 /* The settings window's own header: thin, bold, all caps; the › is the chat's (alignChevrons centres it on the capitals). */
 #settingsModal header { padding: 4px 14px; }
@@ -292,6 +331,10 @@ html { color-scheme: dark; }
 #settingsModal header h2 { height: 24px; }
 #settingsModal header .x { padding: 0 6px; height: 22px; line-height: 22px; }
 .settings header h2 .chev { top: var(--chev-shift, 0px); }
+/* the provider window: a fixed title in a 30px header */
+#provModal header { box-sizing: border-box; height: 30px; padding: 0 8px 0 16px; }
+#provModal header h2 { font-size: 12px; font-weight: 700; letter-spacing: 1px; line-height: 30px; }
+#provModal header .x { padding: 0 6px; height: 22px; line-height: 22px; }
 .settings .x { border: 0; color: var(--dim); padding: 2px 6px; }
 .settings .x:hover { color: var(--accent); background: transparent; }
 .settings .body { padding: 6px 18px 14px; }
@@ -306,20 +349,21 @@ html { color-scheme: dark; }
 .settings .field input:focus, .settings .field textarea:focus { border-color: var(--accent); outline: 0; }
 .settings .hint { color: var(--dim); font-size: 11px; min-height: 14px; }
 .settings .toggle { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--soft); cursor: pointer; align-self: end; padding-bottom: 6px; }
+.settings .toggle.locked { opacity: .5; cursor: not-allowed; }   /* shown but not changeable */
 .settings .toggle input { position: absolute; opacity: 0; pointer-events: none; }
 .settings .toggle .sw { width: 30px; height: 16px; border-radius: var(--r); border: 1px solid var(--line-strong); position: relative; transition: border-color .15s, background .15s; flex: none; }
 .settings .toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 3px; background: var(--dim); transition: left .15s, background .15s; }
 .settings .toggle input:checked + .sw { border-color: var(--accent); background: rgba(var(--accent-rgb),.12); }
 .settings .toggle input:checked + .sw::after { left: 16px; background: var(--accent); }
 .settings .note { color: #e8875a; min-height: 0; }
-.settings footer { background: var(--settings-bg); border-top-color: rgba(var(--accent-rgb),.18); align-items: center; }
+.settings footer { background: var(--settings-bg); border-top-color: var(--line); align-items: center; }
 .settings footer .keys { margin-right: auto; color: var(--dim); font-size: 11.5px; }
 .settings footer button { font: 13px var(--chat); }
 
 /* Settings: category bar and radio rows. */
 .settings { display: flex; flex-direction: column; overflow: hidden; }
 .settings .body { overflow-y: auto; flex: 1; min-height: 0; }
-.settings .cats { display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 8px 14px; border-bottom: 1px solid rgba(var(--accent-rgb),.12); }
+.settings .cats { display: flex; flex-wrap: wrap; gap: 2px 4px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
 .settings .cats button { font: 12px var(--chat); border: 0; padding: 3px 9px; color: var(--dim); border-radius: var(--r); }
 .settings .cats button:hover { color: var(--text); background: rgba(var(--accent-rgb),.06); }
 .settings .cats button.on { color: var(--accent); background: rgba(var(--accent-rgb),.1); }
@@ -429,3 +473,25 @@ html { color-scheme: dark; }
 .work.indexed { margin-top: -4px; }
 .work.indexed summary { cursor: default; }
 .work.indexed summary::after { content: none; }
+/* Providers: at the bottom of the left panel (Recents above takes the free height) */
+#side .slist.providers { max-height: 25%; flex: none; }
+#providerList .sitem .ptag { flex: none; font-size: 10.5px; color: var(--dim); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 4px; }
+.prow { display: flex; gap: 8px; align-items: center; }
+/* themed dropdown (the provider window's model list): looks like the fields, opens like the model menu */
+.dd { position: relative; flex: none; min-width: 100px; max-width: 100%; }
+.dd .ddbtn { width: 100%; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; font: 500 14px var(--sans); color: var(--text);
+             background: transparent; border: 0; border-radius: var(--r); padding: 4px 0; cursor: pointer; text-align: left; }
+.dd .ddbtn > span { grid-area: 1 / 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd .ddsize { display: grid; visibility: hidden; height: 0; }   /* the longest option sets the width */
+.dd .ddsize span { grid-area: 1 / 1; white-space: nowrap; }
+.dd .ddbtn svg { grid-column: 2; }
+.dd .ddbtn:hover, .dd .ddbtn:focus { background: transparent; outline: 0; }
+.dd .ddmenu { display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; width: max-content; max-height: 40vh; overflow-y: auto; z-index: 30; padding: 4px;
+              background: var(--box); border: 1px solid var(--line-strong); border-radius: var(--r); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.dd .ddmenu.show { display: block; }
+.dd .ddmenu button { display: block; width: 100%; text-align: left; border: 0; border-radius: var(--r); background: none; padding: 6px 9px; font: 500 14px var(--sans); color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd .ddmenu button:hover, .dd .ddmenu button:focus { background: rgba(255,255,255,.04); color: var(--text); outline: 0; }
+.dd .ddmenu button.on { color: var(--text); }   /* all white, like the model menu (no gold, no green) */
+:root.light .dd .ddmenu button:hover { background: rgba(0,0,0,.05); }
+.prow > button:not(.primary) { flex: none; font: inherit; font-size: 12px; color: var(--text); background: var(--code-bg); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 3px 10px; cursor: pointer; }
+.prow > button:not(.primary):hover { border-color: var(--accent); }

@@ -47,7 +47,7 @@ namespace Phoenix
         }
 
         public readonly string Root, IndexFile;
-        readonly Func<Embedder> _embedder;
+        readonly Func<IEmbedder> _embedder;
         readonly Func<bool> _busy;
         readonly object _lock = new object();
         readonly Dictionary<string, FileRec> _files = new Dictionary<string, FileRec>(StringComparer.OrdinalIgnoreCase);
@@ -74,9 +74,9 @@ namespace Phoenix
             ".yml", ".toml", ".ini", ".config", ".md", ".markdown", ".txt", ".rst", ".csproj", ".sln", ".gradle", ".r" };
 
         // The docs library's embedding model, as the embedder source (one copy in memory).
-        public static Func<Embedder> EmbedderOf(Rag rag) { return rag.SharedEmbedder; }
+        public static Func<IEmbedder> EmbedderOf(Rag rag) { return rag.SharedEmbedder; }
 
-        public ProjectIndex(string root, Func<Embedder> embedder, Func<bool> gpuBusy)
+        public ProjectIndex(string root, Func<IEmbedder> embedder, Func<bool> gpuBusy)
         {
             Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
             IndexFile = Path.Combine(Root, ".phoenix", "index", "project.idx");
@@ -372,7 +372,7 @@ namespace Phoenix
                             if (next != null) break;
                         }
                     if (next == null) break;
-                    Embedder e = null;
+                    IEmbedder e = null;
                     try { e = _embedder != null ? _embedder() : null; } catch { }
                     if (e == null) { Thread.Sleep(5000); break; }   // no embedding model: keyword search only
                     float[] v;
@@ -399,7 +399,7 @@ namespace Phoenix
             float[] qv = null;
             if (useVectors && _vecDim > 0)
             {
-                Embedder e = null;
+                IEmbedder e = null;
                 try { e = _embedder != null ? _embedder() : null; } catch { }
                 if (e != null && e.Dim == _vecDim) { try { qv = e.Query(message); } catch { } }
             }

@@ -1,5 +1,5 @@
 /* vscode.html only: the chat inside VS Code. Colours and fonts come from VS Code's theme (js/vscode-theme.js); the
-   studio window's decorations (grid background, logo, banner, status line) are left out so it blends into the editor. */
+   Phoenix Client window's decorations (grid background, logo, banner, status line) are left out so it blends into the editor. */
 html.vscode #bg, html.vscode #bgLogo, html.vscode #banner { display: none !important; }
 html.vscode body { background: var(--bg); }
 html.vscode .empty .logo { display: none; }
@@ -15,7 +15,7 @@ html.vscode .promptline { position: fixed; left: 10px; right: 10px; bottom: 6px;
 html.vscode .promptline:focus-within { border-color: rgba(var(--accent-rgb),.55); }
 html.vscode .promptline > .chev { display: none; }
 html.vscode .typebox { min-height: 22px; max-height: 40vh; overflow-y: auto; }
-/* a normal text cursor here (the studio window draws a block cursor through #mirror, which stays for sizing only) */
+/* a normal text cursor here (the Phoenix Client window draws a block cursor through #mirror, which stays for sizing only) */
 html.vscode #mirror { visibility: hidden; }
 html.vscode #input { color: var(--text); caret-color: #e8c15a; }
 html.vscode #input::selection { color: var(--text); }

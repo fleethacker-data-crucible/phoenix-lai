@@ -6,8 +6,11 @@ using System.IO;
 
 namespace Phoenix
 {
-    public sealed class Embedder : IDisposable
+    public sealed class Embedder : IEmbedder
     {
+        string IEmbedder.ModelPath { get { return ModelPath; } }
+        int IEmbedder.Dim { get { return Dim; } }
+
         public const int MaxTokens = 512;   // chunks are ~400 tokens; longer text is cut (the start carries the topic)
 
         public readonly string ModelPath, ModelName;

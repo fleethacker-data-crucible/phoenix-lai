@@ -1,5 +1,5 @@
 // vscode.html only: the composer box at the bottom (input on top; + new chat, / commands, model chip, Auto / Accept
-// mode and a gold send button below). Uses chat.js's own functions, so it behaves exactly like typing in the studio.
+// mode and a gold send button below). Uses chat.js's own functions, so it behaves exactly like typing in the Phoenix Client.
 (function () {
   const $ = (id) => document.getElementById(id);
   const ctxEl = $('pbCtx'), line = $('promptLine'), send = $('pbSend'), modelChip = $('pbModel'), modeBtn = $('pbMode');
@@ -29,7 +29,7 @@
   $('pbSettings').onclick = () => openSettings();
   modeBtn.onclick = async () => {
     const m = info && info.mode === 'accept' ? 'auto' : 'accept';
-    try { info = await api('/api/mode', { mode: m }); } catch (e) { /* the studio reports it */ }
+    try { info = await api('/api/mode', { mode: m }); } catch (e) { /* the client reports it */ }
     update();
     input.focus();
   };
@@ -87,19 +87,25 @@
   };
 
   // ---- After an edit: ask VS Code for errors in the files the model changed; if there are any, send them back so it
-  // fixes them before it is done (at most 2 rounds per message of yours).
-  let autoRounds = 0, autoSending = false;
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !autoSending) autoRounds = 0; }, true);
+  // fixes them before it is done (at most 2 rounds per message of yours, and none after a fix that left the same errors).
+  let autoRounds = 0, autoSending = false, lastErrors = '';
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !autoSending) { autoRounds = 0; lastErrors = ''; } }, true);
   window.phxTurnDone = (edited) => {
     if (!edited || !edited.length || autoRounds >= 2) return;
     window.parent.postMessage({ type: 'phoenix-diag', paths: edited }, '*');
   };
-  function onDiagnostics(errors) {
+  function onDiagnostics(errors, excerpts) {
     if (!errors || !errors.length || autoRounds >= 2 || input.value.trim()) return;
+    // Same messages as last round (line numbers aside) = the fix did not help; stop instead of looping.
+    const sig = errors.map((d) => d.path + ': ' + d.message).sort().join('\n');
+    if (autoRounds > 0 && sig === lastErrors) return;
+    lastErrors = sig;
     autoRounds++;
     const list = errors.slice(0, 15).map((d) => '- ' + d.path + ':' + d.line + ': ' + d.message).join('\n');
-    input.value = 'VS Code reports ' + (errors.length === 1 ? 'an error' : errors.length + ' errors') + ' after your edit:\n' + list +
-      '\nFix ' + (errors.length === 1 ? 'it' : 'them') + ' with <edit> (read the lines first if needed).';
+    const code = (excerpts || []).map((x) => '\nCurrent ' + x.path + ' lines ' + x.start + '-' + x.end + ':\n```\n' + x.text + '\n```').join('');
+    input.value = 'VS Code reports ' + (errors.length === 1 ? 'an error' : errors.length + ' errors') + ' after your edit:\n' + list + code +
+      '\nFix ' + (errors.length === 1 ? 'it' : 'them') + ' with <edit>, copying <find> from the current lines above' +
+      (/redeclare|duplicate|already (been )?declared/i.test(sig) ? ' (a redeclared name usually means a block was pasted twice: remove the extra copy)' : '') + '.';
     autoSending = true;
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     autoSending = false;
@@ -128,11 +134,11 @@
     if (typeof ev.origin !== 'string' || !ev.origin.startsWith('vscode-webview://')) return;
     const d = ev.data || {};
     if (d.type === 'phoenix-editor') { editor = d.editor; drawChip(); }
-    else if (d.type === 'phoenix-diag-result') onDiagnostics(d.errors);
+    else if (d.type === 'phoenix-diag-result') onDiagnostics(d.errors, d.excerpts);
   });
   drawChip();
 
   input.addEventListener('input', update);
-  setInterval(update, 1000);   // model loads and mode changes made elsewhere (studio window, /commands)
+  setInterval(update, 1000);   // model loads and mode changes made elsewhere (the client window, /commands)
   update();
 })();

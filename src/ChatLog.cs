@@ -12,12 +12,15 @@ namespace Phoenix
         readonly object _lock = new object();
         public readonly string TextPath, JsonPath;
 
-        public ChatLog(string logsDir)
+        public ChatLog(string logsDir) : this(logsDir, "session") { }
+
+        // prefix: "session" (the server) or "client" (run-phoenix-client.ps1)
+        public ChatLog(string logsDir, string prefix)
         {
             Directory.CreateDirectory(logsDir);
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-            TextPath = Path.Combine(logsDir, "session-" + stamp + ".log");
-            JsonPath = Path.Combine(logsDir, "session-" + stamp + ".jsonl");
+            TextPath = Path.Combine(logsDir, prefix + "-" + stamp + ".log");
+            JsonPath = Path.Combine(logsDir, prefix + "-" + stamp + ".jsonl");
         }
 
         static string Now() { return DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture); }

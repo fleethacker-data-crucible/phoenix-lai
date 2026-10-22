@@ -1,6 +1,6 @@
 // Phoenix for VS Code: the server's own chat (file tools, Instant Recall, docs search, approvals) in a VS Code
 // sidebar, connected to the folder VS Code has open, plus inline code completion. Zero dependencies: VS Code API +
-// Node's http only. Talks only to the local server: its chat page on 127.0.0.1:8765-8799 and its API on 127.0.0.1:1234.
+// Node's http only. Talks only to this computer: the Phoenix Client's chat page on 127.0.0.1:8790-8799 and the Phoenix server's API on 127.0.0.1:1234.
 "use strict";
 const vscode = require("vscode");
 const http = require("http");
@@ -10,7 +10,7 @@ const fs = require("fs");
 
 const HOST = "127.0.0.1";
 const API_PORT = 1234;
-const CHAT_PORTS = [8765, 8799]; // the server takes the first free port in this range
+const CHAT_PORTS = [8790, 8799]; // the Phoenix Client takes the first free port in this range
 const PROJECTS_ROOT = path.join(os.homedir(), "Phoenix_Projects"); // the server's project jail
 
 // ---------------------------------------------------------------- HTTP (loopback only)
@@ -55,7 +55,7 @@ function request(port, method, urlPath, body, token, onEvent) {
   });
 }
 
-// The server's chat page port, or 0 when the server is not running.
+// The Phoenix Client's chat page port, or 0 when the client is not running.
 async function findChatPort() {
   for (let p = CHAT_PORTS[0]; p <= CHAT_PORTS[1]; p++) {
     try {
@@ -92,7 +92,10 @@ class ChatView {
     view.webview.onDidReceiveMessage(async (m) => {
       if (!m) return;
       if (m.type === 'open') openProjectFile(m.path, !!m.auto);
-      else if (m.type === 'diag') view.webview.postMessage({ type: 'phoenix-diag-result', errors: await errorsIn(m.paths) });
+      else if (m.type === 'diag') {
+        const errors = await errorsIn(m.paths);
+        view.webview.postMessage({ type: 'phoenix-diag-result', errors, excerpts: errors.length ? await excerptsFor(errors) : [] });
+      }
       else if (m.type === 'ready') this.sendEditor();
     });
     view.onDidChangeVisibility(() => { if (view.visible && !this.port) this.refresh(); });
@@ -172,10 +175,36 @@ async function errorsIn(paths) {
   return out;
 }
 
+// The current text around the errors (error lines +-4, overlapping ranges merged, at most 150 lines in all), so the
+// model fixes what is in the file now instead of what it remembers writing.
+async function excerptsFor(errors) {
+  const root = projectRoot();
+  const out = [];
+  let budget = 150;
+  for (const rel of [...new Set(errors.map((e) => e.path))]) {
+    let doc;
+    try { doc = await vscode.workspace.openTextDocument(vscode.Uri.file(path.resolve(root, rel))); } catch (e) { continue; }
+    const ranges = [];
+    for (const ln of errors.filter((e) => e.path === rel).map((e) => e.line).sort((a, b) => a - b)) {
+      const s = Math.max(1, ln - 4), t = Math.min(doc.lineCount, ln + 4), last = ranges[ranges.length - 1];
+      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], t); else ranges.push([s, t]);
+    }
+    for (const [s, t0] of ranges) {
+      if (budget <= 0) break;
+      const t = Math.min(t0, s + budget - 1);
+      const lines = [];
+      for (let i = s; i <= t; i++) lines.push(doc.lineAt(i - 1).text);
+      out.push({ path: rel, start: s, end: t, text: lines.join("\n") });
+      budget -= t - s + 1;
+    }
+  }
+  return out;
+}
+
 function page(port) {
   if (!port) {
     return `<!doctype html><html><body style="font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:12px">
-<p><b>Phoenix is not running.</b></p><p>Start <code>PhoenixLAI_App</code>; this view reconnects by itself when the server is up.</p></body></html>`;
+<p><b>The Phoenix Client is not running.</b></p><p>Start <code>PhoenixLAI_Client</code> (or <code>PhoenixLAI_App</code>); this view reconnects by itself when it is up.</p></body></html>`;
   }
   const origin = `http://${HOST}:${port}`;
   const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -355,7 +384,7 @@ function activate(context) {
     vscode.commands.registerCommand("phoenixlai.reconnect", () => chat.refresh()),
     vscode.commands.registerCommand("phoenixlai.connectFolder", async () => {
       const port = chat.port || (await findChatPort());
-      if (!port) { vscode.window.showWarningMessage("Phoenix is not running. Start PhoenixLAI_App first."); return; }
+      if (!port) { vscode.window.showWarningMessage("The Phoenix Client is not running. Start PhoenixLAI_Client (or PhoenixLAI_App) first."); return; }
       if (await connectFolder(port, true)) chat.refresh();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => chat.refresh()),

@@ -4,8 +4,14 @@
     {
       "name": "phoenix-server",
       "runtimeExecutable": "powershell.exe",
-      "runtimeArgs": ["-NoProfile", "-STA", "-File", "src\\run.ps1"],
+      "runtimeArgs": ["-NoProfile", "-STA", "-File", "src\\run.ps1", "-Role", "Server"],
       "port": 8765
+    },
+    {
+      "name": "phoenix-client",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-STA", "-File", "src\\run.ps1", "-Role", "Client"],
+      "port": 8790
     },
     {
       "name": "phoenix-oldrag",

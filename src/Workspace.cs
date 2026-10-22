@@ -397,7 +397,7 @@ namespace Phoenix
             {
                 StringBuilder sb = new StringBuilder("\nCurrent contents (" + lines.Length + " lines):\n");
                 for (int i = 0; i < lines.Length; i++) sb.Append(i + 1).Append("| ").Append(lines[i]).Append('\n');
-                return sb.ToString();
+                return sb.Append(MissingLines(lines, find.Replace("\r\n", "\n").Split('\n'))).ToString();
             }
             string near = ClosestLines(text.Replace("\r\n", "\n"), find.Replace("\r\n", "\n"));
             if (near.Length > 0) return near;
@@ -421,6 +421,23 @@ namespace Phoenix
             StringBuilder sb = new StringBuilder("\nClosest lines in the file:\n");
             int a = Math.Max(0, bestAt - 1), z = Math.Min(lines.Length, bestAt + want.Length + 1);
             for (int i = a; i < z; i++) sb.Append(i + 1).Append("| ").Append(lines[i]).Append('\n');
+            // Name the <find> lines that are nowhere in the file: a model that remembered code a later edit removed
+            // retried the same <find> twice, the closest lines alone did not tell it what was missing (2026-10-19).
+            return sb.Append(MissingLines(lines, want)).ToString();
+        }
+
+        static string MissingLines(string[] lines, string[] want)
+        {
+            HashSet<string> have = new HashSet<string>();
+            foreach (string l in lines) have.Add(l.Trim());
+            StringBuilder sb = new StringBuilder();
+            int n = 0;
+            foreach (string w in want)
+            {
+                if (w.Trim().Length == 0 || have.Contains(w.Trim()) || n >= 8) continue;
+                if (n++ == 0) sb.Append("These <find> lines are not in the file at all (it was changed since; do not quote them):\n");
+                sb.Append("  ").Append(w.Trim()).Append('\n');
+            }
             return sb.ToString();
         }
 
@@ -681,7 +698,7 @@ namespace Phoenix
 
         // The project's top level for the system prompt: names only, no sizes and no dot-folders (.phoenix, .llm-backup,
         // .git). The system prompt starts every request, so anything in it that changes (a size after each edit) made the
-        // studio re-read the whole conversation: 5.7k tokens, 25 s on Gemma 12B (2026-10-16). Use <list> for details.
+        // model re-read the whole conversation: 5.7k tokens, 25 s on Gemma 12B (2026-10-16). Use <list> for details.
         string StableList()
         {
             List<string> names = new List<string>();
