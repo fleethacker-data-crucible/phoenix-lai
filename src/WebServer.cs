@@ -93,6 +93,57 @@ namespace Phoenix
 
         const string ShowEventName = @"Local\PhoenixAI.ClientShow";
 
+        // The VS Code extension's own Phoenix Client (run-phoenix-vscode.ps1, started by the extension; approved 2026-10-22):
+        // the same client (same providers, keys, settings and chats on disk) on its own port, with no window of its own.
+        // It is independent of the Phoenix Client window and stays up while a VS Code chat ("vs-" pages) checks in; one per
+        // user (VS Code windows share it). The extension finds it by /api/info "instance":"vscode".
+        public static int RunVsCode(string root)
+        {
+            bool first;
+            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.ClientVsCode", out first))
+            {
+                if (!first) return 0;
+                try
+                {
+                    using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
+                    {
+                        server.Embedded = true;
+                        server.Log.Text("VS Code client: no window, runs while a VS Code chat is connected");
+                        ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
+                        // up to 2 minutes for the first VS Code chat to check in, then until the last one has been gone 30 s
+                        DateTime start = DateTime.UtcNow;
+                        while (server.VsCodePages() == 0 && DateTime.UtcNow - start < TimeSpan.FromMinutes(2)) Thread.Sleep(500);
+                        DateTime lastSeen = DateTime.UtcNow;
+                        while (DateTime.UtcNow - lastSeen < TimeSpan.FromSeconds(30))
+                        {
+                            if (server.VsCodePages() > 0) lastSeen = DateTime.UtcNow;
+                            Thread.Sleep(500);
+                        }
+                        try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
+                        server.Log.Text("VS Code client stopped (no VS Code chat connected)");
+                        server.Log.Json("server_stop", null);
+                    }
+                    return 0;
+                }
+                finally { single.ReleaseMutex(); }
+            }
+        }
+
+        // True for the VS Code extension's own client (RunVsCode).
+        public bool Embedded;
+
+        // VS Code chats ("vs-" pages) that checked in within the last 10 s.
+        int VsCodePages()
+        {
+            lock (_pages)
+            {
+                int n = 0;
+                foreach (KeyValuePair<string, DateTime> kv in _pages)
+                    if (kv.Key.StartsWith("vs-") && DateTime.UtcNow - kv.Value < TimeSpan.FromSeconds(10)) n++;
+                return n;
+            }
+        }
+
         // Opens the app window on `url` in the preferred browser; returns the browser process (or null if none found).
         internal static Process OpenWindow(string url, ChatLog log)
         {
@@ -1041,7 +1092,7 @@ namespace Phoenix
             IChatModel e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
             IChatModel er = _engine;
-            return "{\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
+            return "{\"instance\":" + (Embedded ? "\"vscode\"" : IsClient ? "\"client\"" : "\"server\"") + ",\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
                    ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +

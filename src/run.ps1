@@ -12,7 +12,8 @@ param(
     [string]$Root,
     # Server = run-phoenix-server.ps1 (models + OpenAI API, tray); Client = run-phoenix-client.ps1 (the chat UI for any
     # OpenAI /v1 provider). There is no all-in-one mode: the client never runs inside the server.
-    [ValidateSet('Server', 'Client')][string]$Role = 'Client'
+    # VsCode = run-phoenix-vscode.ps1: the VS Code extension's own client (no window), started by the extension.
+    [ValidateSet('Server', 'Client', 'VsCode')][string]$Role = 'Client'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,9 +194,17 @@ $References | ForEach-Object { [void]$cp.ReferencedAssemblies.Add($_) }
 $paths = @(Get-ChildItem $src -Recurse -Filter *.cs | ForEach-Object { $_.FullName })
 Add-Type -Path $paths -CompilerParameters $cp
 
+# Where Phoenix lives, for the VS Code extension (it starts src\run-phoenix-vscode.ps1 from here; the folder can move).
+try {
+    $appData = Join-Path $env:LOCALAPPDATA 'LocalLLMStudio'
+    New-Item -ItemType Directory -Force $appData | Out-Null
+    [IO.File]::WriteAllText((Join-Path $appData 'phoenix-root.txt'), $Root)
+} catch { }
+
 # No model loads at startup (unless -Model is given): the chat opens on "Select model" and one is picked from the drop-down.
 $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
 switch ($Role) {
     'Server' { exit ([Phoenix.ServerHost]::Run($Root, $modelPath, $Context)) }
+    'VsCode' { exit ([Phoenix.WebServer]::RunVsCode($Root)) }
     default  { exit ([Phoenix.WebServer]::RunClient($Root)) }
 }

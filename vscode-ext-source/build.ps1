@@ -28,7 +28,12 @@ foreach ($f in $files) { if (-not (Test-Path (Join-Path $here $f))) { throw "mis
 
 # Locality check: the extension may only reach 127.0.0.1:1234.
 $js = Get-Content (Join-Path $here 'extension.js') -Raw
-if ($js -match 'https?://(?!127\.0\.0\.1|\$\{HOST\})' -or $js -notmatch 'const HOST = "127\.0\.0\.1";' -or $js -match 'require\("(https|net|tls|child_process|dgram)"\)') { throw 'extension.js references a non-loopback URL or a forbidden module' }
+if ($js -match 'https?://(?!127\.0\.0\.1|\$\{HOST\})' -or $js -notmatch 'const HOST = "127\.0\.0\.1";' -or $js -match 'require\("(https|net|tls|dgram)"\)') { throw 'extension.js references a non-loopback URL or a forbidden module' }
+# child_process only to start its own client (approved 2026-10-22): one spawn, of powershell.exe on run-phoenix-vscode.ps1, no shell.
+if ([regex]::Matches($js, '\bcp\.\w+\(').Count -ne 1 -or $js -notmatch 'cp\.spawn\(ps, \[[^\]]*"-File", script\]' -or
+    $js -notmatch '"run-phoenix-vscode\.ps1"' -or $js -notmatch '"powershell\.exe"\);' -or $js -match 'shell:\s*true|exec(File|Sync)?\(|fork\(') {
+    throw 'extension.js may only spawn powershell.exe on src\run-phoenix-vscode.ps1'
+}
 
 $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>

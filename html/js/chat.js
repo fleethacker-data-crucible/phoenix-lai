@@ -1235,15 +1235,9 @@ function showGuard(g) {
   }
 }
 
-// Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
-if ($('side')) {
-  $('navNew').onclick = () => newChat();
-  $('navSettings').onclick = () => openSettings();
-  // Model drop-down: the chat models in the models folder; picking one loads it.
-  const modelMenu = $('modelMenu');
-  $('modelPick').onclick = async e => {
-    e.stopPropagation();
-    if ($('modelPick').classList.contains('dis')) return;   // no provider online
+// Model drop-down (chat.html: the top bar; vscode.html: the model chip in the composer): every provider's models;
+// picking one loads it. toggleModelMenu(menu) opens / closes it, pickFromModelMenu(e, menu) handles a click in it.
+async function toggleModelMenu(modelMenu) {
     if (modelMenu.classList.toggle('show')) {
       await loadModelList();
       // Phoenix Client: every provider's models, grouped; an offline provider and its models are greyed out
@@ -1269,12 +1263,28 @@ if ($('side')) {
         '<span>' + esc(m.name.replace(/\.gguf$/i, '')) + '</span><span class="mgear" title="Settings for this model">' + GEAR_ICON + '</span></button>').join('')
         : '<div class="none">' + esc(info.providerError ? (info.provider ? info.provider.name : 'The provider') + ': ' + info.providerError : 'No models from ' + (info.provider ? info.provider.name : 'the provider') + '.') + '</div>';
     }
-  };
-  modelMenu.onclick = e => { const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
+}
+function pickFromModelMenu(e, modelMenu) {
+    const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
     if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; }
     const otherProvider = b.dataset.p && info.provider && b.dataset.p !== info.provider.id;
-    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, undefined, b.dataset.p).then(() => window.providersChanged && window.providersChanged()); };
+    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, undefined, b.dataset.p).then(() => window.providersChanged && window.providersChanged());
+}
+if ($('modelMenu')) {
+  const modelMenu = $('modelMenu');
+  modelMenu.onclick = e => pickFromModelMenu(e, modelMenu);
   document.addEventListener('click', e => { if (!e.target.closest('.mpick')) modelMenu.classList.remove('show'); });
+}
+
+// Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
+if ($('side')) {
+  $('navNew').onclick = () => newChat();
+  $('navSettings').onclick = () => openSettings();
+  $('modelPick').onclick = e => {
+    e.stopPropagation();
+    if ($('modelPick').classList.contains('dis')) return;   // no provider online
+    toggleModelMenu($('modelMenu'));
+  };
 }
 
 // The message box is fixed to the bottom: keep the conversation's bottom padding in step with its height.

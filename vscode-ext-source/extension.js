@@ -1,12 +1,14 @@
-// Phoenix for VS Code: the server's own chat (file tools, Instant Recall, docs search, approvals) in a VS Code
-// sidebar, connected to the folder VS Code has open, plus inline code completion. Zero dependencies: VS Code API +
-// Node's http only. Talks only to this computer: the Phoenix Client's chat page on 127.0.0.1:8790-8799 and the Phoenix server's API on 127.0.0.1:1234.
+// Phoenix for VS Code: another Phoenix Client window in a VS Code sidebar (same chats, settings and providers; the
+// model chip lists every provider's models), connected to the folder VS Code has open, plus inline code completion. Zero dependencies: VS Code API +
+// Node's http + child_process only. Starts its own hidden Phoenix Client (src\run-phoenix-vscode.ps1, the one process it may
+// start) and talks only to this computer: that client on 127.0.0.1:8790-8799 and the Phoenix server's API on 127.0.0.1:1234.
 "use strict";
 const vscode = require("vscode");
 const http = require("http");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const cp = require("child_process");
 
 const HOST = "127.0.0.1";
 const API_PORT = 1234;
@@ -55,20 +57,44 @@ function request(port, method, urlPath, body, token, onEvent) {
   });
 }
 
-// The Phoenix Client's chat page port, or 0 when the client is not running.
+// The extension's own Phoenix Client (src\run-phoenix-vscode.ps1, "instance":"vscode"): port, or 0 when it is not running.
+// The Phoenix Client window is a separate instance and is never used here.
 async function findChatPort() {
   for (let p = CHAT_PORTS[0]; p <= CHAT_PORTS[1]; p++) {
     try {
       const info = JSON.parse(await request(p, "GET", "/api/info"));
-      if (info && "folderAccess" in info) return p;
+      if (info && info.instance === "vscode") return p;
     } catch (e) { /* not this port */ }
   }
   return 0;
 }
 
-// True while the server answers on this port.
+// True while our client answers on this port.
 async function alive(port) {
-  try { const info = JSON.parse(await request(port, "GET", "/api/info")); return !!info && "folderAccess" in info; } catch (e) { return false; }
+  try { const info = JSON.parse(await request(port, "GET", "/api/info")); return !!info && info.instance === "vscode"; } catch (e) { return false; }
+}
+
+// Starts the extension's own Phoenix Client (no window; approved 2026-10-22): only Windows PowerShell 5.1 running the
+// fixed script src\run-phoenix-vscode.ps1 of the Phoenix folder that last ran (phoenix-root.txt, written by run.ps1).
+// It stops by itself about 30 s after the last VS Code chat is gone. Returns an error text, or "" when started.
+let startedAt = 0;
+function startClient() {
+  if (Date.now() - startedAt < 90000) return "";   // already starting (compiling takes a few seconds)
+  let root;
+  try { root = fs.readFileSync(path.join(process.env.LOCALAPPDATA || "", "LocalLLMStudio", "phoenix-root.txt"), "utf8").trim(); }
+  catch (e) { return "Run Phoenix_Client or Phoenix_LAI_Server once, so the extension knows where Phoenix is."; }
+  const script = path.join(root, "src", "run-phoenix-vscode.ps1");
+  if (!path.isAbsolute(root) || !fs.existsSync(script)) return "Phoenix is no longer at " + root + ". Run Phoenix_Client once from its new folder.";
+  const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  try {
+    // not detached: a detached powershell.exe (no console) exits at once without running the script
+    const child = cp.spawn(ps, ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script],
+      { cwd: root, windowsHide: true, stdio: "ignore" });
+    child.on("error", () => { startedAt = 0; });
+    child.unref();
+  } catch (e) { return "Could not start Phoenix: " + e.message; }
+  startedAt = Date.now();
+  return "";
 }
 
 // "/Test" for a VS Code folder inside Phoenix_Projects, else null (the server only opens folders there).
@@ -100,13 +126,13 @@ class ChatView {
     });
     view.onDidChangeVisibility(() => { if (view.visible && !this.port) this.refresh(); });
     this.refresh();
-    // Follow the server: when it stops (its window was closed) show "not running"; when it starts again, reconnect.
+    // Follow our client: if it stops, start it again; once it is up, connect.
     const watch = setInterval(async () => {
       if (!this.view) return;
       const up = this.port ? await alive(this.port) : false;
-      if (this.port && !up) { this.port = 0; this.view.webview.html = page(null); }
+      if (this.port && !up) { this.port = 0; this.view.webview.html = page(null, startClient()); }
       else if (!this.port && (await findChatPort())) this.refresh();
-    }, 4000);
+    }, 2000);
     view.onDidDispose(() => clearInterval(watch));
   }
 
@@ -114,7 +140,7 @@ class ChatView {
     if (!this.view) return;
     this.port = await findChatPort();
     if (!this.port) {
-      this.view.webview.html = page(null);
+      this.view.webview.html = page(null, startClient());
       return;
     }
     const proj = await connectFolder(this.port, false);
@@ -201,10 +227,13 @@ async function excerptsFor(errors) {
   return out;
 }
 
-function page(port) {
+function page(port, problem) {
   if (!port) {
-    return `<!doctype html><html><body style="font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:12px">
-<p><b>The Phoenix Client is not running.</b></p><p>Start <code>PhoenixLAI_Client</code> (or <code>PhoenixLAI_App</code>); this view reconnects by itself when it is up.</p></body></html>`;
+    const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+    return `<!doctype html><html><body style="font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:12px">` +
+      (problem ? `<p><b>Phoenix could not start.</b></p><p>${esc(problem)}</p>`
+        : `<p><b>Starting Phoenix…</b></p><p>This chat runs its own Phoenix Client (no window needed). Models come from its providers; start <code>Phoenix_LAI_Server</code> for the local ones.</p>`) +
+      `</body></html>`;
   }
   const origin = `http://${HOST}:${port}`;
   const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -384,7 +413,7 @@ function activate(context) {
     vscode.commands.registerCommand("phoenixlai.reconnect", () => chat.refresh()),
     vscode.commands.registerCommand("phoenixlai.connectFolder", async () => {
       const port = chat.port || (await findChatPort());
-      if (!port) { vscode.window.showWarningMessage("The Phoenix Client is not running. Start PhoenixLAI_Client (or PhoenixLAI_App) first."); return; }
+      if (!port) { vscode.window.showWarningMessage("Phoenix is still starting; try again in a moment."); chat.refresh(); return; }
       if (await connectFolder(port, true)) chat.refresh();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => chat.refresh()),

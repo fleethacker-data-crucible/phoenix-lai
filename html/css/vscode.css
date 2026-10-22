@@ -107,3 +107,25 @@ html.vscode .undo { display: inline-block; margin: 2px 0 8px; padding: 2px 8px; 
   background: transparent; color: var(--dim); font: 11.5px var(--sans); cursor: pointer; }
 html.vscode .undo:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 html.vscode .undo:disabled { cursor: default; border-color: transparent; padding-left: 0; }
+
+/* Model chip: the Phoenix Client's provider / model menu, opening upwards from the composer. */
+html.vscode .pbar .mpick { min-width: 0; max-width: 45%; display: flex; }
+html.vscode .pbar .mpick .chip { max-width: 100%; }
+html.vscode #modelMenu { top: auto; bottom: calc(100% + 6px); min-width: 220px; max-width: calc(100vw - 24px); max-height: 55vh; font-size: 13px; line-height: 1.3; }
+html.vscode #modelMenu button { height: auto; justify-content: flex-start; border: 0; border-radius: 0; color: var(--text); padding: 6px 10px; }
+html.vscode #modelMenu button.on { color: #4caf50; }
+html.vscode #modelMenu button.off { color: var(--dim); }
+
+/* Providers (settings panel): the Phoenix Client's list, same dots and colours. */
+html.vscode .pgroup { display: flex; align-items: center; }
+html.vscode .pgroup button { margin-left: auto; border: 0; padding: 2px; color: var(--dim); display: grid; background: none; }
+html.vscode .pgroup button:hover { color: var(--text); }
+html.vscode #providerList { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
+html.vscode #providerList .sitem { position: relative; display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 13px; border-radius: 6px; cursor: pointer; min-width: 0; }
+html.vscode #providerList .sitem span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.vscode #providerList .sitem:hover { background: rgba(128,128,128,.12); }
+html.vscode #providerList .sitem.on { background: rgba(128,128,128,.18); }
+html.vscode #providerList .sitem .ptag { font-size: 10.5px; font-weight: 500; color: var(--dim); }
+html.vscode #providerList .sitem .cedit { display: none; color: var(--dim); }
+html.vscode #providerList .sitem:hover .cedit { display: grid; }
+html.vscode #providerList .sitem .cedit:hover { color: var(--text); }
