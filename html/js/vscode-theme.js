@@ -11,7 +11,7 @@ window.PHX_VSCODE = true;   // markdown.js: file edits show as activity lines, n
     soft: ['--soft'],
     dim: ['--dim', '--status-text'],
     line: ['--line', '--line-strong'],
-    // the accent stays Phoenix gold (the studio's accent setting), not the theme's link colour
+    // the accent stays Phoenix gold (the client's accent setting), not the theme's link colour
     code: ['--code-bg'],
     ok: ['--ok'],
     err: ['--err'],

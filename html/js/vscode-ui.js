@@ -1,5 +1,5 @@
 // vscode.html only: the composer box at the bottom (input on top; + new chat, / commands, model chip, Auto / Accept
-// mode and a gold send button below). Uses chat.js's own functions, so it behaves exactly like typing in the studio.
+// mode and a gold send button below). Uses chat.js's own functions, so it behaves exactly like typing in the Phoenix Client.
 (function () {
   const $ = (id) => document.getElementById(id);
   const ctxEl = $('pbCtx'), line = $('promptLine'), send = $('pbSend'), modelChip = $('pbModel'), modeBtn = $('pbMode');
@@ -8,14 +8,16 @@
     line.classList.toggle('empty', !input.value);
     send.disabled = !input.value.trim();
     const file = (info && info.file) || '';
-    modelChip.textContent = info && info.loading ? 'loading…' : file ? file.replace(/\.gguf$/i, '') : 'no model';
+    const pDown = window.activeProviderDown && window.activeProviderDown();
+    modelChip.textContent = info && info.loading ? 'loading…' : pDown ? (info.provider ? info.provider.name : 'provider') + ' offline'
+      : file ? String(file).split(/[\\/]/).pop().replace(/\.gguf$/i, '') : 'Select model';
     modeBtn.textContent = info && info.mode === 'accept' ? 'Accept' : 'Auto';
     const ctx = (info && info.context) || 0, f = ctx ? ctxUsed / ctx : 0;
     const k = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
     ctxEl.textContent = ctx ? k(ctxUsed) + ' / ' + k(ctx) : '';
     ctxEl.className = 'ctx ' + (f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad');
     ctxEl.title = ctx ? ctxUsed.toLocaleString() + ' of ' + ctx.toLocaleString() + ' context tokens used by this chat' : '';
-    modelChip.title = 'Model: ' + (file || 'none') + (info && info.folder ? ' · folder ' + info.folder : '') + ' (click to change)';
+    modelChip.title = 'Model: ' + (file || 'none') + (info && info.provider ? ' on ' + info.provider.name : '') + (info && info.folder ? ' · folder ' + info.folder : '') + ' (click to change)';
   }
 
   $('pbNew').onclick = () => newChat();
@@ -25,11 +27,12 @@
     input.setSelectionRange(1, 1);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  modelChip.onclick = () => { if (info.file) openModelSettings(info.file); else openSettings(); };   // settings for the loaded model
+  // every provider's models, as in the Phoenix Client's top bar (the gear next to a model opens its settings)
+  modelChip.onclick = (e) => { e.stopPropagation(); toggleModelMenu($('modelMenu')); };
   $('pbSettings').onclick = () => openSettings();
   modeBtn.onclick = async () => {
     const m = info && info.mode === 'accept' ? 'auto' : 'accept';
-    try { info = await api('/api/mode', { mode: m }); } catch (e) { /* the studio reports it */ }
+    try { info = await api('/api/mode', { mode: m }); } catch (e) { /* the client reports it */ }
     update();
     input.focus();
   };
@@ -87,19 +90,25 @@
   };
 
   // ---- After an edit: ask VS Code for errors in the files the model changed; if there are any, send them back so it
-  // fixes them before it is done (at most 2 rounds per message of yours).
-  let autoRounds = 0, autoSending = false;
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !autoSending) autoRounds = 0; }, true);
+  // fixes them before it is done (at most 2 rounds per message of yours, and none after a fix that left the same errors).
+  let autoRounds = 0, autoSending = false, lastErrors = '';
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !autoSending) { autoRounds = 0; lastErrors = ''; } }, true);
   window.phxTurnDone = (edited) => {
     if (!edited || !edited.length || autoRounds >= 2) return;
     window.parent.postMessage({ type: 'phoenix-diag', paths: edited }, '*');
   };
-  function onDiagnostics(errors) {
+  function onDiagnostics(errors, excerpts) {
     if (!errors || !errors.length || autoRounds >= 2 || input.value.trim()) return;
+    // Same messages as last round (line numbers aside) = the fix did not help; stop instead of looping.
+    const sig = errors.map((d) => d.path + ': ' + d.message).sort().join('\n');
+    if (autoRounds > 0 && sig === lastErrors) return;
+    lastErrors = sig;
     autoRounds++;
     const list = errors.slice(0, 15).map((d) => '- ' + d.path + ':' + d.line + ': ' + d.message).join('\n');
-    input.value = 'VS Code reports ' + (errors.length === 1 ? 'an error' : errors.length + ' errors') + ' after your edit:\n' + list +
-      '\nFix ' + (errors.length === 1 ? 'it' : 'them') + ' with <edit> (read the lines first if needed).';
+    const code = (excerpts || []).map((x) => '\nCurrent ' + x.path + ' lines ' + x.start + '-' + x.end + ':\n```\n' + x.text + '\n```').join('');
+    input.value = 'VS Code reports ' + (errors.length === 1 ? 'an error' : errors.length + ' errors') + ' after your edit:\n' + list + code +
+      '\nFix ' + (errors.length === 1 ? 'it' : 'them') + ' with <edit>, copying <find> from the current lines above' +
+      (/redeclare|duplicate|already (been )?declared/i.test(sig) ? ' (a redeclared name usually means a block was pasted twice: remove the extra copy)' : '') + '.';
     autoSending = true;
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     autoSending = false;
@@ -128,11 +137,11 @@
     if (typeof ev.origin !== 'string' || !ev.origin.startsWith('vscode-webview://')) return;
     const d = ev.data || {};
     if (d.type === 'phoenix-editor') { editor = d.editor; drawChip(); }
-    else if (d.type === 'phoenix-diag-result') onDiagnostics(d.errors);
+    else if (d.type === 'phoenix-diag-result') onDiagnostics(d.errors, d.excerpts);
   });
   drawChip();
 
   input.addEventListener('input', update);
-  setInterval(update, 1000);   // model loads and mode changes made elsewhere (studio window, /commands)
+  setInterval(update, 1000);   // model loads and mode changes made elsewhere (the client window, /commands)
   update();
 })();

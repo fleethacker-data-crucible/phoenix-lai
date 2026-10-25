@@ -1,0 +1,69 @@
+/* Server pages (dashboard.html, console.html): same palette and fonts as the chat. */
+@font-face { font-family: "Exo 2"; src: url("../fonts/Exo2-Variable.ttf") format("truetype"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Syne Mono"; src: url("../fonts/SyneMono-Regular.ttf") format("truetype"); font-display: swap; }
+:root {
+  --bg: #1b1b1b; --panel: #202024; --line: rgba(255,255,255,.08); --line-strong: rgba(255,255,255,.14);
+  --text: #ecebf2; --soft: #b9b8c6; --dim: #74737f; --accent: #e8c15a; --accent-rgb: 232,193,90; --ok: #4caf50; --err: #e05555;
+  --code-bg: #0e0e13; --sans: "Exo 2", "Segoe UI", system-ui, sans-serif; --mono: "Syne Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); min-height: 100vh; }
+header.top { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+header.top img { width: 24px; height: 24px; }
+header.top h1 { font-size: 16px; font-weight: 500; margin: 0; }
+header.top .sp { flex: 1; }
+header.top a, header.top button { color: var(--soft); background: none; border: 1px solid var(--line-strong); border-radius: 5px; padding: 4px 10px; font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
+header.top a:hover, header.top button:hover { color: var(--text); border-color: var(--accent); }
+.state { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); }
+.state i { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.state.on i { background: var(--ok); box-shadow: 0 0 6px var(--ok); } .state.off i { background: var(--err); }
+main.dash { padding: 16px 20px 28px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.card h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.card.wide { grid-column: 1 / -1; }
+.big { font: 26px/1.2 var(--mono); color: var(--text); }
+.big small { font-size: 13px; color: var(--dim); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 13px; }
+.kv b { font-weight: 400; color: var(--dim); } .kv span { overflow-wrap: anywhere; }
+.bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; margin: 6px 0 2px; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.spark { width: 100%; height: 48px; display: block; margin-top: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 400; color: var(--dim); padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td.num, th.num { text-align: right; font-family: var(--mono); }
+.tablewrap { overflow-x: auto; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
+.dot.on { background: var(--ok); }
+.act { font: 15px/1.4 var(--mono); }
+.act .gen { color: var(--accent); }
+.empty { color: var(--dim); font-size: 13px; }
+.settings button, .settings select { font: inherit; font-size: 13px; color: var(--text); background: var(--code-bg); border: 1px solid var(--line-strong); border-radius: 5px; padding: 4px 10px; cursor: pointer; }
+.settings button:hover { border-color: var(--accent); }
+.settings .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.settings .row label { color: var(--dim); min-width: 70px; }
+.note { color: var(--dim); font-size: 12px; margin-top: 6px; }
+/* console */
+body.console { display: flex; flex-direction: column; height: 100vh; }
+/* Every line is exactly one --row high (output, echoed commands and the live prompt), so nothing moves when a typed
+   line becomes part of the history: like a real command prompt. */
+#term { --row: 20px; flex: 1; overflow-y: auto; padding: 12px 20px; font: 13.5px/var(--row) var(--mono); background: var(--code-bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+#term .in { color: var(--accent); display: flex; align-items: flex-start; gap: 8px; height: var(--row); }
+#term .in .who, .cmdline .who { color: var(--soft); }
+#term .err { color: var(--err); }
+#term .res { padding-left: 3ch; }   /* every command's output sits 3 spaces in from the prompt */
+#term .dimline { color: var(--dim); }
+body.console { background: var(--code-bg); cursor: text; }
+.cmdline { display: flex; align-items: flex-start; gap: 8px; height: var(--row); }
+.cmdline.busy { visibility: hidden; }
+/* The chat's prompt: gold › and a blinking block cursor drawn by a mirror (the real input is invisible). */
+.chev { color: var(--accent); font: 600 20px/var(--row) var(--sans); height: var(--row); flex: none; position: relative; top: -3px; }   /* ink centred on the cursor (measured) */
+.typebox { position: relative; flex: 1; height: var(--row); }
+#mirror { color: var(--accent); white-space: pre; overflow: hidden; pointer-events: none; height: var(--row); }
+#cmd { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; outline: 0; background: transparent; padding: 0;
+       font: inherit; color: transparent; caret-color: transparent; }
+#cmd::selection { background: rgba(var(--accent-rgb),.38); color: transparent; }
+.caret { display: inline-block; width: 8px; height: 15px; background: var(--accent); border-radius: 1px; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (max-width: 600px) { main.dash { padding: 12px 16px; } header.top { padding: 10px 16px; } #term { padding-left: 16px; padding-right: 16px; } }

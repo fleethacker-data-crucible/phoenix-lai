@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Phoenix LAI</title>
+<title>Phoenix Client</title>
 <link rel="icon" type="image/png" href="assets/toolbar_icon.png">
 <link rel="stylesheet" href="css/chat.css">
 <link rel="stylesheet" href="css/skills.css">
@@ -12,18 +12,20 @@
 <div id="banner"><span>UNCLASSIFIED</span></div>
 <canvas id="bg"></canvas><canvas id="bgLogo"></canvas>
 <aside id="side">
-  <div class="brand"><img src="assets/toolbar_icon.png" alt=""><span>Phoenix LAI</span><button id="navSettings" title="Settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button></div>
+  <div class="brand"><img src="assets/toolbar_icon.png" alt=""><span>Phoenix Client</span><button id="navSettings" title="Settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button></div>
   <div id="sideHw" class="sbar"></div>
   <nav class="snav">
     <button id="navNew"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
     <button id="navSkills"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 7v10l8 4 8-4V7z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>Skill builder</button>
   </nav>
-  <div class="sgroup">Skills<button id="newSkill" title="New skill">+</button></div>
+  <div class="sgroup">Skills<button id="newSkill" title="New skill"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
   <div id="skillList" class="slist skills"></div>
-  <div class="sgroup">Projects<button id="newProject" title="New project">+</button></div>
+  <div class="sgroup">Projects<button id="newProject" title="New project"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
   <div id="projList" class="slist"></div>
   <div class="sgroup">Recents</div>
   <div id="recentList" class="slist recents"></div>
+  <div class="sgroup">Providers<button id="newProvider" title="Add an OpenAI /v1 provider"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
+  <div id="providerList" class="slist providers"></div>
 </aside>
 <main id="main">
   <div id="topbar"><div class="mpick"><button id="modelPick"><span id="topModel">Select model</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button><div id="modelMenu"></div></div><span id="topSpeed" class="sbar"></span></div>
@@ -54,10 +56,12 @@
       <section id="catApp">
         <div class="section">app</div>
         <div class="field">browser<div class="radios" id="sBrowser"></div><span class="hint" id="browserNote"></span></div>
-        <div class="field" style="margin-top:10px">device<div class="radios" id="sDevice"></div><span class="hint">where the model runs · CPU is much slower · switching reloads the model</span></div>
+        <!-- CPU mode (off): <div class="field" style="margin-top:10px">device<div class="radios" id="sDevice"></div><span class="hint">where the model runs · CPU is much slower · switching reloads the model</span></div> -->
+        <!-- The Phoenix server's GPU settings (they belong to the server, not the client; set them on the server):
         <div class="field" style="margin-top:10px">dev: GPU<div class="radios" id="sGpu"></div><span class="hint" id="gpuNote"></span></div>
-        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sGpuSafe"><span class="sw"></span>dev: safe GPU kernels<span class="hint"> · plain kernels without the subgroup and integer-dot fast paths, for a card whose answers come out as garbage</span></label>
-        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label>
+        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sGpuSafe"><span class="sw"></span>dev: safe GPU kernels<span class="hint"> · plain kernels without the subgroup and integer-dot fast paths, for a card whose answers come out as garbage</span></label> -->
+        <!-- Answer while I type needs the local engine's cache, which a /v1 provider does not expose:
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label> -->
         <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sTypeEffect"><span class="sw"></span>typing effect<span class="hint"> · the reply types itself out, with the odd backspaced typo (display only)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>classification banner (UNCLASSIFIED)</label>
       </section>
@@ -97,9 +101,52 @@
   </div>
 </div>
 
+<div class="modal" id="provModal">
+  <div class="window settings">
+    <header><h2>OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+    <div class="body">
+      <section>
+        <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
+        <label class="field" style="margin-top:10px">base url<input id="pUrl" type="text" spellcheck="false" placeholder="http://localhost:1234/v1"><span class="hint">where the provider's /models and /chat/completions live · this PC, the LAN or the internet</span></label>
+      </section>
+      <section>
+        <div class="section">api key</div>
+        <label class="field"><input id="pKey" type="password" autocomplete="off" spellcheck="false" placeholder="paste the key (optional)"><span class="hint">saved straight into Windows Credential Manager; never stored in a file or shown again</span></label>
+        <label class="toggle" id="pClearRow" style="margin-top:8px"><input type="checkbox" id="pClear"><span class="sw"></span>remove the stored key</label>
+      </section>
+      <section>
+        <div class="section">privacy</div>
+        <label class="toggle" id="pLocalRow"><input type="checkbox" id="pLocal"><span class="sw"></span>send local context<span class="hint" id="pLocalNote"></span></label>
+      </section>
+      <section>
+        <div class="section">model</div>
+        <div class="field"><div class="prow"><div class="dd"><button type="button" class="ddbtn" id="pModelBtn"><span id="pModelLabel">(load the models first)</span><span class="ddsize" id="pModelSize" aria-hidden="true"></span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button><div class="ddmenu" id="pModelMenu"></div><select id="pModel" hidden><option value="">(load the models first)</option></select></div><button id="pLoad" type="button" class="primary">load models</button></div><span class="hint" id="pModelNote">asks the provider's /models with the URL and key above</span></div>
+      </section>
+      <section>
+        <div class="section">features</div>
+        <div id="pFeatures" class="feats"></div>
+      </section>
+      <section>
+        <div class="section">test</div>
+        <div id="pTests" class="ctests"><span class="hint">Runs the OpenAI /v1 calls the chat uses: models, chat, streaming, embeddings.</span></div>
+      </section>
+    </div>
+    <footer><span class="keys">Enter save · Esc close</span><button id="pDelete">delete</button><button id="pTest">test</button><button class="primary" id="pSave">save</button></footer>
+  </div>
+</div>
+
+<div class="modal" id="downModal">
+  <div class="window downbox">
+    <header><h2><span class="chev">›</span> phoenix client stopped</h2></header>
+    <div class="body"><p id="downText">The Phoenix Client has stopped.</p></div>
+    <footer><span class="keys" id="downNote"></span><button class="primary" id="downExit">exit</button></footer>
+  </div>
+</div>
+
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/skills.js"></script>
+<script src="js/providers.js"></script>
 </body>
 </html>

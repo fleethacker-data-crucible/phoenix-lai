@@ -10,7 +10,7 @@ foreach ($p in Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR N
     if ($cmd -match '-EncodedCommand\s+(\S+)') {
         try { $cmd += ' ' + [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1])) } catch { }
     }
-    if ($cmd -match 'run\.ps1' -and $cmd -notmatch 'CheckOnly' -and $cmd -notmatch 'close-phoenix') { $found[$p.ProcessId] = 'server' }
+    if ($cmd -match 'run(-phoenix-(server|client))?\.ps1' -and $cmd -notmatch 'CheckOnly' -and $cmd -notmatch 'close-phoenix') { $found[$p.ProcessId] = 'server' }
 }
 $lock = Join-Path $env:LOCALAPPDATA 'LocalLLMStudio\model.lock'
 try {

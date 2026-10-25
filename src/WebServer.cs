@@ -19,7 +19,7 @@ namespace Phoenix
         readonly string _htmlDir, _modelsDir;
         readonly HttpListener _listener = new HttpListener();
         readonly object _engineLock = new object();     // one generation / model load at a time
-        ChatEngine _engine;
+        IChatModel _engine;
         Workspace _workspace;
         string _loading;
         string _loadedSig;   // what the loaded engine was loaded with (LoadModel skips an identical reload)
@@ -29,19 +29,29 @@ namespace Phoenix
         public readonly int Port;
         public readonly ChatLog Log;
         public readonly Rag Rag;
-        int _requestId;
+        int _requestId, _clientChats;
 
-        public WebServer(string htmlDir, string modelsDir, string logsDir, int port)
+        // IsClient: the Phoenix Client (run-phoenix-client.ps1, ports 8790-8799): the chat page with every feature
+        // (projects, file tools, docs search, skills, code check, compact), its model calls going to the active OpenAI /v1
+        // provider (RemoteChatModel) and docs-search embeddings to the Phoenix server's /v1/embeddings. No engine, no GPU.
+        // Otherwise the Phoenix server (run-phoenix-server.ps1): the local engine, the /v1 API, dashboard and console.
+        public readonly bool IsClient;
+
+        public WebServer(string htmlDir, string modelsDir, string logsDir, int port) : this(htmlDir, modelsDir, logsDir, port, false) { }
+
+        public WebServer(string htmlDir, string modelsDir, string logsDir, int port, bool client)
         {
+            IsClient = client;
             _htmlDir = Path.GetFullPath(htmlDir);
             _modelsDir = Path.GetFullPath(modelsDir);
             Port = port;
             _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             _listener.Start();
-            Log = new ChatLog(logsDir);
+            Log = new ChatLog(logsDir, client ? "client" : "session");
             Dbg.Attach(Log, AppDataDir);
             Workspace.EnsureProjectsRoot();
-            Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), _modelsDir);
+            Rag = new Rag(Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs"), client ? null : _modelsDir);
+            if (client) Rag.EmbedderFactory = delegate { return new RemoteEmbedder(Providers.Find(Providers.PhoenixId)); };
             CodeCheck.PsDataPath = Path.Combine(Directory.GetParent(_htmlDir).FullName, "docs", "checkers", "ps51-commands.tsv");
             // An outdated or missing index is rebuilt in the background (otherwise the docs look empty and the model is
             // never told about them). The GPU embedder submits one layer per job and holds GpuGate, so it cannot collide
@@ -51,8 +61,8 @@ namespace Phoenix
                 Log.Text("rag: index is missing or outdated; rebuilding");
                 Rag.StartReindex(delegate(string m) { Log.Text(m); });
             }
-            Log.Text("server started on " + Url);
-            StartApi();
+            Log.Text((client ? "Phoenix Client started on " : "server started on ") + Url);
+            if (!client) StartApi();
             Log.Json("server_start", "\"url\":" + Json.Quote(Url));
             Thread t = new Thread(Loop);
             t.IsBackground = true;
@@ -60,32 +70,82 @@ namespace Phoenix
         }
 
         public string Url { get { return "http://127.0.0.1:" + Port + "/chat.html"; } }
+        public string BaseUrl { get { return "http://127.0.0.1:" + Port + "/"; } }
 
-        // Starts the server (optionally loading a model), opens Edge in app mode, runs until that window closes.
-        public static int Run(string root, string modelPath, int ctx)
+        // The Phoenix Client (run-phoenix-client.ps1): opens its window and runs until it is closed. One client per user:
+        // a second launch brings the open window forward. The mutex is freed by Windows if we crash.
+        public static int RunClient(string root)
         {
             Application.EnableVisualStyles();
-            // One server per user: a second launch just opens another window on the running one. (Two servers would fight
-            // over the GPU and the loser falls back to the much slower CPU.) The mutex is freed by Windows if we crash.
             bool first;
-            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.Server", out first))
+            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.Client", out first))
             {
                 if (!first)
                 {
-                    // Ask the running server to show its window (it opens a new one only if none is open).
                     EventWaitHandle show;
                     if (EventWaitHandle.TryOpenExisting(ShowEventName, out show)) using (show) show.Set();
                     return 0;
                 }
-                try { return RunServer(root, modelPath, ctx); }
+                try { return RunServer(root, null, 0); }
                 finally { single.ReleaseMutex(); }
             }
         }
 
-        const string ShowEventName = @"Local\PhoenixAI.Show";
+        const string ShowEventName = @"Local\PhoenixAI.ClientShow";
+
+        // The VS Code extension's own Phoenix Client (run-phoenix-vscode.ps1, started by the extension; approved 2026-10-22):
+        // the same client (same providers, keys, settings and chats on disk) on its own port, with no window of its own.
+        // It is independent of the Phoenix Client window and stays up while a VS Code chat ("vs-" pages) checks in; one per
+        // user (VS Code windows share it). The extension finds it by /api/info "instance":"vscode".
+        public static int RunVsCode(string root)
+        {
+            bool first;
+            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.ClientVsCode", out first))
+            {
+                if (!first) return 0;
+                try
+                {
+                    using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
+                    {
+                        server.Embedded = true;
+                        server.Log.Text("VS Code client: no window, runs while a VS Code chat is connected");
+                        ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
+                        // up to 2 minutes for the first VS Code chat to check in, then until the last one has been gone 30 s
+                        DateTime start = DateTime.UtcNow;
+                        while (server.VsCodePages() == 0 && DateTime.UtcNow - start < TimeSpan.FromMinutes(2)) Thread.Sleep(500);
+                        DateTime lastSeen = DateTime.UtcNow;
+                        while (DateTime.UtcNow - lastSeen < TimeSpan.FromSeconds(30))
+                        {
+                            if (server.VsCodePages() > 0) lastSeen = DateTime.UtcNow;
+                            Thread.Sleep(500);
+                        }
+                        try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
+                        server.Log.Text("VS Code client stopped (no VS Code chat connected)");
+                        server.Log.Json("server_stop", null);
+                    }
+                    return 0;
+                }
+                finally { single.ReleaseMutex(); }
+            }
+        }
+
+        // True for the VS Code extension's own client (RunVsCode).
+        public bool Embedded;
+
+        // VS Code chats ("vs-" pages) that checked in within the last 10 s.
+        int VsCodePages()
+        {
+            lock (_pages)
+            {
+                int n = 0;
+                foreach (KeyValuePair<string, DateTime> kv in _pages)
+                    if (kv.Key.StartsWith("vs-") && DateTime.UtcNow - kv.Value < TimeSpan.FromSeconds(10)) n++;
+                return n;
+            }
+        }
 
         // Opens the app window on `url` in the preferred browser; returns the browser process (or null if none found).
-        static Process OpenWindow(string url, WebServer log)
+        internal static Process OpenWindow(string url, ChatLog log)
         {
             string pref = PreferredBrowser(), used;
             string exe = FindBrowser(pref, out used);
@@ -93,7 +153,7 @@ namespace Phoenix
             // A private profile folder per browser keeps the app separate from the user's own browser windows.
             string profile = Path.Combine(AppDataDir, used + "-profile");
             Directory.CreateDirectory(profile);
-            if (log != null) log.Log.Text("opening " + used + (used != pref ? " (" + pref + " is not installed)" : "") + ": " + exe);
+            if (log != null) log.Text("opening " + used + (used != pref ? " (" + pref + " is not installed)" : "") + ": " + exe);
             // Opens WindowWidth x WindowHeight, centered horizontally, WindowTop px below the top of the primary screen
             // (the browser's remembered placement is cleared first, or it would win over these flags).
             ForgetWindowPlacement(profile);
@@ -178,11 +238,14 @@ namespace Phoenix
             catch { }
         }
 
+        // The client's window loop: start, open the window, run while any window is open, then shut down.
         static int RunServer(string root, string modelPath, int ctx)
         {
-            using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs")))
+            using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
             {
                 server.ContextLength = ctx;
+                // the active provider's saved model, so the first message needs no picking
+                ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
                 // Another launch of the app: bring the open window forward, or open one if every window was closed.
                 EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
                 Thread showThread = new Thread(delegate()
@@ -190,7 +253,7 @@ namespace Phoenix
                     while (show.WaitOne())
                     {
                         if (server.OpenPages() > 0) { server._focusRequested = true; server.Log.Text("launched again: focusing the open window"); }
-                        else { server.Log.Text("launched again: no window open, opening one"); Process p = OpenWindow(server.Url, server); if (p != null) p.Dispose(); }
+                        else { server.Log.Text("launched again: no window open, opening one"); Process p = OpenWindow(server.Url, server.Log); if (p != null) p.Dispose(); }
                     }
                 });
                 showThread.IsBackground = true;
@@ -211,7 +274,7 @@ namespace Phoenix
                 }
                 else
                 {
-                    Process browser = OpenWindow(server.Url, server);
+                    Process browser = OpenWindow(server.Url, server.Log);
                     if (browser != null)
                     {
                         using (browser) browser.WaitForExit();
@@ -234,14 +297,18 @@ namespace Phoenix
             return 0;
         }
 
-        static WebServer StartOnFreePort(string htmlDir, string modelsDir, string logsDir)
+        internal static WebServer StartOnFreePort(string htmlDir, string modelsDir, string logsDir) { return StartOnFreePort(htmlDir, modelsDir, logsDir, false); }
+
+        // The server takes 8765-8789, the Phoenix Client 8790-8799.
+        internal static WebServer StartOnFreePort(string htmlDir, string modelsDir, string logsDir, bool client)
         {
-            for (int port = 8765; port < 8800; port++)
+            int from = client ? 8790 : 8765, to = client ? 8800 : 8790;
+            for (int port = from; port < to; port++)
             {
-                try { return new WebServer(htmlDir, modelsDir, logsDir, port); }
+                try { return new WebServer(htmlDir, modelsDir, logsDir, port, client); }
                 catch (HttpListenerException) { }
             }
-            throw new InvalidOperationException("No free local port between 8765 and 8799.");
+            throw new InvalidOperationException("No free local port between " + from + " and " + (to - 1) + ".");
         }
 
         static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio");
@@ -293,10 +360,12 @@ namespace Phoenix
 
         // Where models run (/device gpu|cpu), kept across restarts. GPU still falls back to the CPU if it fails.
         static string DeviceFile { get { return Path.Combine(AppDataDir, "device.txt"); } }
-        // CPU mode: chosen in Settings or with /device (saved in DeviceFile). false = GPU only (a saved "cpu" choice is
-        // ignored and /api/device refuses it).
-        public const bool CpuModeAllowed = true;
-        bool _useGpu = !CpuModeAllowed || ReadUseGpu();
+        // CPU mode is OFF (2026-10-20): models run on the GPU only; there are no CPU settings anywhere. The CPU-mode code is
+        // commented out, not deleted (search "CPU mode (off)"); set CpuModeAllowed = true and uncomment it to bring it back.
+        // The engine's own fallback to the CPU when a GPU load fails is unchanged.
+        public const bool CpuModeAllowed = false;
+        bool _useGpu = true;
+        // CPU mode (off): bool _useGpu = !CpuModeAllowed || ReadUseGpu();
 
         static bool ReadUseGpu()
         {
@@ -382,7 +451,7 @@ namespace Phoenix
         // commit; what the loaded model holds counts as free, since loading another one releases it first.
         void FreeForModel(out long mem, out long commit)
         {
-            ChatEngine e = _engine;
+            IChatModel e = _engine;
             long[] cur = null;
             if (e != null) try { cur = Need(e.ModelPath, _useGpu); } catch { }
             commit = MemoryTrim.AvailableCommit() + (cur != null ? cur[1] - (3072L << 20) : 0);
@@ -639,7 +708,7 @@ namespace Phoenix
                 if (origin != null && origin != "http://127.0.0.1:" + Port) { Send(res, 403, "text/plain", "Forbidden"); return; }
 
                 string path = req.Url.AbsolutePath;
-                if (path.StartsWith("/api/"))
+                if (path.StartsWith("/api/") || (IsClient && path.StartsWith("/client/")))
                 {
                     try { Api(req, res, path); }
                     catch (Exception ex)
@@ -650,7 +719,14 @@ namespace Phoenix
                     }
                     return;
                 }
-                if (req.HttpMethod == "GET") { ServeFile(res, path == "/" ? "/chat.html" : path); return; }
+                if (req.HttpMethod == "GET")
+                {
+                    // the server's own pages are the dashboard and the console; the chat window is the Phoenix Client
+                    if (!IsClient && (path == "/chat.html" || path == "/vscode.html"))
+                    { Send(res, 404, "text/plain; charset=utf-8", "The chat runs in the Phoenix Client now (PhoenixLAI_Client.lnk or src\\run-phoenix-client.ps1)."); return; }
+                    ServeFile(res, path == "/" ? (IsClient ? "/chat.html" : "/dashboard.html") : path);
+                    return;
+                }
                 Send(res, 405, "text/plain", "Method not allowed");
             }
             catch (Exception ex)
@@ -666,6 +742,13 @@ namespace Phoenix
             string q = req.QueryString["path"];
 
             string page = req.QueryString["page"];
+            if (IsClient)
+            {
+                if (ServerOnlyPath(path)) { SendJson(res, 404, "{\"error\":\"That is a Phoenix server setting (its dashboard or console), not the client's.\"}"); return; }
+                string cr = ClientApi(path, post, body);
+                if (cr != null) { SendJson(res, 200, cr); return; }
+            }
+            else if (ClientOnlyPath(path)) { SendJson(res, 404, "{\"error\":\"The chat runs in the Phoenix Client now (run-phoenix-client.ps1).\"}"); return; }
             string chatsReply = ChatsApi(path, post, body, req.QueryString["id"]);
             if (chatsReply != null) { SendJson(res, 200, chatsReply); return; }
             string skillsReply = SkillsApi(path, post, body, req.QueryString);
@@ -682,6 +765,9 @@ namespace Phoenix
                 Compact(body, res.OutputStream);
                 return;
             }
+            if (page != null && !page.StartsWith("dash-")) SeeClient("page:" + page, page.StartsWith("vs-") ? "vscode" : "client", page.StartsWith("vs-") ? "VS Code chat" : "Phoenix Client", path);
+            if (path == "/api/server-status") { SendJson(res, 200, ServerStatusJson()); return; }
+            if (path == "/api/console" && post) { SendJson(res, 200, "{\"text\":" + Json.Quote(ConsoleRun(Json.GetStr(body, "line", ""))) + "}"); return; }
             if (path == "/api/bye") { if (page != null) lock (_pages) _pages.Remove(page); SendJson(res, 200, "{}"); return; }
             if (path == "/api/info")
             {
@@ -704,6 +790,7 @@ namespace Phoenix
                     files.Sort(StringComparer.OrdinalIgnoreCase);
                     foreach (string f in files)
                     {
+                        if (!IsListedModel(Path.GetFileName(f))) continue;   // no vision projectors (mmproj), no embedding model
                         if (!first) sb.Append(',');
                         first = false;
                         sb.Append("{\"name\":").Append(Json.Quote(Path.GetFileName(f))).Append(",\"mb\":").Append(new FileInfo(f).Length / 1048576)
@@ -776,7 +863,7 @@ namespace Phoenix
                 if (_workspace != null) _workspace.Outline = delegate(string f) { ProjectIndex pi = _pindex; return pi != null ? pi.Outline(f) : null; };
                 if (_workspace != null) { RememberFolder(_workspace.Display); EnsureProjectLayout(ProjectRootOf(_workspace)); }
                 SwitchProjectIndex();
-                ChatEngine eRec = _engine;
+                IChatModel eRec = _engine;
                 if (eRec != null) eRec.RecallDir = _workspace != null ? Path.Combine(ProjectRootOf(_workspace) ?? _workspace.Root, ".phoenix", "recall") : null;
                 Log.Text(_workspace != null ? "folder connected: " + _workspace.Root : "folder disconnected");
                 Log.Json("folder", "\"path\":" + (_workspace != null ? Json.Quote(_workspace.Root) : "null"));
@@ -794,7 +881,15 @@ namespace Phoenix
             if (path == "/api/list") { SendJson(res, 200, "{\"entries\":" + RequireWorkspace().ListJson(q ?? ".") + "}"); return; }
             if (path == "/api/ls") { Log.Text("/ls " + (q ?? ".")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().List(q ?? ".")) + "}"); return; }
             if (path == "/api/cat") { Log.Text("/cat " + (q ?? "")); SendJson(res, 200, "{\"text\":" + Json.Quote(RequireWorkspace().Read(q ?? "")) + "}"); return; }
-            if (path == "/api/chat" && post) { Dbg.Source = page != null && page.StartsWith("vs-") ? "vscode" : "window"; Chat(body, res); return; }
+            if (path == "/api/chat" && post)
+            {
+                Dbg.Source = page != null && page.StartsWith("vs-") ? "vscode" : "window";
+                string who = Dbg.Source == "vscode" ? "VS Code chat" : "Phoenix Client";
+                int arid = -Interlocked.Increment(ref _clientChats);   // its own ids: Chat() numbers its log lines
+                ActivityStart(arid, who, "chat");
+                try { Chat(body, res); } finally { ActivityEnd(arid, who, "chat", null, "done"); }
+                return;
+            }
             if (path == "/api/browser")
             {
                 if (post)
@@ -822,7 +917,7 @@ namespace Phoenix
                     GpuDevice.ReadProfile(out gp, out gs);
                     Log.Text("GPU profile set to " + gp + (gs ? " safe" : "") + " (used from the next model load)");
                 }
-                ChatEngine ge = _engine;
+                IChatModel ge = _engine;
                 SendJson(res, 200, "{\"profile\":" + Json.Quote(gp) + ",\"safe\":" + (gs ? "true" : "false") + ",\"file\":" + Json.Quote(GpuDevice.ProfileFile) +
                     ",\"backend\":" + (ge != null ? Json.Quote(ge.Backend) : "null") + "}");
                 return;
@@ -854,7 +949,7 @@ namespace Phoenix
                             _recallProgress = (done + 1) + "/" + files.Count + " " + wsR.Relative(f);
                             lock (_engineLock)
                             {
-                                ChatEngine e = _engine;
+                                IChatModel e = _engine;
                                 if (e == null || _recallStop) break;
                                 Stopwatch fsw = Stopwatch.StartNew();
                                 if (e.PreRead(text, delegate { return _recallStop; })) saved++;
@@ -902,15 +997,18 @@ namespace Phoenix
             }
             if (path == "/api/device" && post)
             {
-                // Switches CPU/GPU and reloads the current model there (the chat history stays; its cache is rebuilt).
-                bool gpu = Json.GetStr(body, "device", "gpu").ToLowerInvariant() != "cpu";
-                if (!gpu && !CpuModeAllowed) throw new InvalidOperationException("CPU mode is turned off for now; models run on the GPU.");
-                _useGpu = gpu;
-                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(DeviceFile, gpu ? "gpu" : "cpu"); } catch { }
-                Log.Text("device: " + (gpu ? "GPU" : "CPU"));
-                ChatEngine cur = _engine;
-                if (cur != null) LoadModel(cur.ModelPath);
+                // CPU mode (off): models run on the GPU only, so there is nothing to switch.
+                if (Json.GetStr(body, "device", "gpu").ToLowerInvariant() == "cpu") throw new InvalidOperationException("CPU mode is turned off; models run on the GPU.");
                 SendJson(res, 200, Info());
+                // CPU mode (off): switched CPU/GPU and reloaded the current model there (the chat history stayed; its cache was rebuilt).
+                // bool gpu = Json.GetStr(body, "device", "gpu").ToLowerInvariant() != "cpu";
+                // if (!gpu && !CpuModeAllowed) throw new InvalidOperationException("CPU mode is turned off for now; models run on the GPU.");
+                // _useGpu = gpu;
+                // try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(DeviceFile, gpu ? "gpu" : "cpu"); } catch { }
+                // Log.Text("device: " + (gpu ? "GPU" : "CPU"));
+                // IChatModel cur = _engine;
+                // if (cur != null) LoadModel(cur.ModelPath);
+                // SendJson(res, 200, Info());
                 return;
             }
             if (path == "/api/unload" && post)
@@ -991,10 +1089,10 @@ namespace Phoenix
 
         string Info()
         {
-            ChatEngine e = _engine;
+            IChatModel e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
-            ChatEngine er = _engine;
-            return "{\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
+            IChatModel er = _engine;
+            return "{\"instance\":" + (Embedded ? "\"vscode\"" : IsClient ? "\"client\"" : "\"server\"") + ",\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
                    ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +
@@ -1011,19 +1109,22 @@ namespace Phoenix
                    ",\"rules\":" + RulesJson() +
                    ",\"rag\":" + Rag.StatusJson() +
                    ",\"vram\":" + VramJson(e) + ",\"ram\":" + MemoryTrim.RamJson() +
-                   ",\"version\":" + Json.Quote(Version()) + "}";
+                   ",\"version\":" + Json.Quote(Version()) + (IsClient ? ProviderInfoJson() : "") + "}";
         }
 
-        // App version from src\__version.info (read on each request, so editing it needs no restart).
-        string Version()
+        string Version() { return AppVersion(Directory.GetParent(_htmlDir).FullName); }
+
+        // The one app version: <project root>\__version.info, for the server, the client and every page (read on each
+        // request, so editing it needs no restart). "" when the file is missing.
+        public static string AppVersion(string root)
         {
-            try { return File.ReadAllText(Path.Combine(Directory.GetParent(_htmlDir).FullName, "src", "__version.info")).Trim(); }
+            try { return File.ReadAllText(Path.Combine(root, "__version.info")).Trim(); }
             catch { return ""; }
         }
 
         // "used" = this process on the GPU (model, cache and docs-search embedder: the driver reports usage per process),
         // "budget" = what the GPU can give this process right now, its own use included (drops when others take VRAM).
-        static string VramJson(ChatEngine e)
+        static string VramJson(IChatModel e)
         {
             ulong used, budget;
             if (e == null || !e.Vram(out used, out budget)) return "null";
@@ -1098,6 +1199,7 @@ namespace Phoenix
                 msgs.Add(cm);
             }
             bool anyImage = msgs.Exists(delegate(ChatMessage x) { return x.Images != null; });
+            try { EnsureClientModel(); } catch { }   // the client: the active provider's model, before checking it can read pictures
             if (anyImage && (_engine == null || !_engine.HasVision))
                 throw new ArgumentException("The loaded model cannot read images: it needs its vision file (mmproj) in the models folder. Gemma 4 E2B, E4B and 12B have one.");
             SamplerSettings s = new SamplerSettings();
@@ -1113,7 +1215,7 @@ namespace Phoenix
             for (int i = msgs.Count - 1; i >= 0; i--) if (msgs[i].Role == "user") { lastUser = msgs[i].Text; break; }
             string settingsTxt = string.Format(System.Globalization.CultureInfo.InvariantCulture, "temp {0} top_k {1} top_p {2} repeat {3} max {4}",
                 s.Temperature, s.TopK, s.TopP, s.RepeatPenalty, maxTokens);
-            ChatEngine engNow = _engine; Workspace wsNow = _workspace;
+            IChatModel engNow = _engine; Workspace wsNow = _workspace;
             Log.Text("#" + rid + " USER (" + msgs.Count + " messages in conversation; " + settingsTxt + "; model " +
                      (engNow != null ? Path.GetFileName(engNow.ModelPath) : "none") + "; folder " + (wsNow != null ? wsNow.Root : "none") + ")\n" + lastUser);
             Log.Json("request", "\"id\":" + rid + ",\"messages\":" + msgs.Count + ",\"user\":" + Json.Quote(lastUser) +
@@ -1149,7 +1251,7 @@ namespace Phoenix
             {
                 Log.Text("#" + rid + " RUN GUARD: " + guard);
                 Log.Json("run_guard", "\"id\":" + rid + ",\"msg\":" + Json.Quote(guard));
-                ChatEngine eg = _engine;
+                IChatModel eg = _engine;
                 write("{\"guard\":{\"level\":" + Json.Quote(guardLevel) + ",\"seconds\":" + guardSeconds + ",\"text\":" + Json.Quote(guard) + "}}");
                 write("{\"t\":" + Json.Quote(guard) + "}");
                 write("{\"done\":true,\"append\":[{\"role\":\"assistant\",\"content\":" + Json.Quote(guard) + "}],\"tokens\":0,\"tps\":0" +
@@ -1175,7 +1277,8 @@ namespace Phoenix
             {
                 try
                 {
-                    if (_engine == null) throw new InvalidOperationException("No model loaded. Use /models and /model <n>.");
+                    EnsureClientModel();   // the client: the active provider's saved model
+                    if (_engine == null) throw new InvalidOperationException("No model selected: pick one from the model list at the top (/model).");
                     // Progress while the prompt is read (shown until the first token; matters on the CPU).
                     int lastPct = -1;
                     _engine.PrefillProgress = delegate(int done, int todo)
@@ -1183,7 +1286,8 @@ namespace Phoenix
                         int pct = todo > 0 ? done * 100 / todo : 100;
                         if (pct / 5 != lastPct / 5) { lastPct = pct; write("{\"pf\":" + pct + "}"); }
                     };
-                    Workspace ws = _folderAccess ? _workspace : null;
+                    // no project files or file tools for a provider that gets no local context
+                    Workspace ws = _folderAccess && LocalContextAllowed ? _workspace : null;
                     List<SkillMatch> skillsUsed;
                     List<RagHit> hits = PrepareMessages(msgs, ws, rid, true, !(o.ContainsKey("skills") && o["skills"] is bool && !(bool)o["skills"]), out skillsUsed);
                     if (hits.Count > 0) write("{\"rag\":" + HitsJson(hits, false) + "}");
@@ -1397,10 +1501,30 @@ namespace Phoenix
             return PrepareMessages(msgs, ws, rid, log, true, out skillsUsed);
         }
 
+        // The active provider may be sent local context: always on the server; in the client, only providers that allow it
+        // (Provider.SendsLocalContext: the Phoenix Local Server for now).
+        bool LocalContextAllowed { get { return !IsClient || Providers.Active.SendsLocalContext; } }
+
         // useSkills false: no skill catalog or skill text (the chat request's "skills": false, used by the RAG evaluation).
         List<RagHit> PrepareMessages(List<ChatMessage> msgs, Workspace ws, int rid, bool log, bool useSkills, out List<SkillMatch> skillsUsed)
         {
             skillsUsed = new List<SkillMatch>();
+            if (!LocalContextAllowed)
+            {
+                // A provider that gets no local context: only the system prompt and what the user typed. No RULES.md, docs
+                // sections, syntax sheets, project files, file tools or skills leave this PC.
+                if (!msgs.Exists(delegate(ChatMessage m) { return m.Role == "system" && m.Text != null && m.Text.Trim().Length > 0; }))
+                {
+                    msgs.RemoveAll(delegate(ChatMessage m) { return m.Role == "system"; });
+                    msgs.Insert(0, new ChatMessage("system", SystemPrompts.For(_engine != null ? Path.GetFileName(_engine.ModelPath) : null)));
+                }
+                const string noLocal = "You have no access to the user's files, folders or documents: never use file tags. When the user " +
+                    "asks for code, a script or any other file, write it in a code block in your reply (complete, ready to copy).";
+                int ni = msgs.FindIndex(delegate(ChatMessage m) { return m.Role == "system"; });
+                msgs[ni] = new ChatMessage("system", msgs[ni].Text + "\n\n" + noLocal);
+                if (log) Log.Text("#" + rid + " LOCAL CONTEXT not sent: " + Providers.Active.Name + " gets only what the user typed");
+                return new List<RagHit>();
+            }
             // what the user typed, before docs and project excerpts are added to it (skills match only this)
             int oui = msgs.FindLastIndex(delegate(ChatMessage m) { return m.Role == "user"; });
             string userText = oui >= 0 ? msgs[oui].Text : "";
@@ -1545,7 +1669,7 @@ namespace Phoenix
                     if (!Monitor.TryEnter(_engineLock, 50)) return;   // a chat or load is running: no draft
                     try
                     {
-                        ChatEngine e = _engine;
+                        ChatEngine e = _engine as ChatEngine;   // drafting needs the local engine's cache (not through /v1)
                         if (e == null || _pretypeStop) return;
                         PrepareMessages(msgs, _folderAccess ? _workspace : null, 0, false);
                         SamplerSettings s = new SamplerSettings(); s.Temperature = 0;
@@ -1635,7 +1759,7 @@ namespace Phoenix
             // still in the model's cache, so re-sending them would cost seconds of prompt reading (and push Gemma's
             // sliding-window cache past what the next step can reuse).
             List<RagHit> hits = new List<RagHit>();
-            if (Rag.Enabled)
+            if (Rag.Enabled && LocalContextAllowed)
             {
                 string sent = "";
                 foreach (ChatMessage m in msgs) if (m.Role == "user") sent += m.Text;

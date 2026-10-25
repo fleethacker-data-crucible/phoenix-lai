@@ -181,7 +181,7 @@ namespace Phoenix
             }
             // Ground the draft in the syntax library when the request is about a language it covers.
             List<RagHit> hits = new List<RagHit>();
-            try { if (Rag.Enabled) hits = Rag.Search(request + "\n" + draft, null); } catch { }
+            try { if (Rag.Enabled && LocalContextAllowed) hits = Rag.Search(request + "\n" + draft, null); } catch { }
             string prompt = hits.Count > 0 ? Rag.WrapMessage(hits, user.ToString()) : user.ToString();
 
             List<ChatMessage> msgs = new List<ChatMessage>();
@@ -219,6 +219,7 @@ namespace Phoenix
             {
                 lock (_engineLock)
                 {
+                    EnsureClientModel();
                     if (_engine == null) throw new InvalidOperationException("No model loaded: pick one in the top bar first.");
                     _engine.PrefillProgress = null;
                     Stopwatch sw = Stopwatch.StartNew();

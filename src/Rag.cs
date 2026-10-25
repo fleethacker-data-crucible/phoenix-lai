@@ -43,7 +43,7 @@ namespace Phoenix
         public readonly string DocsDir, IndexPath, ModelsDir;
         readonly object _swapLock = new object(), _embedLock = new object();
         RagIndex _index;
-        Embedder _embedder;
+        IEmbedder _embedder;
         bool _embedderTried;
         int _busy;
         string _progress, _lastResult, _lastError;
@@ -75,11 +75,11 @@ namespace Phoenix
         {
             RagIndex ix = _index;
             if (!Enabled || ix == null || ix.Dim == 0) return;
-            Embedder e = GetEmbedder();
+            IEmbedder e = GetEmbedder();
             if (e != null) e.Query("warm up");
         }
 
-        public string EmbedBackend { get { Embedder e = _embedder; return e != null ? e.Backend : null; } }
+        public string EmbedBackend { get { IEmbedder e = _embedder; return e != null ? e.Backend : null; } }
 
         // True when docs\ holds files but there is no usable index yet.
         public bool HasUnindexedDocs()
@@ -94,29 +94,44 @@ namespace Phoenix
         public bool Indexing { get { return _busy != 0; } }
 
         // EmbeddingGemma from models\, loaded on first use and kept (it is small); null if there is none.
-        Embedder GetEmbedder()
+        IEmbedder GetEmbedder()
         {
             // GPU lock first, always: loading takes it inside, and the startup warm-up holds it before this one;
             // the opposite order deadlocked a chat sent in the first second after a model load.
             lock (GpuGate.Lock)
             lock (_embedLock)
             {
-                if (!_embedderTried && ModelsDir != null)
+                // a remote source (the Phoenix server) that was not answering is asked again after 20 s: a server restart
+                // must not leave docs search on keywords until the client restarts
+                if (_embedderTried && _embedder == null && EmbedderFactory != null && (DateTime.UtcNow - _embedderTriedAt).TotalSeconds > 20) _embedderTried = false;
+                if (!_embedderTried && (ModelsDir != null || EmbedderFactory != null))
                 {
                     _embedderTried = true;
-                    try { _embedder = Embedder.Find(ModelsDir); } catch (Exception ex) { _lastError = "embedding model: " + ex.Message; }
+                    _embedderTriedAt = DateTime.UtcNow;
+                    try
+                    {
+                        _embedder = EmbedderFactory != null ? EmbedderFactory() : Embedder.Find(ModelsDir);
+                        if (_embedder != null && _lastError != null && _lastError.StartsWith("embedding model:")) _lastError = null;
+                    }
+                    catch (Exception ex) { _lastError = "embedding model: " + ex.Message; }
                 }
                 return _embedder;
             }
         }
 
+        // Where embeddings come from when not the local EmbeddingGemma (the Phoenix Client: the Phoenix server's
+        // /v1/embeddings). null = the local model in models\. RetryEmbedder() drops a missing one so the next search tries again.
+        public Func<IEmbedder> EmbedderFactory;
+        DateTime _embedderTriedAt;
+        public void RetryEmbedder() { lock (_embedLock) { if (_embedder == null) _embedderTried = false; } }
+
         // The embedding model for other indexes (the project index): one copy in memory for both.
-        public Embedder SharedEmbedder() { return GetEmbedder(); }
+        public IEmbedder SharedEmbedder() { return GetEmbedder(); }
 
         // Embeds text as given (no query/document prefix) for the /v1/embeddings API.
         public float[] EmbedRaw(string text, out string model)
         {
-            Embedder e = GetEmbedder();
+            IEmbedder e = GetEmbedder();
             if (e == null) throw new InvalidOperationException("No embedding model in the models folder.");
             model = System.IO.Path.GetFileNameWithoutExtension(e.ModelPath);
             return e.Embed(text);
@@ -203,7 +218,7 @@ namespace Phoenix
             });
 
             // Embed every chunk that has no vector yet (new or changed files, or an index built without the model).
-            Embedder emb = GetEmbedder();
+            IEmbedder emb = GetEmbedder();
             int embedded = 0;
             if (emb != null)
             using (StayAwake.Scope("docs indexing"))   // displays must not power down mid-load (see StayAwake)
@@ -277,7 +292,7 @@ namespace Phoenix
             if (ix == null) return hits;
             // The query vector is computed outside the swap lock (it takes a few hundred ms on the CPU).
             float[] qv = null;
-            Embedder emb = ix.Dim > 0 ? GetEmbedder() : null;
+            IEmbedder emb = ix.Dim > 0 ? GetEmbedder() : null;
             if (emb != null && emb.Dim == ix.Dim) qv = emb.Query(query);
             lock (_swapLock)
             {

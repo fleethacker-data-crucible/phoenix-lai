@@ -1,13 +1,19 @@
-﻿# Phoenix LAI launcher (entry point; PhoenixLAI_App.lnk runs this). Windows PowerShell 5.1 only.
-#   powershell.exe -NoProfile -STA -File src\run.ps1                     # checks, compile, chat in an Edge app window
-#   powershell.exe -NoProfile -STA -File src\run.ps1 -Model models\x.gguf -Context 8192
+﻿# Phoenix LAI launcher (run-phoenix-server.ps1 and run-phoenix-client.ps1 call it). Windows PowerShell 5.1 only.
+# Two separate programs, never one process: the server (models + OpenAI API on localhost:1234/v1, tray) and the
+# Phoenix Client (the chat window, an OpenAI /v1 client for any provider).
+#   powershell.exe -NoProfile -STA -File src\run.ps1 -Role Client        # checks, compile, chat in a Chrome/Edge app window
+#   powershell.exe -NoProfile -STA -File src\run.ps1 -Role Server -Model models\x.gguf -Context 8192
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -CheckOnly          # locality checks only
 param(
     [switch]$CheckOnly,
     [switch]$Web,               # accepted for older shortcuts; the web chat is the only UI
     [string]$Model,
     [int]$Context = 0,   # 0 = auto: the largest context that fits the free VRAM / RAM
-    [string]$Root
+    [string]$Root,
+    # Server = run-phoenix-server.ps1 (models + OpenAI API, tray); Client = run-phoenix-client.ps1 (the chat UI for any
+    # OpenAI /v1 provider). There is no all-in-one mode: the client never runs inside the server.
+    # VsCode = run-phoenix-vscode.ps1: the VS Code extension's own client (no window), started by the extension.
+    [ValidateSet('Server', 'Client', 'VsCode')][string]$Role = 'Client'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,11 +27,15 @@ if ($PSVersionTable.PSVersion.Major -ne 5) {
 
 $src = Join-Path $Root 'src'
 
-# Framework assemblies the studio may reference. Nothing else is ever passed to the compiler.
+# Framework assemblies Phoenix may reference. Nothing else is ever passed to the compiler.
 $References = @('System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll')
 
 # The one exception to "no network / no processes": src\WebServer.cs may use HttpListener on 127.0.0.1 and start Edge.
 $LoopbackFile = 'WebServer.cs'
+# The Phoenix Client's providers (approved 2026-10-20): src\Providers.cs may call any OpenAI /v1 provider by URL (local,
+# LAN or internet), through one guarded request function, Outgoing -> CheckTarget (rule 4c). Nothing else may.
+$ClientFile = 'Providers.cs'
+$ClientRequestOk = 'HttpWebRequest|WebRequest\.Create\(CheckTarget\(|WebRequest\.DefaultWebProxy'
 $LoopbackAllowed = @('System.Net', 'Process.Start', 'http://')
 $AlwaysBanned = @('HttpClient', 'WebClient', 'WebRequest', 'Socket', 'Dns.', 'TcpClient', 'TcpListener', 'UdpClient', 'https://')
 
@@ -51,7 +61,7 @@ function Test-Locality {
 
     if ($files.Count -eq 0) { $failures.Add("No source files in $src") }
 
-    # 1. No binaries shipped in the repo (models/, .git and the dev-only .claude/ folder are outside the studio).
+    # 1. No binaries shipped in the repo (models/, .git and the dev-only .claude/ folder are outside the app).
     $binaries = Get-ChildItem $Root -Recurse -File -Include *.dll, *.exe -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\(models|\.git|\.claude|dev)\\' }
     foreach ($b in $binaries) { $failures.Add("Binary in repo: $($b.FullName)") }
@@ -63,18 +73,22 @@ function Test-Locality {
             $where = "$($f.Name):$($i + 1)"
 
             # 2. Banned APIs / URLs (the loopback server file gets a narrow exception, checked below).
-            $isLoopback = $f.Name -eq $LoopbackFile -or $f.Name -eq 'WebServer.OpenAi.cs'
+            $isLoopback = $f.Name -eq $LoopbackFile -or $f.Name -eq 'WebServer.OpenAi.cs' -or $f.Name -eq $ClientFile
             foreach ($p in $BannedPatterns.Keys) {
                 if ($isLoopback -and $LoopbackAllowed -contains $p) { continue }
+                if ($f.Name -eq $ClientFile -and $p -eq 'WebRequest' -and $line -match $ClientRequestOk) { continue }
                 if ($line.IndexOf($p, [StringComparison]::Ordinal) -ge 0) {
                     $failures.Add("$where uses '$p' ($($BannedPatterns[$p]))")
                 }
             }
             if ($isLoopback) {
                 foreach ($p in $AlwaysBanned) {
+                    # The client's one outgoing request type (HttpWebRequest, created only in Outgoing; checked in 4c)
+                    if ($f.Name -eq $ClientFile -and $p -eq 'WebRequest' -and $line -match $ClientRequestOk) { continue }
                     if ($line.IndexOf($p, [StringComparison]::Ordinal) -ge 0) { $failures.Add("$where uses '$p' (not allowed even in the loopback server)") }
                 }
-                # Every http:// must be the loopback address.
+                if ($f.Name -eq $ClientFile -and $line.IndexOf('Process.Start', [StringComparison]::Ordinal) -ge 0) { $failures.Add("$where starts a process (the client opens its window through WebServer.OpenWindow)") }
+                # Every http:// written in the source must be the loopback address (provider URLs come from the user).
                 foreach ($m in [regex]::Matches($line, 'http://([^"/:]*)')) {
                     if ($m.Groups[1].Value -ne '127.0.0.1' -and $m.Groups[1].Value -ne 'localhost') { $failures.Add("$where uses a non-loopback address 'http://$($m.Groups[1].Value)'") }
                 }
@@ -111,6 +125,22 @@ function Test-Locality {
         if ([regex]::Matches($t, 'Process\.Start\(').Count -ne 1 -or $t -notmatch 'ShellGuard\.CheckLaunch\([^)]*\);\s*return Process\.Start\(') {
             $failures.Add("$LoopbackFile must start exactly one process, right after ShellGuard.CheckLaunch")
         }
+    }
+    # 4c. The client's outgoing requests: exactly one creation, through CheckTarget (http/https only, no credentials in
+    #     the URL), never following a redirect (a key cannot be forwarded to another host), TLS 1.2+.
+    $cf = Join-Path $src $ClientFile
+    if (-not (Test-Path $cf)) { $failures.Add("$ClientFile is missing") }
+    else {
+        $t = [IO.File]::ReadAllText($cf)
+        if ([regex]::Matches($t, 'WebRequest\.Create\(').Count -ne 1 -or $t -notmatch 'WebRequest\.Create\(CheckTarget\(') { $failures.Add("$ClientFile must create requests only via WebRequest.Create(CheckTarget(...))") }
+        foreach ($need in @('o.AllowAutoRedirect = false;', 'u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps', '!string.IsNullOrEmpty(u.UserInfo)', 'SecurityProtocolType.Tls12')) {
+            if ($t.IndexOf($need, [StringComparison]::Ordinal) -lt 0) { $failures.Add("$ClientFile no longer contains '$need'") }
+        }
+    }
+    # No other file may make an outgoing request (the server's API and chat port only listen).
+    foreach ($f in $files) {
+        if ($f.Name -eq $ClientFile) { continue }
+        if ([IO.File]::ReadAllText($f.FullName) -match 'WebRequest\.Create|GetRequestStream') { $failures.Add("$($f.Name) makes an outgoing request (only $ClientFile may)") }
     }
     if (-not (Test-Path (Join-Path $src 'ShellGuard.cs'))) { $failures.Add("ShellGuard.cs is missing (the model may never run a shell)") }
     # 4b. The run guard (warning, 5-minute lockout that survives restarts) must be intact and wired in: the server will not
@@ -164,6 +194,17 @@ $References | ForEach-Object { [void]$cp.ReferencedAssemblies.Add($_) }
 $paths = @(Get-ChildItem $src -Recurse -Filter *.cs | ForEach-Object { $_.FullName })
 Add-Type -Path $paths -CompilerParameters $cp
 
+# Where Phoenix lives, for the VS Code extension (it starts src\run-phoenix-vscode.ps1 from here; the folder can move).
+try {
+    $appData = Join-Path $env:LOCALAPPDATA 'LocalLLMStudio'
+    New-Item -ItemType Directory -Force $appData | Out-Null
+    [IO.File]::WriteAllText((Join-Path $appData 'phoenix-root.txt'), $Root)
+} catch { }
+
 # No model loads at startup (unless -Model is given): the chat opens on "Select model" and one is picked from the drop-down.
 $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
-exit ([Phoenix.WebServer]::Run($Root, $modelPath, $Context))
+switch ($Role) {
+    'Server' { exit ([Phoenix.ServerHost]::Run($Root, $modelPath, $Context)) }
+    'VsCode' { exit ([Phoenix.WebServer]::RunVsCode($Root)) }
+    default  { exit ([Phoenix.WebServer]::RunClient($Root)) }
+}

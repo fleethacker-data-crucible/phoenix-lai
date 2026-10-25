@@ -1,0 +1,1134 @@
+
+LLM proxy endpoints - OpenAI and Anthropic compatible
+
+
+
+POST
+/v1/chat/completions
+Create chat completion
+
+Generates a chat completion response for the given messages. This endpoint is OpenAI-compatible and supports streaming.
+
+Rate Limited: This endpoint consumes tokens from your quota.
+
+Parameters
+No parameters
+
+Request body
+
+application/json
+Chat completion request
+
+Example Value
+Schema
+{
+  "max_tokens": 1000,
+  "messages": [
+    {
+      "content": "Hello, how are you?",
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4",
+  "stream": false,
+  "temperature": 0.7
+}
+Responses
+Code	Description	Links
+200	
+Chat completion response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Hello, how are you?",
+        "role": "user"
+      }
+    }
+  ],
+  "created": 1686935002,
+  "id": "chatcmpl-abc123",
+  "model": "gpt-4",
+  "object": "chat.completion",
+  "usage": null
+}
+No links
+400	
+Bad request - invalid request body
+
+No links
+401	
+Unauthorized - missing or invalid authentication
+
+No links
+403	
+Forbidden - insufficient scope for requested model
+
+No links
+404	
+Model not found or not enabled
+
+No links
+429	
+Rate limit exceeded
+
+No links
+502	
+Bad gateway - upstream LLM error
+
+No links
+
+POST
+/v1/embeddings
+Create embeddings
+
+Creates embeddings for the given input text. This endpoint is OpenAI-compatible.
+
+Rate Limited: This endpoint consumes tokens from your quota.
+
+Parameters
+No parameters
+
+Request body
+
+application/json
+Embeddings request
+
+Example Value
+Schema
+{
+  "input": "string",
+  "model": "text-embedding-ada-002"
+}
+Responses
+Code	Description	Links
+200	
+Embeddings response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "data": [
+    {
+      "embedding": [
+        0.1
+      ],
+      "index": 0,
+      "object": "embedding"
+    }
+  ],
+  "model": "text-embedding-ada-002",
+  "object": "list",
+  "usage": {
+    "completion_tokens": 50,
+    "prompt_tokens": 10,
+    "total_tokens": 60
+  }
+}
+No links
+400	
+Bad request
+
+No links
+401	
+Unauthorized
+
+No links
+403	
+Forbidden
+
+No links
+429	
+Rate limit exceeded
+
+No links
+502	
+Bad gateway
+
+No links
+
+GET
+/v1/models
+List available LLM models
+
+Returns a list of all active LLM models available through the proxy. This endpoint is OpenAI-compatible.
+
+Parameters
+No parameters
+
+Responses
+Code	Description	Links
+200	
+List of available models
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "data": [
+    {
+      "capabilities": {
+        "chat": true,
+        "embeddings": false,
+        "streaming": true,
+        "structured_output": false,
+        "tools": false,
+        "vision": false
+      },
+      "created": 1686935002,
+      "credit_weights": {
+        "input": 1,
+        "output": 2
+      },
+      "id": "gpt-4",
+      "lane": "standard",
+      "object": "model",
+      "owned_by": "stark-proxy",
+      "pool": "default"
+    }
+  ],
+  "object": "list"
+}
+No links
+401	
+Unauthorized - missing or invalid authentication
+
+No links
+500	
+Internal server error
+
+No links
+
+POST
+/v1/responses
+Create a response
+
+Creates an OpenAI-compatible Response from text, message, or multimodal input. The request and response payloads are forwarded unchanged to the selected OpenAI-compatible backend. Both JSON and SSE streaming responses are supported. Background execution is rejected until completed usage can be reconciled to the originating STARK subject.
+
+Rate Limited: This endpoint consumes tokens from your quota.
+
+Parameters
+No parameters
+
+Request body
+
+application/json
+Responses API request
+
+Example Value
+Schema
+{
+  "background": true,
+  "input": "string",
+  "instructions": "string",
+  "max_output_tokens": 1000,
+  "model": "gpt-5.4",
+  "previous_response_id": "resp_abc123",
+  "store": true,
+  "stream": true,
+  "tool_choice": "string",
+  "tools": [
+    "string"
+  ],
+  "additionalProp1": "string",
+  "additionalProp2": "string",
+  "additionalProp3": "string"
+}
+Responses
+Code	Description	Links
+200	
+Response JSON or server-sent event stream
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "id": "resp_abc123",
+  "model": "gpt-5.4",
+  "object": "response",
+  "output": [
+    "string"
+  ],
+  "status": "completed",
+  "usage": null,
+  "additionalProp1": "string",
+  "additionalProp2": "string",
+  "additionalProp3": "string"
+}
+No links
+400	
+Bad request - invalid request body
+
+No links
+401	
+Unauthorized - missing or invalid authentication
+
+No links
+403	
+Forbidden - insufficient scope for requested model
+
+No links
+404	
+Model not found or not enabled
+
+No links
+429	
+Rate limit exceeded
+
+No links
+502	
+Bad gateway - upstream LLM error
+
+No links
+
+
+## Schemas
+ChatChoiceCollapse allobject
+Chat completion choice
+
+finish_reasonCollapse allstring | null
+Reason for finishing
+
+Example"stop"
+indexCollapse allintegerint32
+Index of this choice
+
+Example0
+messageCollapse allobject
+The generated message
+
+contentCollapse allstring
+Content of the message
+
+Example"Hello, how are you?"
+roleCollapse allstring
+Role of the message sender
+
+Example"user"
+ChatCompletionRequestCollapse allobject
+Chat completion request (OpenAI-compatible)
+
+max_tokensCollapse allinteger | nullint32
+Maximum tokens to generate
+
+Example1000
+messagesCollapse allarray<object>
+Messages in the conversation
+
+ItemsCollapse allobject
+Chat message
+
+contentCollapse allstring
+Content of the message
+
+Example"Hello, how are you?"
+roleCollapse allstring
+Role of the message sender
+
+Example"user"
+modelCollapse allstring
+Model to use for completion
+
+Example"gpt-4"
+streamCollapse allboolean | null
+Whether to stream the response
+
+Examplefalse
+temperatureCollapse allnumber | nullfloat
+Sampling temperature (0-2)
+
+Example0.7
+ChatCompletionResponseCollapse allobject
+Chat completion response (OpenAI-compatible)
+
+choicesCollapse allarray<object>
+Completion choices
+
+ItemsCollapse allobject
+Chat completion choice
+
+finish_reasonCollapse allstring | null
+Reason for finishing
+
+Example"stop"
+indexCollapse allintegerint32
+Index of this choice
+
+Example0
+messageCollapse allobject
+The generated message
+
+contentCollapse allstring
+Content of the message
+
+Example"Hello, how are you?"
+roleCollapse allstring
+Role of the message sender
+
+Example"user"
+createdCollapse allintegerint64
+Unix timestamp of creation
+
+Example1686935002
+idCollapse allstring
+Unique identifier for the completion
+
+Example"chatcmpl-abc123"
+modelCollapse allstring
+Model used
+
+Example"gpt-4"
+objectCollapse allstring
+Object type
+
+Example"chat.completion"
+usageCollapse all(null | object)
+One ofCollapse all(null | object)
+#0null
+#1Expand allobject
+ChatMessageCollapse allobject
+Chat message
+
+contentCollapse allstring
+Content of the message
+
+Example"Hello, how are you?"
+roleCollapse allstring
+Role of the message sender
+
+Example"user"
+CreditWeightsCollapse allobject
+Credit weight multipliers for input and output token settlement.
+
+inputCollapse allintegerint32
+Multiplier for input tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example1
+outputCollapse allintegerint32
+Multiplier for output tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example2
+EmbeddingObjectCollapse allobject
+Single embedding object
+
+embeddingCollapse allarray<number>
+The embedding vector
+
+Itemsnumberfloat
+indexCollapse allintegerint32
+Index in the input list
+
+Example0
+objectCollapse allstring
+Object type
+
+Example"embedding"
+EmbeddingsRequestCollapse allobject
+Embeddings request
+
+inputCollapse allany
+Text to embed (string or array of strings)
+
+modelCollapse allstring
+Model to use for embeddings
+
+Example"text-embedding-ada-002"
+EmbeddingsResponseCollapse allobject
+Embeddings response
+
+dataCollapse allarray<object>
+Embedding objects
+
+ItemsCollapse allobject
+Single embedding object
+
+embeddingCollapse allarray<number>
+The embedding vector
+
+Itemsnumberfloat
+indexCollapse allintegerint32
+Index in the input list
+
+Example0
+objectCollapse allstring
+Object type
+
+Example"embedding"
+modelCollapse allstring
+Model used
+
+Example"text-embedding-ada-002"
+objectCollapse allstring
+Object type
+
+Example"list"
+usageCollapse allobject
+Token usage
+
+completion_tokensCollapse allintegerint32
+Tokens used in the completion
+
+Example50
+prompt_tokensCollapse allintegerint32
+Tokens used in the prompt
+
+Example10
+total_tokensCollapse allintegerint32
+Total tokens used
+
+Example60
+ModelCapabilitiesCollapse allobject
+Six-dimension model capability map.
+
+chatCollapse allboolean
+Supports chat completions.
+
+Defaulttrue
+Exampletrue
+embeddingsCollapse allboolean
+Supports text embeddings.
+
+Defaultfalse
+Examplefalse
+streamingCollapse allboolean
+Supports response streaming.
+
+Defaulttrue
+Exampletrue
+structured_outputCollapse allboolean
+Supports structured JSON output.
+
+Defaultfalse
+Exampletrue
+toolsCollapse allboolean
+Supports tool/function calling.
+
+Defaultfalse
+Exampletrue
+visionCollapse allboolean
+Supports image/vision input.
+
+Defaultfalse
+Exampletrue
+ModelObjectCollapse allobject
+Model object in the models list
+
+capabilitiesCollapse allobject
+Model capabilities map
+
+chatCollapse allboolean
+Supports chat completions.
+
+Defaulttrue
+Exampletrue
+embeddingsCollapse allboolean
+Supports text embeddings.
+
+Defaultfalse
+Examplefalse
+streamingCollapse allboolean
+Supports response streaming.
+
+Defaulttrue
+Exampletrue
+structured_outputCollapse allboolean
+Supports structured JSON output.
+
+Defaultfalse
+Exampletrue
+toolsCollapse allboolean
+Supports tool/function calling.
+
+Defaultfalse
+Exampletrue
+visionCollapse allboolean
+Supports image/vision input.
+
+Defaultfalse
+Exampletrue
+createdCollapse allintegerint64
+Unix timestamp of model creation
+
+Example1686935002
+credit_weightsCollapse allobject
+Credit settlement multipliers
+
+inputCollapse allintegerint32
+Multiplier for input tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example1
+outputCollapse allintegerint32
+Multiplier for output tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example2
+idCollapse allstring
+Model identifier
+
+Example"gpt-4"
+laneCollapse allstring
+Execution lane ("standard", "assist")
+
+Example"standard"
+objectCollapse allstring
+Object type (always "model")
+
+Example"model"
+owned_byCollapse allstring
+Owner of the model
+
+Example"stark-proxy"
+poolCollapse allstring
+Capacity pool designation
+
+Example"default"
+ModelsListResponseCollapse allobject
+OpenAI-compatible models list response
+
+dataCollapse allarray<object>
+List of available models
+
+ItemsCollapse allobject
+Model object in the models list
+
+capabilitiesCollapse allobject
+Model capabilities map
+
+chatCollapse allboolean
+Supports chat completions.
+
+Defaulttrue
+Exampletrue
+embeddingsCollapse allboolean
+Supports text embeddings.
+
+Defaultfalse
+Examplefalse
+streamingCollapse allboolean
+Supports response streaming.
+
+Defaulttrue
+Exampletrue
+structured_outputCollapse allboolean
+Supports structured JSON output.
+
+Defaultfalse
+Exampletrue
+toolsCollapse allboolean
+Supports tool/function calling.
+
+Defaultfalse
+Exampletrue
+visionCollapse allboolean
+Supports image/vision input.
+
+Defaultfalse
+Exampletrue
+createdCollapse allintegerint64
+Unix timestamp of model creation
+
+Example1686935002
+credit_weightsCollapse allobject
+Credit settlement multipliers
+
+inputCollapse allintegerint32
+Multiplier for input tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example1
+outputCollapse allintegerint32
+Multiplier for output tokens (0, 1, 2, 5, 10, 25, 50)
+
+Example2
+idCollapse allstring
+Model identifier
+
+Example"gpt-4"
+laneCollapse allstring
+Execution lane ("standard", "assist")
+
+Example"standard"
+objectCollapse allstring
+Object type (always "model")
+
+Example"model"
+owned_byCollapse allstring
+Owner of the model
+
+Example"stark-proxy"
+poolCollapse allstring
+Capacity pool designation
+
+Example"default"
+objectCollapse allstring
+Object type (always "list")
+
+Example"list"
+ResponsesRequestCollapse allobject
+OpenAI-compatible Responses API request.
+
+STARK forwards the original JSON body unchanged. These fields document the most common request shape while extra preserves compatibility with newer optional Responses API parameters.
+
+backgroundCollapse allboolean | null
+Background execution is not supported because deferred usage cannot be attributed
+
+inputCollapse allany
+Text, message items, or multimodal input items
+
+instructionsCollapse allstring | null
+System or developer instructions for the model
+
+max_output_tokensCollapse allinteger | nullint32
+Maximum number of output tokens to generate
+
+Example1000
+modelCollapse allstring
+Model to use for the response
+
+Example"gpt-5.4"
+previous_response_idCollapse allstring | null
+Continue a prior response by ID
+
+Example"resp_abc123"
+storeCollapse allboolean | null
+Whether OpenAI-compatible storage is enabled upstream
+
+streamCollapse allboolean | null
+Whether to stream Response events over SSE
+
+tool_choiceCollapse allany
+Tool-selection policy
+
+toolsCollapse allarray<any> | null
+Tools available to the model
+
+Itemsany
+Additional propertiesCollapse allany
+Additional Responses API fields forwarded unchanged
+
+ResponsesResponseCollapse allobject
+OpenAI-compatible Responses API response.
+
+idCollapse allstring
+Unique response identifier
+
+Example"resp_abc123"
+modelCollapse allstring
+Model used by the upstream
+
+Example"gpt-5.4"
+objectCollapse allstring
+Object type (always response)
+
+Example"response"
+outputCollapse allarray<any>
+Typed output items such as messages, reasoning, and tool calls
+
+Itemsany
+statusCollapse allstring
+Response lifecycle status
+
+Example"completed"
+usageCollapse all(null | object)
+One ofCollapse all(null | object)
+#0null
+#1Expand allobject
+Additional propertiesCollapse allany
+Additional upstream response fields forwarded unchanged
+
+ResponsesUsageCollapse allobject
+Token usage returned by the Responses API.
+
+input_tokensCollapse allintegerint32
+Tokens consumed by the input
+
+output_tokensCollapse allintegerint32
+Tokens generated in the output
+
+total_tokensCollapse allintegerint32
+Total tokens consumed
+
+UsageCollapse allobject
+Token usage statistics
+
+completion_tokensCollapse allintegerint32
+Tokens used in the completion
+
+Example50
+prompt_tokensCollapse allintegerint32
+Tokens used in the prompt
+
+Example10
+total_tokensCollapse allintegerint32
+Total tokens used
+
+Example60
+
+
+Quick Start
+This API provides an OpenAI-compatible gateway for accessing enterprise LLM providers. Use your STARK API key in the Authorization header to authenticate requests. An external OpenAI account is not required.
+
+API keys and base URLs are environment-scoped. Keys automatically lock 14 days after unlock and can be unlocked at any time in the Keys tab.
+cURL
+# Ensure STARK_API_KEY is exported in your environment:
+# export STARK_API_KEY="your-api-key"
+curl -X POST https://XXX/v1/chat/completions \
+  -H "Authorization: Bearer ${STARK_API_KEY:-YOUR_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite-withtools",
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"}
+    ]
+  }'
+API Reference & Capabilities
+POST /v1/chat/completions
+
+Creates a chat completion for the given messages. Compatible with OpenAI's Chat Completions API. Note: POST /v1/chat/completions and POST /v1/embeddings are active Phase 0 endpoints; the OpenAI Responses API (POST /v1/responses) is planned for Phase 3.
+
+Assist-lane model notice: Gemini Enterprise models ending in -assist (such as gemini-3.5-flash-assist) drop system messages and ignore tool definitions. When your pipeline requires system instructions or tool calling, use a standard model (e.g. gemini-3.5-flash or alias gemini-3.5-flash-withtools).
+Request Body Parameters
+JSON
+{
+  "model": "gemini-3.5-flash-lite-withtools",           // Required: Model identifier
+  "messages": [                         // Required: Array of conversation messages
+    {
+      "role": "system",             // system, user, assistant, or tool
+      "content": "You are a helpful assistant."
+    },
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ],
+  "temperature": 0.7,                   // Optional: Sampling temperature (0-2)
+  "max_tokens": 1000,                    // Optional: Maximum tokens to generate
+  "stream": false                        // Optional: Enable Server-Sent Events (SSE) streaming
+}
+Example Response (HTTP 200 OK)
+JSON
+{
+  "id": "chatcmpl-abc123xyz",
+  "object": "chat.completion",
+  "created": 1727500000,
+  "model": "gemini-3.5-flash-lite-withtools",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I assist you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 9,
+    "total_tokens": 21
+  }
+}
+Connect models to external tools and APIs using OpenAI-compatible function calling. Provide schema definitions in the tools array. When the model invokes a tool, execute your function locally and return the output with role: "tool" and the matching tool_call_id.
+
+Multi-Turn Tool Calling Workflow
+cURL
+# Turn 1: Send user prompt along with tool definitions
+curl -X POST https://XXX/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite-withtools",
+    "messages": [
+      {"role": "user", "content": "What is the weather in Paris right now?"}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_current_weather",
+          "description": "Get current weather for a specific location",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {"type": "string", "description": "City and state, e.g. Paris or Tokyo"},
+              "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+            },
+            "required": ["location"]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto"
+  }'
+
+# Turn 2: Submit tool execution result back to the model
+curl -X POST https://XXX/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite-withtools",
+    "messages": [
+      {"role": "user", "content": "What is the weather in Paris right now?"},
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_123456",
+            "type": "function",
+            "function": {
+              "name": "get_current_weather",
+              "arguments": "{\"location\":\"Paris\",\"unit\":\"celsius\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_123456",
+        "content": "{\"temperature\": 18, \"condition\": \"Sunny\"}"
+      }
+    ]
+  }'
+Enforce deterministic JSON output matching your exact schema specifications by setting response_format to json_schema with strict: true. This guarantees that generated responses adhere to the provided schema without requiring post-processing regex or retries.
+
+Schema Enforcement Examples
+cURL
+curl -X POST https://XXX/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite-withtools",
+    "messages": [
+      {"role": "user", "content": "Extract information: Dune was written by Frank Herbert and published in 1965."}
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "book_metadata",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"},
+            "author": {"type": "string"},
+            "publication_year": {"type": "integer"}
+          },
+          "required": ["title", "author", "publication_year"],
+          "additionalProperties": false
+        }
+      }
+    }
+  }'
+Token Budget & Reasoning Guidance
+Structured output generation and schema validation require sufficient token headroom. When configuring max_tokens, allocate a budget of at least 500–1,000 tokens. Constrained token budgets (<300 tokens) may exhaust the generation window during schema formatting or trigger a prose fallback response instead of valid schema-adherent JSON.
+
+Stream responses token-by-token using Server-Sent Events (SSE) by setting stream: true. To receive complete token usage metrics at the conclusion of the stream, include stream_options: { include_usage: true } in your request payload.
+
+Stream Consumption & Usage Tracking Examples
+cURL
+curl -N -X POST https://XXX/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.5-flash-lite-withtools",
+    "messages": [
+      {"role": "user", "content": "Write a three-line poem about cloud computing."}
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }'
+Wire Protocol (Server-Sent Events)
+text
+data: {"choices":[{"index":0,"delta":{"content":"Cloud"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":" computing"}}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}
+
+data: [DONE]
+POST /v1/embeddings
+
+Generate high-dimensional vector representations for semantic search, clustering, and retrieval-augmented generation (RAG). Compatible with OpenAI's Embeddings API specification.
+
+Embedding Generation Examples
+cURL
+curl -X POST https://XXX/v1/embeddings \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-embedding-2",
+    "input": "Mission readiness and secure enterprise data processing"
+  }'
+GET /v1/models
+
+Lists all available models and active deployments accessible to your API key.
+
+cURL
+curl -X GET https://XXX/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+Rate limits ensure fair resource distribution, protect cluster stability, and maintain multi-tenant GPU availability. The gateway meters usage across concurrent dimensions: rolling burst gates (TPM and RPM) and cumulative 24-hour credit budgets. All client-facing telemetry and quota tracking operate strictly in credits, without exposing raw dollar figures.
+
+Rate Limit Dimensions
+Dimension	Window	What It Measures & How to Handle
+Tokens Per Minute (TPM)	Rolling 60s	Total prompt and completion tokens across active requests. Throttling is brief (seconds); honor the Retry-After header.
+Requests Per Minute (RPM)	Rolling 60s	Total individual API calls. Space out rapid calls or add a short delay between batches.
+Credit Budget (Window)	Rolling 24h	Cumulative credit allowance for your key or team. Resets as the window rolls over; submit a limit increase request if needed.
+Credit Settlement Arithmetic
+Credit consumption is calculated deterministically per request using model-specific integer weights:
+
+Formula
+Credits = (Input Tokens × Input Multiplier) + (Output Tokens × Output Multiplier)
+Input and output multipliers are discrete integer values chosen from the set {1, 2, 5, 10, 25, 50} based on model tier and operational intensity.
+
+Gemini Enterprise Lane: Inference routed through the Gemini Enterprise lane carries an input and output multiplier of 0 (zero credit drawdown). While exempt from daily credit drawdown, requests remain subject to cluster TPM and RPM burst protections.
+
+Default Quota Tiers
+Phased Rollout Notice: Standardized Tier 0 quotas are rolling out in phases across user cohorts. Active users are migrated first during Phase A, followed by general cutover. Accounts not yet migrated remain on their previously assigned quota limits until cutover. You can view your active limits anytime on the Dashboard.
+Tier	Daily Credit Budget	TPM Limit	RPM Limit
+Tier 0 (Default Baseline)	2,000,000 credits / 24h	200,000 TPM	60 RPM
+Tier 1 (Builder Tier)	5,000,000 credits / 24h	500,000 TPM	120 RPM
+Rate Limit Response & Headers
+Every API response provides telemetry headers detailing remaining allowances. When limits are exceeded, the gateway returns HTTP 429 with retry metadata:
+
+HTTP
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 42
+X-RateLimit-Limit-Credits-Day: 2000000
+X-RateLimit-Remaining-Credits-Day: 0
+X-RateLimit-Reset-Credits-Day: 3600
+X-RateLimit-Limit-Tokens-Minute: 500000
+X-RateLimit-Remaining-Tokens-Minute: 0
+X-RateLimit-Reset-Tokens-Minute: 42
+
+{
+  "error": {
+    "type": "rate_limit_exceeded",
+    "message": "You have reached your 24-hour credit allowance. Please wait 3600 seconds or request a quota increase.",
+    "retry_after_seconds": 42
+  }
+}
+Note: If asynchronous credit settlement recording encounters transient infrastructure latency, the header X-Usage-Recording-Failed: true is returned. Requests continue uninterrupted while telemetry reconciliation recovers.
+
+Service Account Best Practices for Bulk Ingestion
+Automated ingestion pipelines, batch scrapers, and background ETL jobs should adhere to these practices to maintain steady throughput and prevent pipeline interruptions:
+
+Specify max_tokens explicitly: Define expected response lengths to optimize model generation time and avoid over-allocating token consumption.
+
+Throttle client-side concurrency: Avoid unbounded parallel requests (such as Promise.all across hundreds of files). Size worker pools according to your RPM and TPM limits (e.g. 5 to 10 concurrent workers).
+
+Configure SDK retries with exponential backoff: Standard OpenAI SDK clients (demonstrated in Quick Start above) support automatic retries with jitter and Retry-After parsing by setting max_retries=3.
+
+Request Quota Increases Early: If your project requirements exceed default tier limits, submit a limit increase request from the Dashboard (Request Quota Increase) with your estimated TPM/RPM needs and workload justification.
+
+Automatic Key Locking (14 Days)
+As a defense-in-depth security measure, API keys automatically lock 14 days (336 hours) after creation or unlock. When a personal key is locked, API requests return an HTTP 401 Unauthorized response with a self-service unlock URL (team keys require an administrator to unlock in the portal):
+
+JSON
+{
+  "error": {
+    "type": "unauthorized",
+    "message": "API key locked - visit the unlock URL to re-enable your key",
+    "unlock_url": "https://.../unlock/<your-key-id>"
+  }
+}
+Unlocking Your Key
+Visit the unlock_url from the error response to immediately re-enable your key without generating new secrets.
+
+Or navigate to the API Keys dashboard and click the Unlock button on the corresponding key card.
+
+Key Expiration & Rotation Policy
+API keys carry a strict lifecycle expiration date. Unlike temporary 14-day locking, an expired key is permanently decommissioned and cannot be re-enabled.
+
+Temporary Lock vs Permanent Expiration: A locked key retains its secret token and resumes normal operation once unlocked. An expired key is invalidated across all gateway endpoints.
+
+Zero-Downtime Rotation: Prior to key expiration, create a new API key in the portal, deploy the secret to your client application, verify incoming traffic, and revoke the legacy key.
+
+The platform follows a structured model lifecycle to ensure stability and smooth transitions across model generations. Query GET /v1/models to dynamically inspect currently enabled models and their status for your API key.
+
+Model Identifier Taxonomy
+Endpoints use standardized model identifiers based on backend capabilities and routing lanes:
+
+Gemini Enterprise Lane (Plain Identifiers): Plain canonical vendor identifiers (e.g. gemini-3.5-flash, gemini-2.5-flash) route to the zero-credit settlement lane for standard conversational inference.
+
+Tool Calling & Structured Outputs (-withtools): Requests requiring function/tool calling or strict JSON schema enforcement currently require the -withtools capability suffix (e.g. gemini-3.5-flash-lite-withtools, gemini-3.5-flash-withtools).
+
+Canonical Rename Window: The platform is transitioning toward unified canonical identifiers across all lanes. During this transition, client applications must continue using -withtools for tool calling and structured outputs until the canonical alias cutover is formally scheduled.
+
+Embeddings: Text embeddings use canonical embedding model identifiers (e.g. gemini-embedding-2).
+
+60-Day Alias Deprecation Window
+Legacy capability suffixes (such as -withtools) undergo a strict 60-day migration window from announcement:
+
+Active Window (Days 1 to 60): The deprecated model alias remains functional. Responses include standard warning headers (Sunset, Deprecation, and Link: <...>; rel="successor-version") encouraging clients to migrate to the canonical identifier.
+
+Retirement (Day 61+): The alias is permanently retired and returns an HTTP 410 Gone response with a successor Link header and structured guidance payload identifying the replacement model.
+
+HTTP / JSON
+HTTP/1.1 410 Gone
+Content-Type: application/json
+Link: </v1/models/gemini-3.5-flash>; rel="successor-version"
+
+{
+  "error": {
+    "message": "Model 'gemini-3.5-flash-withtools' was permanently retired on 2026-11-25T00:00:00Z. Please update your client configuration to use 'gemini-3.5-flash'.",
+    "type": "model_retired_error",
+    "param": "model",
+    "code": "model_retired",
+    "details": {
+      "deprecated_model": "gemini-3.5-flash-withtools",
+      "replacement_model": "gemini-3.5-flash",
+      "retired_at": "2026-11-25T00:00:00Z",
+      "documentation_url": "https://XXX/docs/models/gemini-3.5-flash"
+    }
+  }
+}
+The API uses standard HTTP status codes to indicate the success or failure of requests.
+
+400 Bad Request - Invalid request body or parameters
+
+401 Unauthorized - Invalid, missing, or locked API key. Note: Direct client-side browser calls (such as fetch() or Axios) fail during CORS preflight (OPTIONS) with HTTP 401. API calls must originate from server-side applications.
+
+403 Forbidden - API key does not have permission for this endpoint
+
+404 Not Found - Resource or endpoint does not exist
+
+410 Gone - Permanently retired model alias past the 60-day deprecation timeline (returns successor model payload)
+
+429 Too Many Requests - Rate limit (TPM/RPM) or credit quota exceeded
+
+500 Internal Server Error - Server error
+
+502 Bad Gateway - Upstream LLM backend failure
+
+Request Tracing (x-request-id)
+Every API response returned by the platform contains a server-generated x-request-id HTTP header containing a unique UUID. Always include this ID when filing support tickets or investigating unexpected errors to allow engineers to locate relevant gateway audit logs.
+
+bash
+# Pass -i to cURL to inspect HTTP response headers:
+curl -i -X POST https://stark.example.com/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gemini-3.5-flash", "messages": [{"role": "user", "content": "ping"}]}'
+
+# HTTP/1.1 200 OK
+# x-request-id: 7b3f1c24-8e12-4d92-bb50-32b0a2d5918a
