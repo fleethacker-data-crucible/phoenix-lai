@@ -14,3 +14,8 @@
 !.env.example
 !.env.sample
 !.env.template
+# Local only: session logs, release packages, internal reference docs
+/logs.txt
+/Phoenix_LAI_*.tar.gz
+/Phoenix_LAI_*.package
+/swagger-*.txt
