@@ -2,13 +2,30 @@
 #   powershell.exe -NoProfile -STA -File src\run.ps1                     # checks, compile, chat in an Edge app window
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Model models\x.gguf -Context 8192
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -CheckOnly          # locality checks only
+#   powershell.exe -NoProfile -STA -File src\run.ps1 -Replace            # a server is already running: stop it, start fresh (--replace)
+#   powershell.exe -NoProfile -STA -File src\run.ps1 -Stay               # keep running after the window closes (--stay; or PHOENIX_AUTO_STOP=0)
+# The server stops itself when its app window closes (heartbeat, see src\WebServer.Lifecycle.cs), or with End session
+# (/quit). src\Stop-Phoenix.ps1 stops every running server from a shell.
+# PositionalBinding off: launcher words like --replace / --stay land in $Rest, never in -Model.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [switch]$CheckOnly,
     [switch]$Web,               # accepted for older shortcuts; the web chat is the only UI
     [string]$Model,
     [int]$Context = 0,   # 0 = auto: the largest context that fits the free VRAM / RAM
-    [string]$Root
+    [string]$Root,
+    [switch]$Replace,    # a server is already running: stop it and start fresh without asking
+    [switch]$Stay,       # do not stop when the app window closes (End session or Stop-Phoenix.ps1 stop it)
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
+foreach ($a in @($Rest)) {
+    switch -Regex ($a) {
+        '^--?replace$' { $Replace = $true }
+        '^--?stay$' { $Stay = $true }
+        '^--?check-?only$' { $CheckOnly = $true }
+        default { if ($a) { Write-Warning "Ignoring unknown option $a" } }
+    }
+}
 
 $ErrorActionPreference = 'Stop'
 # The project root is the folder above src\ (this script lives in src\).
@@ -156,6 +173,28 @@ if ($failures.Count -gt 0) {
 Write-Host "Locality checks passed."
 if ($CheckOnly) { exit 0 }
 
+# One instance: a server that is already running (runtime file in logs\, or a PowerShell running run.ps1) is either
+# stopped first (-Replace, or Yes) or left alone (No: the launch below just brings its window forward, as before).
+# The shortcut runs headless, so the question is a message box, not Read-Host.
+. (Join-Path $src 'Phoenix-Process.ps1')
+$running = @(Get-PhoenixServers -Root $Root)
+if ($running.Count -gt 0) {
+    $where = ($running | ForEach-Object { Format-PhoenixServer $_ }) -join ', '
+    Write-Host "Phoenix LAI is already running: $where" -ForegroundColor Yellow
+    $fresh = [bool]$Replace
+    if (-not $fresh) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "Phoenix LAI is already running ($where).`n`nStop it and start fresh?`n`nYes: stop it (a reply, model load or indexing in progress finishes first) and start a new session.`nNo: keep it and bring its window forward.",
+            'Phoenix LAI', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question,
+            [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+        $fresh = $answer -eq [System.Windows.Forms.DialogResult]::Yes
+    }
+    if ($fresh) {
+        foreach ($id in (Stop-PhoenixServers -Root $Root)) { Write-Host "  stopped PID $id" -ForegroundColor DarkGray }
+    }
+}
+
 $cp = New-Object System.CodeDom.Compiler.CompilerParameters
 $cp.GenerateInMemory = $true
 $cp.CompilerOptions = '/unsafe /optimize+'
@@ -166,4 +205,10 @@ Add-Type -Path $paths -CompilerParameters $cp
 
 # No model loads at startup (unless -Model is given): the chat opens on "Select model" and one is picked from the drop-down.
 $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
-exit ([Phoenix.WebServer]::Run($Root, $modelPath, $Context))
+$code = 1
+try { $code = [Phoenix.WebServer]::Run($Root, $modelPath, $Context, [bool]$Stay) }
+finally {
+    # The server deletes its runtime file on stop; this also covers a Ctrl+C or an exception on the way out.
+    Remove-Item -Path (Join-Path $Root ('logs\phoenix-server-' + $PID + '.json')) -Force -ErrorAction SilentlyContinue
+}
+exit $code

@@ -15,6 +15,15 @@ foreach ($p in @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Z
 }
 if (-not $exe) { throw '7-Zip (7z.exe) not found. Install 7-Zip on this dev machine or add it to PATH.' }
 
+# A running server writes logs\ and holds the model lock: stop it first and say what was stopped.
+. (Join-Path $root 'src\Phoenix-Process.ps1')
+$running = @(Get-PhoenixServers -Root $root)
+if ($running.Count -gt 0) {
+    'Stopping the running Phoenix server before packing:'
+    foreach ($s in $running) { '  ' + (Format-PhoenixServer $s) }
+    foreach ($id in (Stop-PhoenixServers -Root $root)) { "  stopped PID $id" }
+}
+
 foreach ($f in @($sevenZ, $b64)) { if (Test-Path $f) { Remove-Item $f -Force } }
 
 $excludes = @('-xr!.git', '-xr!logs', "-x!$name.7z", "-x!$name.b64")

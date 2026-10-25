@@ -61,8 +61,11 @@ namespace Phoenix
 
         public string Url { get { return "http://127.0.0.1:" + Port + "/chat.html"; } }
 
-        // Starts the server (optionally loading a model), opens Edge in app mode, runs until that window closes.
-        public static int Run(string root, string modelPath, int ctx)
+        // Starts the server (optionally loading a model), opens Edge in app mode, runs until that window closes (or, with
+        // stay / PHOENIX_AUTO_STOP=0, until End session). See WebServer.Lifecycle.cs.
+        public static int Run(string root, string modelPath, int ctx) { return Run(root, modelPath, ctx, false); }
+
+        public static int Run(string root, string modelPath, int ctx, bool stay)
         {
             Application.EnableVisualStyles();
             // One server per user: a second launch just opens another window on the running one. (Two servers would fight
@@ -77,12 +80,13 @@ namespace Phoenix
                     if (EventWaitHandle.TryOpenExisting(ShowEventName, out show)) using (show) show.Set();
                     return 0;
                 }
-                try { return RunServer(root, modelPath, ctx); }
+                try { return RunServer(root, modelPath, ctx, stay); }
                 finally { single.ReleaseMutex(); }
             }
         }
 
         const string ShowEventName = @"Local\PhoenixAI.Show";
+        const string QuitEventName = @"Local\PhoenixAI.Quit";
 
         // Opens the app window on `url` in the preferred browser; returns the browser process (or null if none found).
         static Process OpenWindow(string url, WebServer log)
@@ -178,58 +182,72 @@ namespace Phoenix
             catch { }
         }
 
-        static int RunServer(string root, string modelPath, int ctx)
+        static int RunServer(string root, string modelPath, int ctx, bool stay)
         {
-            using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs")))
+            string logsDir = Path.Combine(root, "logs");
+            using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), logsDir))
             {
                 server.ContextLength = ctx;
-                // Another launch of the app: bring the open window forward, or open one if every window was closed.
-                EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
-                Thread showThread = new Thread(delegate()
+                server.AutoStop = !stay && AutoStopSetting();
+                string runtimeFile = WriteRuntimeFile(logsDir, server);
+                try
                 {
-                    while (show.WaitOne())
+                    // Another launch of the app: bring the open window forward, or open one if every window was closed.
+                    EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+                    Thread showThread = new Thread(delegate()
                     {
-                        if (server.OpenPages() > 0) { server._focusRequested = true; server.Log.Text("launched again: focusing the open window"); }
-                        else { server.Log.Text("launched again: no window open, opening one"); Process p = OpenWindow(server.Url, server); if (p != null) p.Dispose(); }
+                        while (show.WaitOne())
+                        {
+                            if (server.OpenPages() > 0) { server._focusRequested = true; server.Log.Text("launched again: focusing the open window"); }
+                            else { server.Log.Text("launched again: no window open, opening one"); Process p = OpenWindow(server.Url, server); if (p != null) p.Dispose(); }
+                        }
+                    });
+                    showThread.IsBackground = true;
+                    showThread.Start();
+                    // src\Stop-Phoenix.ps1 (and run.ps1 -Replace) ask for a clean stop through this event, then force-stop
+                    // whatever is still running after a while. Same rules as End session: a running job finishes first.
+                    EventWaitHandle quit = new EventWaitHandle(false, EventResetMode.ManualReset, QuitEventName);
+                    quit.Reset();   // a request meant for a server that already exited does not stop this one
+                    Thread quitThread = new Thread(delegate()
+                    {
+                        if (quit.WaitOne() && !server._stopRequested) { server.Log.Text("stop requested by Stop-Phoenix.ps1"); server._stopRequested = true; }
+                    });
+                    quitThread.IsBackground = true;
+                    quitThread.Start();
+                    if (!string.IsNullOrEmpty(modelPath))
+                    {
+                        string m = modelPath;
+                        ThreadPool.QueueUserWorkItem(delegate { try { server.LoadModel(m); } catch { } });
                     }
-                });
-                showThread.IsBackground = true;
-                showThread.Start();
-                if (!string.IsNullOrEmpty(modelPath))
-                {
-                    string m = modelPath;
-                    ThreadPool.QueueUserWorkItem(delegate { try { server.LoadModel(m); } catch { } });
-                }
-                // Windows left open from a previous run reconnect to us by themselves (same port): give them a moment to check
-                // in, and if one does, bring it forward instead of opening another.
-                for (int t = 0; t < 30 && server.OpenPages() == 0; t++) Thread.Sleep(100);
-                if (server.OpenPages() > 0)
-                {
-                    server._focusRequested = true;
-                    server.Log.Text("an app window from before is still open: reusing it");
-                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
-                }
-                else
-                {
-                    Process browser = OpenWindow(server.Url, server);
-                    if (browser != null)
+                    // Windows left open from a previous run reconnect to us by themselves (same port): give them a moment to
+                    // check in, and if one does, bring it forward instead of opening another.
+                    for (int t = 0; t < 30 && server.OpenPages() == 0; t++) Thread.Sleep(100);
+                    bool run = true;
+                    if (server.OpenPages() > 0)
                     {
-                        using (browser) browser.WaitForExit();
-                        // If an app window was already open, the browser hands the new one to that process and exits at once,
-                        // so the process alone can't tell us when the user is done: stay up while any page is still talking to
-                        // us (each window checks in every 2 s and says goodbye when it closes).
-                        server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                        server._focusRequested = true;
+                        server.Log.Text("an app window from before is still open: reusing it");
                     }
                     else
                     {
-                        MessageBox.Show("There is no compatible browsers installed. Please get either Chrome or Edge installed before this program can run.",
-                            "Phoenix LAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        // The browser process is not waited for: when an app window is already open the browser hands the
+                        // new one to that process and exits at once. The window's heartbeat says when the user is done.
+                        Process browser = OpenWindow(server.Url, server);
+                        if (browser != null) browser.Dispose();
+                        else
+                        {
+                            MessageBox.Show("There is no compatible browsers installed. Please get either Chrome or Edge installed before this program can run.",
+                                "Phoenix LAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            run = false;
+                        }
                     }
+                    if (run) server.WaitForStop();
+                    try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
+                    lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
+                    server.Log.Text("server stopped");
+                    server.Log.Json("server_stop", null);
                 }
-                try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
-                lock (server._engineLock) { if (server._engine != null) server._engine.Dispose(); server._engine = null; }
-                server.Log.Text("server stopped");
-                server.Log.Json("server_stop", null);
+                finally { DeleteRuntimeFile(runtimeFile); }
             }
             return 0;
         }
@@ -573,34 +591,11 @@ namespace Phoenix
         }
 
         long _lastRequestTicks = DateTime.UtcNow.Ticks;
-        long _lastWindowTicks = DateTime.UtcNow.Ticks;   // last check-in of an app window (not the VS Code chat)
         int _activeRequests;
         volatile bool _focusRequested;
-        readonly Dictionary<string, DateTime> _pages = new Dictionary<string, DateTime>();   // page id -> last poll (UTC)
 
-        // Windows that are open: polled within the last 75 s (minimized windows poll only about once a minute) and not closed.
-        int OpenPages()
-        {
-            lock (_pages)
-            {
-                List<string> stale = new List<string>();
-                foreach (KeyValuePair<string, DateTime> kv in _pages) if (DateTime.UtcNow - kv.Value > TimeSpan.FromSeconds(75)) stale.Add(kv.Key);
-                foreach (string k in stale) _pages.Remove(k);
-                // the chat inside VS Code (page ids starting "vs-") is not the app window: a second launch still opens one
-                int n = 0;
-                foreach (string k in _pages.Keys) if (!k.StartsWith("vs-")) n++;
-                return n;
-            }
-        }
-
-        void WaitWhilePagesActive(TimeSpan idle)
-        {
-            Thread.Sleep(3000);   // give a new window time to load and check in
-            // Only the app window keeps the server up: closing it shuts the server down, even while the VS Code chat or
-            // another API client is connected (they reconnect when it is started again). The 5 s grace covers a reload.
-            while (OpenPages() > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastWindowTicks) < TimeSpan.FromSeconds(5).Ticks)
-                Thread.Sleep(500);
-        }
+        // App windows open now (heartbeat within 20 s, or said "leaving" less than 5 s ago): Presence.cs.
+        int OpenPages() { return _presence.OpenWindows(DateTime.UtcNow); }
 
         void Handle(HttpListenerContext ctx)
         {
@@ -682,11 +677,11 @@ namespace Phoenix
                 Compact(body, res.OutputStream);
                 return;
             }
-            if (path == "/api/bye") { if (page != null) lock (_pages) _pages.Remove(page); SendJson(res, 200, "{}"); return; }
+            string lifecycleReply = LifecycleApi(path, post, body, page);
+            if (lifecycleReply != null) { SendJson(res, 200, lifecycleReply); return; }
             if (path == "/api/info")
             {
-                if (page != null && page.Length <= 40) lock (_pages) _pages[page] = DateTime.UtcNow;
-                if (page != null && !page.StartsWith("vs-")) Interlocked.Exchange(ref _lastWindowTicks, DateTime.UtcNow.Ticks);
+                if (page != null) _presence.Beat(page, DateTime.UtcNow);   // the status poll counts as a check-in too
                 string json = Info();
                 if (_focusRequested && page != null) { _focusRequested = false; json = json.Substring(0, json.Length - 1) + ",\"focus\":true}"; }
                 SendJson(res, 200, json);
