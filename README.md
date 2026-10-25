@@ -1,5 +1,7 @@
 # Phoenix LAI
 
+> local Gemma models on your GPU behind an OpenAI-compatible API, plus a Chrome app client.
+
 **Local AI for coding, on locked-down Windows machines.** Phoenix LAI runs Google's Gemma 4 models on your own GPU and
 gives you a chat app that can work on your project files. It needs nothing installed: only Windows PowerShell 5.1 and
 the GPU driver that is already there. No admin rights, no SDK, no downloads, no third-party code, and nothing leaves the
