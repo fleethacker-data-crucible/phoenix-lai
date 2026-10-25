@@ -1,6 +1,7 @@
 # Packs Phoenix into Phoenix_LAI_YYYY_MM_DD_HHMM.tar.gz and Phoenix_LAI_YYYY_MM_DD_HHMM.package (the .tar.gz as base64),
 # both kept in this folder.
-#   1. stamps __version.info with YYYY_MMDD_HHMM
+#   1. stamps __version.info with YYYY_MMDD_HHMM and writes the same version to VERSION as X.Y.Z
+#      (yyyy.[int]MMdd.[int]HHmm, leading zeros stripped: 2026_0905_0930 -> 2026.905.930) for the release-zip workflow
 #   2. writes every file into a .tar.gz (except .git, logs, models\*.gguf, worktrees and earlier packages;
 #      -IncludeModels keeps the models)
 #   3. encodes the .tar.gz as base64, decodes it again and checks it is byte-for-byte the .tar.gz (SHA-256 + length)
@@ -17,7 +18,10 @@ $gz = Join-Path $root "$name.tar.gz"
 $pkg = Join-Path $root "$name.package"
 
 [IO.File]::WriteAllText((Join-Path $root '__version.info'), $version)
-"version $version"
+# Same stamp as semver (must match tests\Version.Tests.ps1). ASCII digits only; UTF-8 without BOM.
+$semver = '{0}.{1}.{2}' -f $now.Year, [int]$now.ToString('MMdd'), [int]$now.ToString('HHmm')
+[IO.File]::WriteAllText((Join-Path $root 'VERSION'), $semver + "`n", (New-Object Text.UTF8Encoding $false))
+"version $version ($semver)"
 
 # Relative paths (backslashes) that are left out.
 function Skip([string]$rel) {
