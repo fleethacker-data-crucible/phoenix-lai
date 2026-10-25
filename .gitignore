@@ -7,3 +7,14 @@
 /nvidia/logs/
 /Phoenix_LAI_Package.7z
 /.claude/worktrees/
+
+# FleetHacker standard additions
+Logs/
+logs/
+*.log
+testResults.xml
+temp/
+*.tmp
+Thumbs.db
+desktop.ini
+.vs/
