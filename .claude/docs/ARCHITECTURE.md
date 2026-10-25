@@ -35,7 +35,11 @@ runs: `WebServer.IsClient`.
 
 ### 1.1 The shortcuts
 
-The repository root holds two shortcuts, made by `.claude\tools\make-shortcut.ps1`:
+The project root holds two shortcuts. They are not tracked in git (a `.lnk` records the computer name and the
+user's SID); `src\PhoenixShortcuts.psm1` (`Get-PhoenixShortcutSpec`, `Sync-PhoenixShortcut`) makes them on each
+computer through WScript.Shell, called by `Phoenix_LAI.bat` (`src\Start-PhoenixLAI.ps1`), by
+`run-phoenix-client.ps1` / `run-phoenix-server.ps1` on every start (best effort, never blocks the launch) and by the
+dev tool `.claude\tools\make-shortcut.ps1`. A shortcut is written only when it is missing or differs from the spec:
 
 | Shortcut | Runs |
 |---|---|

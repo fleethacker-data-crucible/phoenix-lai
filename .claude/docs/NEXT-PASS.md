@@ -28,7 +28,8 @@ This branch already removed the files below from the current tree. They are **st
      ```
   3. Delete `names.txt`. Re-clone everywhere, and delete old branches, tags and PRs that point at pre-rewrite commits. Rewrite every fork in the network the same way.
   4. The pack drops from about 61 MiB to about 12 MiB.
-- [ ] **Regenerate `Phoenix_Client.lnk` and `Phoenix_LAI_Server.lnk`.** Both embed the dev machine's user SID. Recreate them with `.claude\tools\make-shortcut.ps1`, and if possible strip the SID or regenerate on a neutral account. Add them to the rewrite if they must leave history.
+- [x] **Regenerate `Phoenix_Client.lnk` and `Phoenix_LAI_Server.lnk`.** Both embed the dev machine's name and user SID. *(2026-10-25, branch `standards/untrack-lnk`: no longer tracked; `*.lnk` is ignored and `Phoenix_LAI.bat` or the first start makes them on each computer. Package.ps1 leaves `.lnk` out of packages.)*
+- [ ] **Old `.lnk` copies in history.** The two shortcuts (computer name `desktop-...` and the SID) are still in every commit before `standards/untrack-lnk`. Removing them is part of Jeremy's pending history / fork decision; if the rewrite above goes ahead, add `--path Phoenix_Client.lnk --path Phoenix_LAI_Server.lnk`.
 - [ ] **Package.ps1 exclusions:** line 24 skips the `logs\` folder but not a root `logs.txt`. Exclude `.claude/`, `logs*`, `*.tar.gz`, `*.package` and `swagger-*.txt` from packages.
 
 ## 2. Root folder vs CLAUDE.md

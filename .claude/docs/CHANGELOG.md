@@ -7,6 +7,19 @@ The project was called **Local LLM Studio**, then **PhoenixAI**, and since 2026-
 
 ---
 
+## 2026-10-25 · Shortcuts made on each computer (branch `standards/untrack-lnk`)
+
+- `Phoenix_Client.lnk` and `Phoenix_LAI_Server.lnk` are no longer tracked (`git rm --cached`; `*.lnk` in `.gitignore`):
+  a `.lnk` records the computer name and the user's SID. Same names, target, arguments, icon and description as before
+  (`conhost.exe --headless powershell.exe ... -EncodedCommand`, no absolute project path).
+- New `src\PhoenixShortcuts.psm1`: `Get-PhoenixShortcutSpec` (the spec) and `Sync-PhoenixShortcut` (WScript.Shell;
+  creates a missing shortcut, repairs one that differs, leaves a matching one unwritten, never throws).
+- New `Phoenix_LAI.bat` -> `src\Start-PhoenixLAI.ps1`: makes the shortcuts, then starts the server and the client
+  (`-NoStart`, `-Server`, `-Client`). `run-phoenix-client.ps1` and `run-phoenix-server.ps1` repair the shortcuts on
+  every start, best effort. `.claude\tools\make-shortcut.ps1` now uses the same module.
+- `Package.ps1` leaves `.lnk` files out of packages.
+- `tests\Shortcuts.Tests.ps1`: spec, match and create/repair/idempotent/COM-unavailable cases (COM mocked).
+
 ## 2026-10-25 · FleetHacker port blocks (branch `ports/fleet-port`)
 
 - Ports moved to the approved edge-ops blocks (`PORTS.md`, `src\FleetPorts.psd1`): **server dashboard 8780-8789**

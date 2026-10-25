@@ -2,7 +2,7 @@
 # both kept in this folder.
 #   1. stamps __version.info with YYYY_MMDD_HHMM and writes the same version to VERSION as X.Y.Z
 #      (yyyy.[int]MMdd.[int]HHmm, leading zeros stripped: 2026_0905_0930 -> 2026.905.930) for the release-zip workflow
-#   2. writes every file into a .tar.gz (except .git, logs, models\*.gguf, worktrees and earlier packages;
+#   2. writes every file into a .tar.gz (except .git, logs, models\*.gguf, worktrees, earlier packages and .lnk shortcuts;
 #      -IncludeModels keeps the models)
 #   3. encodes the .tar.gz as base64, decodes it again and checks it is byte-for-byte the .tar.gz (SHA-256 + length)
 # Windows PowerShell 5.1: powershell.exe -NoProfile -ExecutionPolicy Bypass -File Package.ps1 [-IncludeModels]
@@ -27,6 +27,7 @@ $semver = '{0}.{1}.{2}' -f $now.Year, [int]$now.ToString('MMdd'), [int]$now.ToSt
 function Skip([string]$rel) {
     if ($rel -match '^(\.git|logs|\.claude\\worktrees|docs\\\.index)(\\|$)') { return $true }
     if ($rel -notmatch '\\' -and $rel -match '\.(zip|package|b64|7z|gz)$') { return $true }   # packages in the root
+    if ($rel -match '\.lnk$') { return $true }   # shortcuts record this computer's name and SID; Phoenix_LAI.bat makes them
     if (-not $IncludeModels -and $rel -match '\.gguf$') { return $true }
     return $false
 }

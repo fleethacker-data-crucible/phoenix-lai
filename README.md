@@ -38,13 +38,22 @@ The dev machine is an AMD Radeon RX 6700 XT (12 GB); the target is an HP ZBook w
 ## Quick start
 
 1. Put the model files in `models\`.
-2. Double-click **`Phoenix_LAI_Server.lnk`**. A Phoenix icon appears in the notification area. The first start
+2. **First time only:** double-click **`Phoenix_LAI.bat`**. It creates `Phoenix_LAI_Server.lnk` and
+   `Phoenix_Client.lnk` in this folder (no admin rights), then starts the server and the client. Use
+   `Phoenix_LAI.bat -NoStart` to make the shortcuts only. After that, use the shortcuts.
+3. Double-click **`Phoenix_LAI_Server.lnk`**. A Phoenix icon appears in the notification area. The first start
    checks and compiles the code (a few seconds). Nothing loads until a model is asked for.
-3. Double-click **`Phoenix_Client.lnk`**. The chat window opens. Pick a model at the top and type.
-4. To work on files, create a project with the **+** next to Projects (a folder in `%USERPROFILE%\Phoenix_Projects`)
+4. Double-click **`Phoenix_Client.lnk`**. The chat window opens. Pick a model at the top and type.
+5. To work on files, create a project with the **+** next to Projects (a folder in `%USERPROFILE%\Phoenix_Projects`)
    and click it.
 
 The folder can live anywhere: the shortcuts find it from their own location.
+
+The shortcuts are made on your computer and are not in git (`*.lnk` is in `.gitignore`), because a Windows shortcut
+file records the computer's name and your Windows account ID. Every start through `Phoenix_LAI.bat`,
+`src\run-phoenix-server.ps1` or `src\run-phoenix-client.ps1` re-creates a missing shortcut and repairs one that no
+longer matches; if Windows Script Host is blocked, Phoenix still starts and only the shortcut is skipped. `Package.ps1`
+leaves `.lnk` files out of packages: after unpacking, run `Phoenix_LAI.bat` once.
 
 ## The Phoenix server
 
@@ -128,8 +137,9 @@ Full details: [.claude/docs/SECURITY.md](.claude/docs/SECURITY.md).
 ## Project layout
 
 ```
-Phoenix_Client.lnk        start the client
-Phoenix_LAI_Server.lnk    start the server
+Phoenix_LAI.bat           first run: makes the two shortcuts below (not in git), then starts Phoenix
+Phoenix_Client.lnk        start the client (made on this computer)
+Phoenix_LAI_Server.lnk    start the server (made on this computer)
 CLAUDE.md                 project rules for development
 README.md                 this file
 __version.info            the app version (yyyy_MMdd_HHmm stamp from Package.ps1)

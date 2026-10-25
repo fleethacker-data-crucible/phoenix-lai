@@ -19,3 +19,5 @@
 /Phoenix_LAI_*.tar.gz
 /Phoenix_LAI_*.package
 /swagger-*.txt
+# Windows shortcuts are made on each computer (Phoenix_LAI.bat / first run): a .lnk records the computer name and SID
+*.lnk
