@@ -129,7 +129,7 @@ Three documents set the limits, and they are not the same:
 
 | | Fleet `TechStack` | Phoenix `CLAUDE.md` hard rules | Fleet `UNIFIED-UI.md` |
 |---|---|---|---|
-| Server | PS 5.1 + `TcpListener` | C# `HttpListener` on loopback (approved exception, only in `WebServer.cs`) | No rule |
+| Server | PS 5.1 + `TcpListener` by default; `HttpListener` on loopback allowed | C# `HttpListener` on loopback (only in `WebServer.cs`) | No rule |
 | UI framework | React 19 + TS, or Svelte 5 | Plain HTML/JS, no third-party code | Any; plain HTML uses `.fl-*` directly |
 | Styling | Tailwind 4 + shadcn (CVA, Radix, Lucide) | Hand-written CSS | `fleet.css` + tokens |
 | Charts | ECharts, React Flow, Motion | Hand-drawn SVG sparklines | No rule |
@@ -162,9 +162,14 @@ The one loosening needed is D4 (vendored Lucide SVGs, and `fleet.css` as a Fleet
 
 ### Where Phoenix differs from the stack and should note it
 
-- `HttpListener` instead of `TcpListener`: already approved, and `run.ps1`'s locality check bans `TcpListener` in
-  the C# outright (`$AlwaysBanned`). Keep it that way and record the exception in a "Phoenix: how it applies" section
-  at the end of `TechStack`, as SnapShackle and Capstan do.
+- **`HttpListener` instead of `TcpListener`: allowed.** The workstation run of the Nautilus Test Suite (2026-10-25)
+  passed `HttpListener` on `127.0.0.1`, on `localhost` and on both together (Phoenix's setup), with no admin. The
+  Fleet `TechStack` now allows loopback `HttpListener`; this PR records Phoenix's use in a "Phoenix LAI: how it
+  applies" section at the end of `TechStack`. `run.ps1` keeps banning raw sockets in the C#.
+- **The API needs a `Host` check.** The same run showed HTTP.sys passes a foreign `Host` to the app. `WebServer.cs`
+  checks `Host` and `Origin`; `WebServer.OpenAi.cs` (port 1234) checks `Origin` only. A DNS-rebinding page's
+  same-origin `GET` (e.g. `/v1/models`) carries no `Origin`, so add `Host` = `127.0.0.1:1234` / `localhost:1234` to
+  the API. Small, security-relevant; do it before the UI phases.
 - `TechStack` lists Lucide inside the shadcn row; for a plain-HTML app, Lucide means the SVG files only.
 
 ### Lifecycle rules
