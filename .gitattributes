@@ -1,0 +1,2 @@
+VERSION text eol=lf
+__version.info -text
