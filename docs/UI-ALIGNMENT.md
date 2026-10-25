@@ -1,6 +1,6 @@
 # Phoenix LAI: Fleet UI alignment plan and tech stack review
 
-**2026-10-25 · against Fleet `docs/UNIFIED-UI.md` v0.1 and the repo's `TechStack` file · Phoenix `master` @ 609494f (VERSION 2026.1022.1600)**
+**2026-10-25 · against Fleet `docs/UNIFIED-UI.md` v0.1 and the Fleet `TechStack` (Halyard's 46-line version with lifecycle rules) · Phoenix `master` @ 609494f (VERSION 2026.1022.1600)**
 
 Phoenix today is a well-built app with its own look: a dark charcoal "terminal" theme, gold accent, Exo 2 / Syne Mono
 type, a grid-and-glow canvas background, and a glossy black-and-gold cyber phoenix logo. It is plain HTML/CSS/JS
@@ -119,9 +119,15 @@ and add it to `.claude\docs\SECURITY.md`.
 
 ## 2. Tech stack review
 
+**Which `TechStack`.** The reference is the Fleet version in Halyard, Bowerbird, Eight Bells, Gangplank and
+PacketRat (46 lines: stack table, build rules, **lifecycle rules**). Lazarette and Shellback carry the same text with
+older reference paths; SnapShackle and Capstan add their own "how it applies" sections. Phoenix's root `TechStack`
+is the shorter 24-line copy shared with edge-ops, data-noodler, talkforge, Scrimshaw and Halyard-Ballast: same stack
+table and build rules, **no lifecycle rules**. This PR replaces Phoenix's copy with the Fleet version.
+
 Three documents set the limits, and they are not the same:
 
-| | `TechStack` (repo root) | Phoenix `CLAUDE.md` hard rules | Fleet `UNIFIED-UI.md` |
+| | Fleet `TechStack` | Phoenix `CLAUDE.md` hard rules | Fleet `UNIFIED-UI.md` |
 |---|---|---|---|
 | Server | PS 5.1 + `TcpListener` | C# `HttpListener` on loopback (approved exception, only in `WebServer.cs`) | No rule |
 | UI framework | React 19 + TS, or Svelte 5 | Plain HTML/JS, no third-party code | Any; plain HTML uses `.fl-*` directly |
@@ -156,9 +162,29 @@ The one loosening needed is D4 (vendored Lucide SVGs, and `fleet.css` as a Fleet
 
 ### Where Phoenix differs from the stack and should note it
 
-- `HttpListener` instead of `TcpListener`: already approved; record the reason in `TechStack` or `CLAUDE.md` so
-  the two files stop disagreeing.
+- `HttpListener` instead of `TcpListener`: already approved, and `run.ps1`'s locality check bans `TcpListener` in
+  the C# outright (`$AlwaysBanned`). Keep it that way and record the exception in a "Phoenix: how it applies" section
+  at the end of `TechStack`, as SnapShackle and Capstan do.
 - `TechStack` lists Lucide inside the shadcn row; for a plain-HTML app, Lucide means the SVG files only.
+
+### Lifecycle rules
+
+The part Phoenix's old copy did not have. Phoenix has two programs with different lifetimes: the **server** is a
+tray app that holds the GPU and port 1234, which is exactly the `--stay` / tray mode the rules allow, so it stays up
+until Exit. The **client** (and its VS Code twin) is a tab-owned loopback app and should follow every rule.
+
+| Rule | Phoenix today | Status | To do |
+|---|---|---|---|
+| Tab owns the server | Client pages poll every 2 s with a page id; `pagehide` sends `navigator.sendBeacon('/api/bye?page=…')`. The client also waits for the `--app` browser process to exit. A page counts as gone only after **75 s** without a poll (minimized windows throttle timers). VS Code client: 30 s after its last chat. | 🟡 | Dedicated `POST /api/heartbeat` every 5 s; stop 20 s after the last one, 5 s after a "leaving" beacon. Page id goes in the beacon's JSON body, not the query string, and any session token too. Check the 20 s window against minimized-window throttling before shortening the 75 s. |
+| Never stop mid-write | Project index is saved on stop; chat saved on `pagehide`. No general "job running" guard. | 🟡 | Hold auto-stop while a chat stream, file write, `/index` or project-index embedding is running. |
+| Way out in the UI | Server: tray **Exit** ✅. Client: none; only the "client stopped" dialog after it has already died. | ❌ client | Add **End session** to the client's sidebar nav (and to the Fleet shell in Phase 2). |
+| Way out from the shell | `.claude\tools\close-phoenix.ps1` finds every instance by command line and model lock, but it is dev-only and `.claude` never ships. | ❌ | Ship `Stop-Phoenix.ps1` (root), built from `close-phoenix.ps1`; `-Server` / `-Client` switches, default both. |
+| One instance | Server: a second launch says "already running" and exits; it never stops the running one (deliberate: GPU and port 1234). Client: one window, a second launch focuses the open one. | 🟡 | Add `--replace` (stop and start fresh) for the server, behind an explicit prompt; keep the current behavior as the default. `--stay` for the client. |
+| Build stops the app | No build step: `run.ps1` compiles at each start. Tests call `close-phoenix.ps1`. `Package.ps1` does not. | 🟡 | `Package.ps1` and the gate scripts call the stop logic first and say what they stopped. |
+| Runtime file | None. `%LOCALAPPDATA%\LocalLLMStudio\model.lock` holds the server pid only. | ❌ | Write `logs\phoenix-server-<pid>.json` and `logs\phoenix-client-<pid>.json` (pid, port, url, start time; never a key); delete on stop; `Stop-Phoenix.ps1` reads them and cleans up dead ones. |
+| Off switch | None. | ❌ | `PHOENIX_AUTO_STOP=0` disables client auto-stop. |
+
+The rules' note about finding DLL holders with Restart Manager does not apply: Phoenix ships no DLLs.
 
 ---
 
@@ -213,6 +239,9 @@ of the 2 MB PNGs. Update README header with emblem, one-liner and "The name". Mo
 `close-phoenix.ps1`). Keep the `.lnk` shortcuts. Data to `%LOCALAPPDATA%\Phoenix` with copy-forward migration and
 the ShellGuard care above. `phoenix.settings` → `phoenix-settings` + `phoenix-theme`. Add Phoenix to UNIFIED-UI
 section 1 (ports 1234 / 8780 / 8790) and section 3.3 (accent).
+Then the `TechStack` lifecycle rules (section 2 table): heartbeat and leaving beacon, job guard, End session,
+runtime files, `--replace` / `--stay`, `PHOENIX_AUTO_STOP`, and stop-first in `Package.ps1` and the gate scripts.
+Add a "Phoenix: how it applies" section to `TechStack` for the `HttpListener` exception and the tray-server lifetime.
 
 ### Phase 7: Verify
 Run the existing checks (`run.ps1` locality rules, `tests\*.Tests.ps1`, `client-e2e.py`) after each phase; then the
@@ -232,7 +261,7 @@ Phoenix's own workflow and the Fleet keeps them ("family, not clones").
 | 3 Components | M | |
 | 4 Accessibility | S–M | |
 | 5 Brand | S (after art exists) | |
-| 6 Launch/data | M | ShellGuard migration needs care and a security note |
+| 6 Launch/data/lifecycle | L | ShellGuard migration needs care and a security note; lifecycle rules touch `WebServer.cs` and the launch scripts |
 | 7 Verify | S | |
 
 ---
