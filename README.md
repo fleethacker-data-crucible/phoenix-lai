@@ -127,7 +127,8 @@ Phoenix_Client.lnk        start the client
 Phoenix_LAI_Server.lnk    start the server
 CLAUDE.md                 project rules for development
 README.md                 this file
-__version.info            the app version
+__version.info            the app version (yyyy_MMdd_HHmm stamp from Package.ps1)
+VERSION                   the same version as X.Y.Z for the release-zip workflow: yyyy.[int]MMdd.[int]HHmm, leading zeros stripped (2026_0905_0930 -> 2026.905.930); bump both together
 src\                      all C# code and the launcher scripts (run.ps1 checks and compiles at every start)
 html\                     the chat, dashboard and console pages
 models\                   GGUF model files (not in git)
