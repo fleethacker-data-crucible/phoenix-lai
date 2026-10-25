@@ -9,7 +9,7 @@ Removes its test project at the end. Exit 1 on failure.
 import base64, json, os, struct, sys, time, urllib.request, urllib.error, zlib
 
 CP = int(sys.argv[1]) if len(sys.argv) > 1 else 8790
-SP = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
+SP = int(sys.argv[2]) if len(sys.argv) > 2 else 8780
 BASE = f"http://127.0.0.1:{CP}"
 PROJ = "qa-client-e2e"
 results = []

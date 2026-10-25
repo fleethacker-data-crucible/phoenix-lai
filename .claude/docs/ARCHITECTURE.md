@@ -15,8 +15,8 @@ Phoenix LAI is two separate Windows programs plus a VS Code extension:
  ┌───────────────────────────────┐          ┌──────────────────────────────────────┐
  │ PHOENIX SERVER                │   /v1    │ PHOENIX CLIENT                       │
  │ models on the GPU (Vulkan)    │◄─────────┤ chat window (Chrome --app)           │
- │ localhost:1234/v1   (API)     │          │ 127.0.0.1:8790-8799  (its own page)  │
- │ 127.0.0.1:8765-8789 (dashboard│          │ talks /v1 to any provider:           │
+ │ localhost:1234/v1   (API)     │          │ 127.0.0.1:8790-8798  (its own page)  │
+ │ 127.0.0.1:8780-8789 (dashboard│          │ talks /v1 to any provider:           │
  │   and console pages only)     │          │   Phoenix Local Server (built in),   │
  │ tray icon                     │          │   LM Studio, Ollama, LAN, cloud      │
  └──────────────▲────────────────┘          └───────────────────▲──────────────────┘
@@ -77,7 +77,7 @@ There is no all-in-one mode: the server and the client are always separate proce
 
 1. **Single instance:** mutex `Local\PhoenixAI.Server`. A second start shows "A Phoenix server is already running" and
    exits.
-2. **`ServerHost.Start`** creates a `WebServer` with `IsClient = false` on the first free port in **8765-8789**
+2. **`ServerHost.Start`** creates a `WebServer` with `IsClient = false` on the first free port in **8780-8789**
    (`WebServer.StartOnFreePort`), sets `ServerMode = true`, and loads `-Model` in the background if one was given.
    Otherwise no model loads until a request asks for one.
 3. The `WebServer` constructor (`src\WebServer.cs`):
@@ -156,7 +156,7 @@ For each `.gguf` in `models\` that is a chat model (not an embedding model or a 
    loaded counts as free.
 4. Offered only if it fits. The list is rechecked at most every 3 s; each change is logged ("API models not offered: …").
 
-### 2.5 Dashboard and console (server port 8765-8789)
+### 2.5 Dashboard and console (server port 8780-8789)
 
 - `dashboard.html` (`js\dashboard.js`) polls `GET /api/server-status` every second: load, memory, model, what the AI is
   doing, connected clients, recent requests.
@@ -183,7 +183,7 @@ For each `.gguf` in `models\` that is a chat model (not an embedding model or a 
 
 1. **Single instance:** mutex `Local\PhoenixAI.Client`. A second start signals the event `Local\PhoenixAI.ClientShow`
    and exits; the running client then brings its window forward, or opens a new one if none is open.
-2. A `WebServer` with `IsClient = true` on the first free port in **8790-8799**: listener, `logs\client-*.log`, the
+2. A `WebServer` with `IsClient = true` on the first free port in **8790-8798**: listener, `logs\client-*.log`, the
    projects root, and the docs index with a **remote embedder** (`RemoteEmbedder`, the Phoenix server's
    `/v1/embeddings`). No engine, no GPU, no API.
 3. The active provider's saved model is picked in the background (`UseProviderModel`).
@@ -314,7 +314,7 @@ Dropped in the client because they need the server's KV cache: Instant Recall, a
 ## 5. VS Code extension (`vscode-ext-source\`, version 2.7.0)
 
 Plain JavaScript, VS Code API and Node's `http` only, no npm. `build.ps1` packs `vscode-ext\phoenixlai-<ver>.vsix`.
-- **Side panel:** an iframe of the Phoenix Client's `vscode.html` (`127.0.0.1:8790-8799`); it connects the client to
+- **Side panel:** an iframe of the Phoenix Client's `vscode.html` (`127.0.0.1:8790-8798`); it connects the client to
   the open VS Code folder when that folder is inside `Phoenix_Projects`.
 - **Inline completion:** `POST /v1/completions` with `suffix` to the server on `127.0.0.1:1234` (model `phoenixlai`).
 

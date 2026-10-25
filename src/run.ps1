@@ -186,6 +186,27 @@ if ($failures.Count -gt 0) {
 Write-Host "Locality checks passed."
 if ($CheckOnly) { exit 0 }
 
+# FleetHacker port block (edge-ops PORTS.md, src\FleetPorts.psd1): the server is 'exclusive' on 8780-8789. Checked
+# before the compile through /__fleethacker/id, so a second launch exits at once, and an older running server is never
+# stopped (it holds the GPU and port 1234). The client roles are 'multi' (8790-8798) and keep their own one-window rule.
+if ($Role -eq 'Server') {
+    Import-Module (Join-Path $src 'FleetPort.psm1') -Force
+    $fleetVersion = (([string](Get-Content -LiteralPath (Join-Path $Root '__version.info') -TotalCount 1 -ErrorAction SilentlyContinue)).Trim() -replace '_', '.')
+    if (-not $fleetVersion) { $fleetVersion = '0.0' }
+    $fleetMsg = $null; $fleetCode = 0
+    try {
+        $fleet = Resolve-FleetPort -Tool 'phoenix-lai-server' -Version $fleetVersion -NoListener
+        if ($fleet.Action -eq 'Reuse') { $fleetMsg = "A Phoenix server is already running (http://127.0.0.1:$($fleet.Port)/dashboard.html; see the Phoenix icon in the notification area)." }
+    } catch { $fleetMsg = $_.Exception.Message; $fleetCode = 1 }
+    if ($fleetMsg) {
+        Write-Host $fleetMsg
+        # the server is usually started hidden, so say it in a message box too (tests set PHOENIX_FLEET_NO_MESSAGEBOX=1)
+        if ($env:PHOENIX_FLEET_NO_MESSAGEBOX -ne '1') { try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($fleetMsg, 'Phoenix LAI server') } catch { } }
+        if ($fleetCode) { exit $fleetCode }
+        exit 0
+    }
+}
+
 $cp = New-Object System.CodeDom.Compiler.CompilerParameters
 $cp.GenerateInMemory = $true
 $cp.CompilerOptions = '/unsafe /optimize+'

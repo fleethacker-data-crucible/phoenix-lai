@@ -44,7 +44,7 @@ CLAUDE.md allows only the `.lnk` files, `CLAUDE.md`, `README.md`, `__version.inf
 - [ ] **`nvidia/tests/KernelTests.cs` is out of date** with `.claude/claude_tests/KernelTests.cs`. It's missing `if (!Flash2Test.Run(output)) fail.Add("flash2 attention");` (line 21), and `Flash2Test.cs` isn't copied. Re-copy both, per CLAUDE.md.
 - [ ] **Wrong shortcut name** in user-facing text: `src/WebServer.cs:726` and `html/js/providers.js:214` say `PhoenixLAI_Client.lnk`. The file is `Phoenix_Client.lnk`.
 - [ ] **`Unpack.ps1` last line:** `'{0}\: {1} files'` prints a stray backslash.
-- [ ] **edge-ops catalog:** Phoenix is listed as `"network": false` (`catalog.json:12`), but the client can reach any OpenAI provider on the LAN or the internet. Phoenix also takes ports 8765-8789 (server) and 8790-8799 (client) (`src/WebServer.cs:302-305`, `ServerHost.cs:56`). Those collide with SnipHero (8765), MailHawk (8766), Keystone (8769) and the 8770-8799 range for new tools in `PORTS.md`. Fix the registry or move the ranges.
+- [ ] **edge-ops catalog:** Phoenix is listed as `"network": false` (`catalog.json:12`), but the client can reach any OpenAI provider on the LAN or the internet. Phoenix also takes ports 8765-8789 (server) and 8790-8799 (client) (`src/WebServer.cs:302-305`, `ServerHost.cs:56`). Those collide with SnipHero (8765), MailHawk (8766), Keystone (8769) and the 8770-8799 range for new tools in `PORTS.md`. Fix the registry or move the ranges. *(2026-10-25: the port overlap is fixed on `ports/fleet-port`, see CHANGELOG; the `network` flag is still open.)*
 
 ## 4. Rule edge cases (decide; not necessarily wrong)
 
