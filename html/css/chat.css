@@ -379,7 +379,7 @@ html { color-scheme: dark; }
 .settings .radios input:focus-visible + span { outline: 1px solid var(--accent); outline-offset: 2px; }
 .settings .toggle .hint { margin-left: 4px; }
 
-/* Classification banner: always on top, full width, text centred both ways. */
+/* Status banner (off by default, settings > app): always on top, full width, text centred both ways. */
 #banner { position: fixed; top: 0; left: 0; right: 0; height: var(--banner); z-index: 1000; background: #007a33; color: #fff;
           display: flex; align-items: center; justify-content: center; font: 700 15px/1 "Exo 2", sans-serif; letter-spacing: 1px;
           text-transform: uppercase; user-select: none; pointer-events: none; }

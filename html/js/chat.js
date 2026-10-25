@@ -633,6 +633,7 @@ async function openSettings() {
     $('sLight').checked = !!settings.light;
     $('sLight').onchange = () => { settings.light = $('sLight').checked; applyLook(); };
   }
+  // Status banner ('LOCAL DEMO'), off by default. The stored key stays settings.banner, so saved preferences keep working.
   $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
   radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
