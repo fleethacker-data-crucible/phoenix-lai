@@ -1,6 +1,6 @@
 # Local LLM Studio (C#) — Development Plan
 
-Oct 15, 2026 · @Christopher Staggs
+Oct 15, 2026 · @author
 
 ## The rule
 
