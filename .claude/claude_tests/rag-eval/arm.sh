@@ -2,7 +2,7 @@
 # Dev: prepares the running server (index the docs it serves, load a model) and runs RAG-eval arms against it.
 #   sh .claude/claude_tests/rag-eval/arm.sh <model.gguf> <arms> <out-dir> [langs]
 # The server must already be started (preview tool: phoenix-server for off/new, phoenix-oldrag for old).
-B=http://127.0.0.1:8765
+B=http://127.0.0.1:8780
 MODEL=$1; ARMS=$2; OUT=$3; LANGS=${4:-powershell,csharp,oracle,sql,duckdb,javascript}
 until curl -s $B/api/info >/dev/null; do sleep 2; done
 curl -s -X POST $B/api/index -H "Content-Type: application/json" -d '{}' >/dev/null

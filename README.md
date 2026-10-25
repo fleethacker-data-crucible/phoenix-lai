@@ -60,6 +60,11 @@ The folder can live anywhere: the shortcuts find it from their own location.
   Dashboard, Exit.
 - **Console** commands: `help`, `status`, `clients`, `recent`, `models`, `load`, `unload`, `bench`, `apitest`, `vram`,
   `debug`, `log`, `gc`, `apikey new|set|off`, `restart`.
+- **Ports** (FleetHacker port blocks, edge-ops `PORTS.md`): dashboard and console on the first free port in
+  `127.0.0.1:8780-8789` (was 8765-8789), the Phoenix Client on `8790-8798`, the API on `1234`. Starting the server
+  while one is already running shows a message and exits; an older running server is never stopped (close it from the
+  tray, then start the new one). Both listeners answer `GET /__fleethacker/id`; `POST /__fleethacker/shutdown` (header
+  `X-FleetHacker-Shutdown: 1`) exits as the tray's Exit does.
 - **Optional API key** (off by default): `apikey new` in the console; stored in Windows Credential Manager.
 - **GPU profile:** auto, AMD or NVIDIA (+ safe kernels), in `%LOCALAPPDATA%\LocalLLMStudio\gpu-profile.txt` or the
   `PHOENIX_GPU_PROFILE` / `PHOENIX_GPU_SAFE` environment variables.

@@ -7,6 +7,21 @@ The project was called **Local LLM Studio**, then **PhoenixAI**, and since 2026-
 
 ---
 
+## 2026-10-25 · FleetHacker port blocks (branch `ports/fleet-port`)
+
+- Ports moved to the approved edge-ops blocks (`PORTS.md`, `src\FleetPorts.psd1`): **server dashboard 8780-8789**
+  (exclusive; was 8765-8789, which overlapped Lasso, Synapse, MailHawk and Keystone), **Phoenix Client and VS Code client
+  8790-8798** (multi; was 8790-8799), **API 1234** unchanged, **8799** kept for the dev test (`chat-e2e.ps1`).
+- `WebServer.cs`: `GET /__fleethacker/id` (`{"tool":"phoenix-lai-server"|"phoenix-lai-client","version","pid"}`, no path,
+  so nothing can force-stop Phoenix) and `POST /__fleethacker/shutdown` (header `X-FleetHacker-Shutdown: 1`; the server
+  exits as from the tray, the client and VS Code client end their run loop). A `localhost:<port>` prefix is added for
+  these paths only; everything else still requires `Host: 127.0.0.1:<port>`.
+- `run.ps1 -Role Server` checks the block with `src\FleetPort.psm1` (vendored from edge-ops 6e326f9) before the compile:
+  a running server of the same or a newer version gets a message and exit 0; an older one is refused with a clear message
+  (never stopped). The client keeps its one-window mutex.
+- `nvidia\1-check.ps1`, `nvidia\2-probe.ps1`, `NVIDIA.md`, the dev tests and docs use the new ports. The VS Code
+  extension still scans 8790-8799 (it finds the client inside 8790-8798; not rebuilt here).
+
 ## 2026-10-21 · `ead94b6` · Server and client fully separated
 
 Merged into `master`; branch `dev-coding-agent` created from it. This commit also carries the 2026-10-20 split work

@@ -5,7 +5,7 @@
       "name": "phoenix-server",
       "runtimeExecutable": "powershell.exe",
       "runtimeArgs": ["-NoProfile", "-STA", "-File", "src\\run.ps1", "-Role", "Server"],
-      "port": 8765
+      "port": 8780
     },
     {
       "name": "phoenix-client",

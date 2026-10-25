@@ -79,8 +79,8 @@ executable and shell tags all blocked), `client-qa.py` (run guard applies to pro
 
 | Listener | Bound to | Checks |
 |---|---|---|
-| Client page server (8790-8799) | `http://127.0.0.1:<port>/` | `Host` must be exactly `127.0.0.1:<port>` (blocks DNS rebinding); a sent `Origin` must be the same address (blocks other sites' scripts); `HEAD` answers status only; files served only from inside `html\` (`ServeFile` resolves the path and requires it to start with `html\`). |
-| Server dashboard (8765-8789) | `http://127.0.0.1:<port>/` | Same checks. Serves only the dashboard, the console and their `/api` calls; client and chat calls get 404. |
+| Client page server (8790-8798) | `http://127.0.0.1:<port>/` | `Host` must be exactly `127.0.0.1:<port>` (blocks DNS rebinding); a sent `Origin` must be the same address (blocks other sites' scripts); `HEAD` answers status only; files served only from inside `html\` (`ServeFile` resolves the path and requires it to start with `html\`). |
+| Server dashboard (8780-8789) | `http://127.0.0.1:<port>/` | Same checks. Serves only the dashboard, the console and their `/api` calls; client and chat calls get 404. |
 | OpenAI API (1234) | `http://127.0.0.1:1234/` and `http://localhost:1234/` | `Host` must be `127.0.0.1:1234` or `localhost:1234`; `Origin`, if sent, must be the API's own address or a `vscode-webview://` / `vscode-file://` page; **`Origin: null` is refused** (downloaded HTML files and sandboxed frames send it); optional API key (`Authorization: Bearer`, console `apikey new|set|off`, stored in Credential Manager `PhoenixLAI.Server`, off by default because the VS Code extension sends none, never logged). |
 
 `Process.Start` is used once, for the client's app window (§3). There is no listener on any other address, and the

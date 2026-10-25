@@ -1,6 +1,6 @@
 """Phoenix Client providers QA (dev machine): providers, API keys, model lists, connection tests, network rules.
    python .claude/claude_tests/client-qa.py [client_port] [server_chat_port]
-Needs run-phoenix-server.ps1 (API on 1234, console on server_chat_port, default 8765) and run-phoenix-client.ps1 (8790).
+Needs run-phoenix-server.ps1 (API on 1234, console on server_chat_port, default 8780) and run-phoenix-client.ps1 (8790).
 Turns the server's API key on (console: apikey set), adds a provider for it with the key, and checks: the key reaches
 Windows Credential Manager and never the file or the page; the model list comes from the provider's API; the test runs;
 a wrong / cleared key gets 401; switching provider changes the model list; an internet (https) provider is accepted and
@@ -9,7 +9,7 @@ its answer (401 without a key) shown; a redirect is not followed; bad URLs are r
 import json, os, sys, time, subprocess, urllib.request, urllib.error
 
 CP = int(sys.argv[1]) if len(sys.argv) > 1 else 8790
-SP = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
+SP = int(sys.argv[2]) if len(sys.argv) > 2 else 8780
 KEY = "phx-qa-" + os.urandom(9).hex()
 BASE = f"http://127.0.0.1:{CP}"
 PHX = "http://127.0.0.1:1234/v1"

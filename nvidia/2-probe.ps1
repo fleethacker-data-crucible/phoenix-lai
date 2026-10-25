@@ -27,8 +27,8 @@ $report = Join-Path $results 'probe.txt'
 if ($PSVersionTable.PSVersion.Major -ne 5) { Write-Host -ForegroundColor Red "Run with Windows PowerShell 5.1 (powershell.exe)."; Close-Script 2 }
 
 # Phoenix holds the GPU while it runs: both on one card would skew every number (and can reset the driver).
-$busy = Get-NetTCPConnection -State Listen -LocalPort 8765, 1234 -ErrorAction SilentlyContinue
-if ($busy) { Write-Host -ForegroundColor Red "Phoenix is running (port 8765/1234 is in use). Close its window, wait 10 seconds, then run this again."; Close-Script 3 }
+$busy = Get-NetTCPConnection -State Listen -LocalPort (@(8780..8798) + 1234) -ErrorAction SilentlyContinue
+if ($busy) { Write-Host -ForegroundColor Red "Phoenix is running (a port in 8780-8798 or 1234 is in use). Close its window, wait 10 seconds, then run this again."; Close-Script 3 }
 
 # Everything the probe needs lives in nvidia\ (the dev-only .claude folder is not copied to production):
 # nvidia\tests (GPU-vs-CPU kernel tests, accuracy gate) and nvidia\ref (llama.cpp reference log-probabilities).
