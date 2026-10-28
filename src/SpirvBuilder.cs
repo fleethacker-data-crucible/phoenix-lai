@@ -24,13 +24,16 @@ namespace Phoenix
             ShiftRightLogical = 194, ShiftRightArithmetic = 195, ShiftLeftLogical = 196, BitwiseOr = 197, BitwiseXor = 198,
             BitwiseAnd = 199, Not = 200, BitFieldUExtract = 203, ControlBarrier = 224, MemoryBarrier = 225,
             GroupNonUniformIAdd = 349, GroupNonUniformFAdd = 350, GroupNonUniformFMax = 361,
-            Extension = 10, SDot = 4450, UDot = 4451, SUDot = 4452, SDotAccSat = 4453,
+            Extension = 10, SDot = 4450, UDot = 4451, SUDot = 4452, SDotAccSat = 4453, ConstantComposite = 44,
+            TypeCooperativeMatrixKHR = 4456, CooperativeMatrixLoadKHR = 4457, CooperativeMatrixStoreKHR = 4458, CooperativeMatrixMulAddKHR = 4459,
             Phi = 245, LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Return = 253;
     }
 
     public static class Spv
     {
         public const uint CapabilityDotProductInput4x8BitPacked = 6018, CapabilityDotProduct = 6019, PackedVectorFormat4x8Bit = 0;
+        // SPV_KHR_cooperative_matrix: uses A / B / accumulator; layouts row / column major
+        public const uint CapabilityCooperativeMatrixKHR = 6022, MatrixAKHR = 0, MatrixBKHR = 1, MatrixAccumulatorKHR = 2, RowMajorKHR = 0, ColumnMajorKHR = 1;
         public const uint CapabilityGroupNonUniform = 61, CapabilityGroupNonUniformArithmetic = 63, ScopeSubgroup = 3, GroupOperationReduce = 0;
         public const uint BuiltInSubgroupSize = 36, BuiltInNumSubgroups = 38, BuiltInSubgroupId = 40, BuiltInSubgroupLocalInvocationId = 41;
         public const uint CapabilityShader = 1, CapabilityFloat16 = 9, CapabilityInt16 = 22, CapabilityInt8 = 39,
@@ -161,6 +164,26 @@ namespace Phoenix
         public uint TypePointer(uint storage, uint type) { return CachedType("p" + storage + "_" + type, Op.TypePointer, storage, type); }
         public uint TypeFunction(uint ret) { return CachedType("fn" + ret, Op.TypeFunction, ret); }
         public uint TypeArray(uint element, uint length) { return CachedType("a" + element + "_" + length, Op.TypeArray, element, length); }
+
+        // Subgroup-scope cooperative matrix (SPV_KHR_cooperative_matrix); use: Spv.MatrixAKHR / MatrixBKHR / MatrixAccumulatorKHR.
+        public uint TypeCoopMat(uint component, uint rows, uint cols, uint use)
+        {
+            uint sc = ConstUInt(Spv.ScopeSubgroup), r = ConstUInt(rows), c = ConstUInt(cols), u = ConstUInt(use);
+            return CachedType("cm" + component + "_" + rows + "_" + cols + "_" + use, Op.TypeCooperativeMatrixKHR, component, sc, r, c, u);
+        }
+
+        // OpConstantComposite (for a cooperative matrix: one scalar fills every element).
+        public uint ConstComposite(uint type, params uint[] parts)
+        {
+            string key = "cc" + type;
+            foreach (uint p in parts) key += "_" + p;
+            uint id;
+            if (_typeCache.TryGetValue(key, out id)) return id;
+            id = NewId();
+            Emit(_globals, Op.ConstantComposite, Prepend(type, Prepend(id, parts)));
+            _typeCache[key] = id;
+            return id;
+        }
 
         // Runtime arrays and structs carry decorations, so each call makes a new type.
         public uint TypeRuntimeArray(uint element, uint stride)

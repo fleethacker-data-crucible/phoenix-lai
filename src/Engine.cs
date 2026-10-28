@@ -303,6 +303,9 @@ namespace Phoenix
                     string arch = g.GetString("general.architecture");
                     if (!GemmaConfig.IsGemma(arch)) throw new NotSupportedException("Not a Gemma model (" + arch + "); PhoenixLAI runs Gemma 4.");
                     if (arch == "gemma-embedding2") throw new NotSupportedException("This is an embedding model (used for docs search), not a chat model.");
+                    // The CPU path does not match llama.cpp on the 26B yet (the GPU path does); never serve it there.
+                    if (g.TensorsByName.ContainsKey("blk.0.ffn_gate_inp.weight"))
+                        throw new NotSupportedException("The Gemma 4 mixture-of-experts model (26B A4B) runs on the GPU only.");
                     if (contextLength <= 0 || allowGpu)   // auto, or a GPU context that fell back here: size it for RAM
                     {
                         int requested = contextLength;

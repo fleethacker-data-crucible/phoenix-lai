@@ -7,6 +7,22 @@ The project was called **Local LLM Studio**, then **PhoenixAI**, and since 2026-
 
 ---
 
+## 2026-10-28 · Gemma 4 26B A4B (mixture of experts) on the GPU
+
+Measured on the new machine (Radeon 8060S, 48 GB GPU memory), against llama.cpp (LM Studio Vulkan 2.65.1, `-fa on`).
+- **26B runs** (`KernelsMoe.cs`): router, top-8, expert gate|up and weighted down all on the GPU; decode stays one
+  reusable command buffer. Matches llama.cpp: 57/57 top-1, mean |logprob diff| 0.005.
+- **Prefill on the matrix units** (`KernelsCoop.cs`, VK_KHR_cooperative_matrix, f16 tiles, AMD subgroup 64 only): dense
+  and per-expert grouped matmuls. 26B pp512 1,095 / pp2048 1,236 / pp4096 1,071 t/s (llama.cpp 1,257 / 1,137 / 1,080);
+  tg 60 t/s (llama.cpp 58). The 12B uses it too (gate unchanged).
+- Prefill chunks: the slow-chunk limit is now per GPU submit; the 26B uses 2,048-token chunks, 6 layers per submit.
+- **Commit check counts page-file growth** (`MemoryTrim.AvailableCommit`): a system-managed page file grows to 3x RAM,
+  so the 26B and 31B are offered on this machine.
+- 26B client defaults tuned for code (`coding-eval\`, 24 graded C# 5 / PS 5.1 tasks): greedy + repeat penalty 1.1.
+- Known gap: the CPU path does not match llama.cpp on the 26B (its dense layers, not the experts); the 26B is GPU only.
+
+---
+
 ## 2026-10-25 · Shortcuts made on each computer (branch `standards/untrack-lnk`)
 
 - `Phoenix_Client.lnk` and `Phoenix_LAI_Server.lnk` are no longer tracked (`git rm --cached`; `*.lnk` in `.gitignore`):

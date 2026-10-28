@@ -39,6 +39,10 @@ namespace Phoenix
         // top_k 64, no repeat penalty); the reply limit is ours: brief replies on small models, room for a whole file on large.
         public static string DefaultsJson(string modelName)
         {
+            // Gemma 4 26B A4B: tuned for code (.claude\claude_tests\coding-eval, 24 graded C# 5 / PS 5.1 tasks,
+            // 2026-10-28): greedy + repeat penalty 1.1 passed 87.5%, temperature 0.2 86.1%, 0.6 83.3%, Google's 1.0 83.3%.
+            if (!string.IsNullOrEmpty(modelName) && Regex.IsMatch(modelName, @"(?i)26b"))
+                return "{\"temperature\":0,\"top_k\":64,\"top_p\":0.95,\"repeat_penalty\":1.1,\"max_tokens\":4096,\"system\":" + Json.Quote(For(modelName)) + "}";
             return "{\"temperature\":1.0,\"top_k\":64,\"top_p\":0.95,\"repeat_penalty\":1.0,\"max_tokens\":4096,\"system\":" + Json.Quote(For(modelName)) + "}";
         }
 
