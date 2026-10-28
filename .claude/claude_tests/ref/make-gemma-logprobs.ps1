@@ -3,7 +3,8 @@
 # llama.cpp top-1 id), plus the token ids of the whole sequence on the first line.
 #   pwsh -NoProfile -File .claude\claude_tests\ref\make-gemma-logprobs.ps1 [-Model models\gemma-4-12b-it-qat-q4_0.gguf] [-Ngl 0]
 param([string]$Model = 'models\gemma-4-12b-it-qat-q4_0.gguf', [int]$Ngl = 0, [int]$Port = 8090, [int]$NPredict = 64,
-      [string]$Question = 'Explain in two sentences what a hash map is and when to use one.')
+      [string]$Question = 'Explain in two sentences what a hash map is and when to use one.',
+      [string]$LlamaServer = $(if ($env:LLAMA_SERVER) { $env:LLAMA_SERVER } else { 'llama-server' }))
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Set-Location $root
@@ -12,7 +13,7 @@ $base = "http://127.0.0.1:$Port"
 $outDir = Join-Path '.claude\claude_tests\ref\outputs' ([IO.Path]::GetFileNameWithoutExtension($Model))
 New-Item -ItemType Directory $outDir -Force | Out-Null
 
-$srv = Start-Process llama-server -ArgumentList '-m', $Model, '-c', '1024', '-ngl', $Ngl, '-fa', 'off', '--host', '127.0.0.1', '--port', $Port, '-np', '1' -PassThru -WindowStyle Hidden
+$srv = Start-Process $LlamaServer -ArgumentList '-m', $Model, '-c', '1024', '-ngl', $Ngl, '-fa', 'off', '--host', '127.0.0.1', '--port', $Port, '-np', '1' -PassThru -WindowStyle Hidden
 try {
     for ($i = 0; $i -lt 240; $i++) { try { Invoke-RestMethod "$base/health" | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
     # Same template as Engine.GemmaTemplate (thinking off).
@@ -27,7 +28,7 @@ try {
         $r = Invoke-RestMethod "$base/completion" -Method Post -Body $body -ContentType 'application/json'
         $top = $r.completion_probabilities[0].top_logprobs
         $hit = $top | Where-Object { $_.id -eq $all[$p] } | Select-Object -First 1
-        $lp = if ($hit) { $hit.logprob.ToString('R', [Globalization.CultureInfo]::InvariantCulture) } else { 'nan' }
+        $lp = if ($hit) { ([double]$hit.logprob).ToString('R', [Globalization.CultureInfo]::InvariantCulture) } else { 'nan' }
         $out += "$p`t$($all[$p])`t$lp`t$($top[0].id)"
     }
     $out | Set-Content (Join-Path $outDir 'gemma-logprobs.tsv') -Encoding utf8

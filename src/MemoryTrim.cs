@@ -51,7 +51,39 @@ namespace Phoenix
         {
             MemoryStatusEx m = new MemoryStatusEx();
             m.Length = (uint)Marshal.SizeOf(typeof(MemoryStatusEx));
-            return GlobalMemoryStatusEx(ref m) ? (long)m.AvailPageFile : 8L << 30;
+            if (!GlobalMemoryStatusEx(ref m)) return 8L << 30;
+            return (long)m.AvailPageFile + PageFileGrowth((long)m.TotalPageFile - (long)m.TotalPhys, (long)m.TotalPhys);
+        }
+
+        // Commit the page file can still add by growing: Windows enlarges a system-managed page file (up to 3x RAM)
+        // or a custom one (up to its maximum) when commit runs out. Seen on the 8060S machine (2026-10-28): loading the
+        // 26B (15 GB of GPU weights, backed by commit) grew the page file from 4 to 17 GB. Capped by the drive's free
+        // space minus 4 GB. 0 when the page file is fixed, off or unreadable.
+        static long PageFileGrowth(long current, long ram)
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"))
+                {
+                    string[] files = k == null ? null : k.GetValue("PagingFiles") as string[];
+                    if (files == null) return 0;
+                    long max = 0; string drive = null;
+                    foreach (string f in files)
+                    {
+                        string[] p = f.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (p.Length == 0) continue;
+                        if (drive == null && p[0].Length >= 2) drive = p[0].Substring(0, 1) == "?" ? System.IO.Path.GetPathRoot(Environment.SystemDirectory) : p[0].Substring(0, 3);
+                        long maxMb;
+                        if (p.Length < 3 || (p[1] == "0" && p[2] == "0")) max += 3 * ram;   // system managed
+                        else if (long.TryParse(p[2], out maxMb)) max += maxMb << 20;
+                    }
+                    long room = Math.Max(0, max - Math.Max(0, current));
+                    if (room == 0 || drive == null) return 0;
+                    long disk = new System.IO.DriveInfo(drive).AvailableFreeSpace - (4L << 30);
+                    return Math.Max(0, Math.Min(room, disk));
+                }
+            }
+            catch { return 0; }
         }
 
         // Frees managed garbage left by the load (staging arrays), then empties the working set. Returns MB released.

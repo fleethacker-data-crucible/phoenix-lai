@@ -20,6 +20,8 @@ namespace Phoenix
         public int[] KvSrc;               // layer whose KV cache a layer reads: itself, or an earlier one (E2B/E4B shared KV)
         public bool[] Swa;
         public float Eps, RopeBase, RopeBaseSwa, Softcap;
+        public int NExpert, NExpertUsed, NFfExp;   // mixture of experts (26B A4B); NExpert 0: dense
+        public bool Moe { get { return NExpert > 0; } }
 
         public static bool IsGemma(string arch) { return arch == "gemma4" || arch == "gemma-embedding2"; }
 
@@ -61,8 +63,15 @@ namespace Phoenix
                 if (s < 0 || c.Swa[s] != c.Swa[i] || c.HeadDim[s] != c.HeadDim[i] || c.NHeadKv[s] != c.NHeadKv[i])
                     throw new NotSupportedException("Unexpected shared-KV layout at layer " + i + ".");
             }
+            // 26B A4B: every layer adds a routed expert FFN beside its dense (shared) FFN.
             if (g.TensorsByName.ContainsKey("blk.0.ffn_gate_inp.weight"))
-                throw new NotSupportedException("The Gemma 4 mixture-of-experts model (26B A4B) is not supported yet.");
+            {
+                c.NExpert = (int)g.GetInt(a + ".expert_count");
+                c.NExpertUsed = (int)g.GetInt(a + ".expert_used_count");
+                c.NFfExp = (int)g.GetInt(a + ".expert_feed_forward_length");
+                if (c.NExpert > KernelsMoe.MaxExperts || c.NExpertUsed > KernelsMoe.MaxUsed || c.NFfExp % 32 != 0)
+                    throw new NotSupportedException("Unexpected mixture-of-experts layout (" + c.NExpert + " experts, " + c.NExpertUsed + " used).");
+            }
             return c;
         }
 
@@ -91,6 +100,21 @@ namespace Phoenix
             public bool Swa;
             public int KvSrc;                 // layer whose cache this one reads (its own index unless shared)
             public ushort[] KCache, VCache;   // [MaxCtx * KvDim] fp16, like ggml's f16 cache
+            // mixture of experts: router (f32), per-expert views of the fused gate|up and down tensors, norms
+            public float* GateInp, GateInpS, DownScale, PreFfwNorm2, PostFfwNorm1, PostFfwNorm2;
+            public Weight[] GateUpExp, DownExp;
+        }
+
+        // Expert e of a [cols, rows, nExpert] tensor as a 2-D weight.
+        public static Weight ExpertSlice(GgufTensor t, int e)
+        {
+            Weight w = new Weight(t);
+            int rows = (int)t.Dims[1], n = (int)t.Dims[2];
+            w.Rows = rows;
+            w.RowBytes = t.SizeBytes / ((long)rows * n);
+            w.Data = t.Data + (long)e * rows * w.RowBytes;
+            w.Name = t.Name + "[" + e + "]";
+            return w;
         }
 
         readonly Weight _tokEmbd, _output, _pleModelProj, _pleTok;
@@ -150,6 +174,19 @@ namespace Phoenix
                     l.PleGate = W(g, p + "inp_gate.weight");
                     l.PleProj = W(g, p + "proj.weight");
                     l.PlePostNorm = F32(g, p + "post_norm.weight");
+                }
+                if (C.Moe)
+                {
+                    l.GateInp = F32(g, p + "ffn_gate_inp.weight");
+                    l.GateInpS = F32(g, p + "ffn_gate_inp.scale");
+                    l.DownScale = F32(g, p + "ffn_down_exps.scale");
+                    l.PreFfwNorm2 = F32(g, p + "pre_ffw_norm_2.weight");
+                    l.PostFfwNorm1 = F32(g, p + "post_ffw_norm_1.weight");
+                    l.PostFfwNorm2 = F32(g, p + "post_ffw_norm_2.weight");
+                    GgufTensor gu = g.TensorsByName[p + "ffn_gate_up_exps.weight"], dn = g.TensorsByName[p + "ffn_down_exps.weight"];
+                    l.GateUpExp = new Weight[C.NExpert]; l.DownExp = new Weight[C.NExpert];
+                    for (int e = 0; e < C.NExpert; e++) { l.GateUpExp[e] = ExpertSlice(gu, e); l.DownExp[e] = ExpertSlice(dn, e); }
+                    maxFf = Math.Max(maxFf, 2 * C.NFfExp);
                 }
                 if (!C.Embedding && l.KvSrc == i)
                 {
@@ -314,6 +351,7 @@ namespace Phoenix
             CpuRef.MatVec(l.Up, _xb, _qEmbd, up);
             for (int i = 0; i < l.NFf; i++) gate[i] = CpuRef.Gelu(gate[i]) * up[i];
             CpuRef.MatVec(l.Down, gate, _qWide, _xb);
+            if (C.Moe) MoeFfn(l);   // _xb = norm1(shared mlp) + norm2(experts)
             CpuRef.RmsNorm(_xb, l.PostFfnNorm, C.Eps, _xb2);
             for (int i = 0; i < C.NEmbd; i++) _x[i] += _xb2[i];
             if (_pleTok != null)
@@ -327,6 +365,60 @@ namespace Phoenix
                 for (int i = 0; i < C.NEmbd; i++) _x[i] += _xb2[i];
             }
             if (l.OutScale != 1f) for (int i = 0; i < C.NEmbd; i++) _x[i] *= l.OutScale;
+        }
+
+        float[] _mlp, _moeIn, _moeAcc, _gu, _eg, _ed, _rt;
+        public int[] LastExperts;   // the experts chosen in the last layer run (tests)
+
+        // Routed experts on attn_out (_x), the shared MLP's output in _xb; leaves the combined branch in _xb.
+        // Router: logits = W (rmsnorm(x) / sqrt(n) * s); top-k of softmax, renormalised over the k (= softmax of the
+        // k logits); each expert's output scaled by its down scale.
+        void MoeFfn(Layer l)
+        {
+            int d = C.NEmbd, ne = C.NExpert, nf = C.NFfExp;
+            if (_mlp == null)
+            {
+                _mlp = new float[d]; _moeIn = new float[d]; _moeAcc = new float[d]; _ed = new float[d];
+                _gu = new float[2 * nf]; _eg = new float[nf]; _rt = new float[ne]; LastExperts = new int[C.NExpertUsed];
+            }
+            CpuRef.RmsNorm(_xb, l.PostFfwNorm1, C.Eps, _mlp);
+            // router
+            double ss = 0;
+            for (int i = 0; i < d; i++) ss += (double)_x[i] * _x[i];
+            float rinv = 1f / (float)Math.Sqrt((float)(ss / d) + C.Eps), sc = 1f / (float)Math.Sqrt(d);
+            for (int i = 0; i < d; i++) _moeIn[i] = _x[i] * rinv * sc * l.GateInpS[i];
+            for (int e = 0; e < ne; e++)
+            {
+                float* w = l.GateInp + (long)e * d;
+                float s = 0;
+                for (int i = 0; i < d; i++) s += w[i] * _moeIn[i];
+                _rt[e] = s;
+            }
+            int k = C.NExpertUsed;
+            float[] sel = new float[k];
+            bool[] taken = new bool[ne];
+            for (int j = 0; j < k; j++)
+            {
+                int bi = -1;
+                for (int e = 0; e < ne; e++) if (!taken[e] && (bi < 0 || _rt[e] > _rt[bi])) bi = e;
+                taken[bi] = true; LastExperts[j] = bi; sel[j] = _rt[bi];
+            }
+            double sum = 0;
+            for (int j = 0; j < k; j++) { sel[j] = (float)Math.Exp(sel[j] - sel[0]); sum += sel[j]; }
+            // experts
+            CpuRef.RmsNorm(_x, l.PreFfwNorm2, C.Eps, _moeIn);
+            Array.Clear(_moeAcc, 0, d);
+            for (int j = 0; j < k; j++)
+            {
+                int e = LastExperts[j];
+                CpuRef.MatVec(l.GateUpExp[e], _moeIn, _qEmbd, _gu);
+                for (int i = 0; i < nf; i++) _eg[i] = CpuRef.Gelu(_gu[i]) * _gu[nf + i];
+                CpuRef.MatVec(l.DownExp[e], _eg, _qWide, _ed);
+                float we = (float)(sel[j] / sum) * l.DownScale[e];
+                for (int i = 0; i < d; i++) _moeAcc[i] += _ed[i] * we;
+            }
+            CpuRef.RmsNorm(_moeAcc, l.PostFfwNorm2, C.Eps, _xb2);
+            for (int i = 0; i < d; i++) _xb[i] = _mlp[i] + _xb2[i];
         }
 
         // The scratch arrays are allocated at the largest layer size; MatVec wants exact lengths, so keep per-size arrays.

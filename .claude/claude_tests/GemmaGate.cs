@@ -174,6 +174,7 @@ namespace Phoenix.Tests
             output.WriteLine("{0}: prompt {1} tokens, reply {2}", Path.GetFileName(model), r.PromptLen, r.Lp.Count);
             using (GgufFile g = GgufFile.Open(model))
             {
+                if (Environment.GetEnvironmentVariable("GEMMA_GATE_NOGPU") == null)   // CPU only: GEMMA_GATE_CPU=1 GEMMA_GATE_NOGPU=1
                 using (GpuDevice gpu = GpuDevice.Create())
                 {
                     foreach (string mode in new string[] { "prefill", "decode" })

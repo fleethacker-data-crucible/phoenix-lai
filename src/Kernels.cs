@@ -92,6 +92,7 @@ namespace Phoenix
         public uint LocalId() { return BuiltIn(ref _lid, Spv.BuiltInLocalInvocationId, 0); }
         public uint GroupX() { return BuiltIn(ref _wg, Spv.BuiltInWorkgroupId, 0); }
         public uint GroupY() { return BuiltIn(ref _wg, Spv.BuiltInWorkgroupId, 1); }
+        public uint GroupZ() { return BuiltIn(ref _wg, Spv.BuiltInWorkgroupId, 2); }
 
         // ----- constants, push constants, memory -----
 

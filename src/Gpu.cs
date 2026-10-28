@@ -110,7 +110,51 @@ namespace Phoenix
             return budget > 0;
         }
         public bool IntegerDot;            // packed 4x8-bit integer dot product (shaderIntegerDotProduct) enabled
-        public bool IntegerDotAccelerated; // ...and the hardware has native instructions for it   // "device-local" buffers that had to live in system memory
+        public static double SubmitMsTotal;   // time spent waiting in SubmitAndWait (benchmarks)
+        public bool CoopMat;               // VK_KHR_cooperative_matrix with 16x16x16 f16 -> f32 tiles enabled (prefill matmuls)
+        public static bool AllowCoopMat = Environment.GetEnvironmentVariable("PHOENIX_NO_COOPMAT") == null;
+
+        bool HasDeviceExtension(string name)
+        {
+            uint n = 0;
+            Vk.vkEnumerateDeviceExtensionProperties(Physical, IntPtr.Zero, &n, null);
+            byte[] buf = new byte[n * 260];
+            fixed (byte* p = buf) Vk.vkEnumerateDeviceExtensionProperties(Physical, IntPtr.Zero, &n, p);
+            for (int i = 0; i < n; i++)
+            {
+                int len = 0;
+                while (len < 256 && buf[i * 260 + len] != 0) len++;
+                if (System.Text.Encoding.ASCII.GetString(buf, i * 260, len) == name) return true;
+            }
+            return false;
+        }
+
+        [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.StdCall)]
+        delegate int CoopMatPropsFn(IntPtr phys, uint* count, byte* props);
+
+        // A 16x16x16 subgroup tile with f16 A / B and f32 C / result among the device's cooperative matrix shapes.
+        bool CoopMatF16x16()
+        {
+            IntPtr f = Vk.vkGetInstanceProcAddr(Instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+            if (f == IntPtr.Zero) return false;
+            CoopMatPropsFn fn = (CoopMatPropsFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(f, typeof(CoopMatPropsFn));
+            uint c = 0;
+            fn(Physical, &c, null);
+            const int Size = 56;   // VkCooperativeMatrixPropertiesKHR { sType, pNext, M, N, K, A, B, C, Result, saturating, scope }
+            byte[] buf = new byte[Math.Max(1, c) * Size];
+            fixed (byte* p = buf)
+            {
+                for (int i = 0; i < c; i++) *(int*)(p + i * Size) = 1000506001;
+                fn(Physical, &c, p);
+                for (int i = 0; i < c; i++)
+                {
+                    uint* q = (uint*)(p + i * Size + 16);   // component types: 0 f16, 1 f32
+                    if (q[0] == 16 && q[1] == 16 && q[2] == 16 && q[3] == 0 && q[4] == 0 && q[5] == 1 && q[6] == 1 && q[8] == 3) return true;
+                }
+            }
+            return false;
+        }
+        public bool IntegerDotAccelerated;// ...and the hardware has native instructions for it   // "device-local" buffers that had to live in system memory
         const int VkErrorOutOfDeviceMemory = -2;
 
         ulong _cmdPool, _fence;
@@ -339,6 +383,23 @@ namespace Phoenix
                     IntegerDotAccelerated = *(uint*)(dp + 16 + 4 * 4) != 0; // 4x8BitPacked signed (all our operands fit signed bytes)
                 }
             }
+            // Cooperative matrices (VK_KHR_cooperative_matrix, + shaderFloat16): 16x16x16 f16 x f16 -> f32 tiles at subgroup
+            // scope run the batched prefill matmuls on the matrix units (KernelsCoop). Chain: coopFeat -> f16Feat.
+            byte* coopFeat = stackalloc byte[24], f16Feat = stackalloc byte[24];
+            for (int i = 0; i < 24; i++) { coopFeat[i] = 0; f16Feat[i] = 0; }
+            *(int*)coopFeat = 1000506000;   // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR
+            *(int*)f16Feat = 1000082000;    // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES
+            if (AllowCoopMat && !Safe && ApiVersion >= VkConst.MakeApiVersion(1, 3, 0) && HasDeviceExtension("VK_KHR_cooperative_matrix"))
+            {
+                *(IntPtr*)(coopFeat + 8) = (IntPtr)f16Feat;
+                byte* f2 = stackalloc byte[16 + 224 + 16];
+                for (int i = 0; i < 16 + 224 + 16; i++) f2[i] = 0;
+                *(int*)f2 = 1000059000;
+                *(IntPtr*)(f2 + 8) = (IntPtr)coopFeat;
+                Vk.vkGetPhysicalDeviceFeatures2(Physical, f2);
+                CoopMat = *(uint*)(coopFeat + 16) != 0 && *(uint*)(f16Feat + 16) != 0 && CoopMatF16x16();
+                *(uint*)(coopFeat + 20) = 0;   // no robust buffer access for cooperative matrix loads
+            }
             if (Safe) { SubgroupArithmetic = false; IntegerDot = false; IntegerDotAccelerated = false; }
             *(uint*)(dotFeat + 16) = IntegerDot ? 1u : 0u;
 
@@ -353,9 +414,22 @@ namespace Phoenix
             dci.sType = VkSType.DeviceCreateInfo;
             dci.queueCreateInfoCount = 1;
             dci.pQueueCreateInfos = (IntPtr)(&qci);
-            if (IntegerDot) dci.pNext = (IntPtr)dotFeat;
+            IntPtr head = IntPtr.Zero;
+            if (CoopMat) { *(IntPtr*)(f16Feat + 8) = IntPtr.Zero; *(IntPtr*)(coopFeat + 8) = (IntPtr)f16Feat; head = (IntPtr)coopFeat; }
+            if (IntegerDot) { *(IntPtr*)(dotFeat + 8) = head; head = (IntPtr)dotFeat; }
+            dci.pNext = head;
+            IntPtr extName = IntPtr.Zero;
+            IntPtr* extNames = stackalloc IntPtr[1];
+            if (CoopMat)
+            {
+                extName = System.Runtime.InteropServices.Marshal.StringToHGlobalAnsi("VK_KHR_cooperative_matrix");
+                extNames[0] = extName;
+                dci.enabledExtensionCount = 1;
+                dci.ppEnabledExtensionNames = (IntPtr)extNames;
+            }
             IntPtr dev;
-            Vk.Check(Vk.vkCreateDevice(Physical, &dci, IntPtr.Zero, &dev), "vkCreateDevice");
+            try { Vk.Check(Vk.vkCreateDevice(Physical, &dci, IntPtr.Zero, &dev), "vkCreateDevice"); }
+            finally { if (extName != IntPtr.Zero) System.Runtime.InteropServices.Marshal.FreeHGlobal(extName); }
             Device = dev;
             IntPtr q;
             Vk.vkGetDeviceQueue(Device, QueueFamily, 0, &q);
@@ -813,6 +887,7 @@ namespace Phoenix
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             Submit();
             double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            SubmitMsTotal += ms;
             if (Dbg.On)
             {
                 // one line per slow job (the ~2 s Windows GPU timeout is the danger zone), and a running count

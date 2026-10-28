@@ -143,8 +143,8 @@ hangs up cancels the work. Requests are served one at a time (`_engineLock`); ot
 | Stay awake | `StayAwake.cs` | Keeps the displays on during long GPU work (a display power-down mid-GPU-work blacked out the screens on 2026-10-16). |
 | GPU profile | `Gpu.cs` | `auto` / `amd` / `nvidia` (+ `safe`), from `%LOCALAPPDATA%\LocalLLMStudio\gpu-profile.txt` or `PHOENIX_GPU_PROFILE` / `PHOENIX_GPU_SAFE`. `nvidia` prefers vendor 0x10DE and halves the layers per GPU submit. |
 
-Only **Gemma 4** models run (12B, E2B, E4B; the 31B file is present but needs 21 GB of VRAM). Other architectures are
-refused at load.
+Only **Gemma 4** models run (12B, E2B, E4B, 31B, and the 26B A4B mixture of experts on the GPU: `KernelsMoe.cs`,
+`KernelsCoop.cs`). Other architectures are refused at load.
 
 ### 2.4 Which models are offered (`ApiModelFiles`)
 
