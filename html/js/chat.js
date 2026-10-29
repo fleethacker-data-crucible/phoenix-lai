@@ -558,7 +558,15 @@ const COMMANDS = [
       if (window.openSkillBuilder) window.openSkillBuilder(arg || undefined);
       else systemLine('The Skill Builder is in the Phoenix window (it needs more room than this panel). Skills you save there work here too: call one with /<skill-name>.');
     } },
-  { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() }
+  { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() },
+  { name: '/skin', use: '/skin phoenix|fleet', desc: 'the look: Phoenix (default) or the shared FleetHacker Fleet skin', arg: true,
+    options: () => SKINS.map(k => ({ value: k.id, desc: k.desc + ((settings.skin || 'phoenix') === k.id ? ' (current)' : '') })),
+    run: arg => {
+      const v = (arg || '').trim().toLowerCase();
+      if (!SKINS.some(k => k.id === v)) { systemLine('Skin: ' + (settings.skin || 'phoenix') + '. Use /skin phoenix or /skin fleet.'); return; }
+      settings.skin = v; save(); applyLook();
+      systemLine(v === 'fleet' ? 'Fleet skin on: navy and brass, Segoe UI. The accent and chat font are fixed while it is on; /skin phoenix switches back.' : 'Phoenix look on.');
+    } }
 ];
 
 async function command(text) {
@@ -585,11 +593,14 @@ const FONTS = [
 ];
 const SIZES = [12, 13, 14, 15, 16, 18];
 // Accent colours: gold (the default) first. Picking one recolours everything that was gold.
+// Skins: Phoenix's own look (the default) or the optional Fleet skin (css/fleet-skin.css, scoped under html[data-skin="fleet"]).
+const SKINS = [{ id: 'phoenix', label: 'Phoenix', desc: "Phoenix's own look" }, { id: 'fleet', label: 'Fleet', desc: 'the shared FleetHacker look' }];
 const ACCENTS = ['#e8c15a', '#f08a3c', '#e85a5a', '#e85aa8', '#a77bf0', '#5a8ce8', '#4fc3e8', '#3cc8a0', '#7ad35a', '#d8d8e0'];
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function applyLook() {
   document.documentElement.classList.toggle('no-banner', !settings.banner);
   document.documentElement.classList.toggle('grid', !!settings.grid);
+  document.documentElement.dataset.skin = settings.skin === 'fleet' ? 'fleet' : 'phoenix';   // /skin: Phoenix's own look is the default skin
   document.documentElement.classList.toggle('light', !!settings.light);   // settings > appearance > light mode   // grid background + faint logo, else solid   // banner kept, off by default
   const acc = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : ACCENTS[0], rgb = hexRgb(acc), root = document.documentElement.style;
   root.setProperty('--accent', acc);
@@ -600,7 +611,23 @@ function applyLook() {
   document.documentElement.style.setProperty('--chat', f.css);
   document.documentElement.style.setProperty('--chat-size', (settings.size || 14) + 'px');
   if (window.applyVscodeTheme) window.applyVscodeTheme();   // vscode.html: VS Code's theme wins over these settings
+  syncSkinControls();
   alignChevrons();
+}
+function syncSkinControls() {
+  const fixed = settings.skin === 'fleet';
+  document.querySelectorAll('#sFont input, #sAccent button, #sAccent input').forEach(el => {
+    el.disabled = fixed;
+    if (fixed) el.setAttribute('aria-describedby', 'sSkinFixedNote');
+    else el.removeAttribute('aria-describedby');
+  });
+  document.querySelectorAll('#sFont input').forEach(el => { el.checked = el.value === (fixed ? 'cascadia' : settings.font || 'syne'); });
+  const accent = fixed ? getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() : settings.accent || ACCENTS[0];
+  document.querySelectorAll('#sAccent button').forEach(el => el.classList.toggle('on', el.dataset.c === accent));
+  if ($('sAccentPick')) $('sAccentPick').value = accent;
+  const hex = document.querySelector('#sAccent .hex'); if (hex) hex.textContent = accent;
+  const note = $('sSkinFixedNote');
+  if (note) note.hidden = !fixed;
 }
 // A row of radio buttons; `value` is the selected one, `onPick` previews a choice immediately.
 function radios(box, items, value, onPick) {
@@ -614,6 +641,7 @@ function drawSwatches() {
     '<label class="custom' + (custom ? ' on' : '') + '" title="Pick any colour"><input type="color" id="sAccentPick" value="' + cur + '"></label><span class="hex">' + cur + '</span>';
   $('sAccentPick').addEventListener('input', e => { settings.accent = e.target.value.toLowerCase(); applyLook(); $('sAccent').querySelector('.hex').textContent = settings.accent;
     $('sAccent').querySelectorAll('button').forEach(b => b.classList.remove('on')); $('sAccent').querySelector('.custom').classList.add('on'); });
+  syncSkinControls();
 }
 $('sAccent').addEventListener('click', e => { const b = e.target.closest('button[data-c]'); if (!b) return; settings.accent = b.dataset.c; applyLook(); drawSwatches(); });
 const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
@@ -621,7 +649,7 @@ let openedBrowser = 'edge', openedGpu = null, lookBefore = null;
 async function openSettings() {
   const rg = info.rag || {};
   $('sRag').checked = !!rg.enabled; $('ragNote').textContent = rg.chunks ? ' · ' + rg.files + ' docs, ' + rg.chunks + ' chunks' : rg.indexing ? ' · indexing: ' + rg.indexing : rg.error ? ' · index error: ' + rg.error : ' · not indexed: run /index';
-  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid, light: settings.light };
+  lookBefore = { font: settings.font, size: settings.size, accent: settings.accent, banner: settings.banner, grid: settings.grid, light: settings.light, skin: settings.skin };
   // (answer while I type needs the local engine's cache) $('sPretype').checked = settings.pretype !== false; $('sPretype').onchange = () => { settings.pretype = $('sPretype').checked; save(); };
   $('sTypeEffect').checked = settings.typeEffect !== false; $('sTypeEffect').onchange = () => { settings.typeEffect = $('sTypeEffect').checked; save(); };
   $('sBanner').checked = !!settings.banner;
@@ -638,6 +666,7 @@ async function openSettings() {
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
   radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
   drawSwatches();
+  if ($('sSkin')) radios('sSkin', SKINS.map(k => ({ value: k.id, label: k.label })), settings.skin || 'phoenix', v => { settings.skin = v; applyLook(); });
   let b = { browser: 'auto', installed: true };
   try { b = await api('/api/browser'); } catch (e) {}
   openedBrowser = b.browser;
@@ -651,11 +680,12 @@ async function openSettings() {
   // (server GPU setting) radios('sGpu', [{ value: 'amd', label: 'AMD' }, { value: 'nvidia', label: 'NVIDIA' }, { value: 'auto', label: 'Auto' }], g.profile);
   // (server GPU setting) $('sGpuSafe').checked = !!g.safe;
   // (server GPU setting) $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
+  syncSkinControls();
   $('settingsModal').classList.add('show');
   $('settingsBody').scrollTop = 0;
 }
 function closeSettings(applied) {
-  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; settings.light = lookBefore.light; applyLook(); }   // undo the preview
+  if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; settings.light = lookBefore.light; settings.skin = lookBefore.skin; applyLook(); }   // undo the preview
   $('settingsModal').classList.remove('show');
 }
 $('closeSettings').addEventListener('click', () => closeSettings(false));

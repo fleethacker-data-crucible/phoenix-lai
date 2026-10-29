@@ -1,4 +1,7 @@
 // Server dashboard (dashboard.html on the server's own port): polls /api/server-status every second.
+// Optional Fleet skin (css/fleet-skin.css): set with "skin fleet" / "skin phoenix" in the console; this page remembers it.
+document.documentElement.dataset.skin = 'phoenix';   // Phoenix's own look is the default skin
+try { if (localStorage.getItem('phoenix.skin') === 'fleet') document.documentElement.dataset.skin = 'fleet'; } catch (e) { }
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const gb = b => (b / 1073741824).toFixed(2) + ' GB';

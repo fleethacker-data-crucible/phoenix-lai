@@ -7,6 +7,7 @@
 <link rel="icon" type="image/png" href="assets/toolbar_icon.png">
 <link rel="stylesheet" href="css/chat.css">
 <link rel="stylesheet" href="css/skills.css">
+<link rel="stylesheet" href="css/fleet-skin.css">   <!-- optional Fleet skin: does nothing unless /skin fleet -->
 </head>
 <body>
 <div id="banner"><span>LOCAL DEMO</span></div>
@@ -52,6 +53,8 @@
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sLight"><span class="sw"></span>light mode<span class="hint"> · light background and panels (off = dark)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sGrid"><span class="sw"></span>grid background<span class="hint"> · grid and faint logo behind the chat (off = solid)</span></label>
         <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
+        <div class="field" style="margin-top:10px">skin<div class="radios" id="sSkin"></div><span class="hint">Phoenix is the default · Fleet: the shared FleetHacker look (navy, brass, Segoe UI) · also /skin fleet | phoenix</span></div>
+        <p id="sSkinFixedNote" class="hint" hidden>Fleet fixes the chat font and accent colour. Choose Phoenix to customize them.</p>
       </section>
       <section id="catApp">
         <div class="section">app</div>

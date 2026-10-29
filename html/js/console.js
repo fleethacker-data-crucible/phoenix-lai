@@ -1,6 +1,9 @@
 // Server console (console.html): a plain command prompt. Sends one line to /api/console and prints the answer.
 // Phoenix's own commands only (help lists them); the server never runs a shell, a script or a program from here.
 const $ = id => document.getElementById(id);
+// Optional Fleet skin (css/fleet-skin.css): set with "skin fleet" / "skin phoenix" in the console; this page remembers it.
+document.documentElement.dataset.skin = 'phoenix';   // Phoenix's own look is the default skin
+try { if (localStorage.getItem('phoenix.skin') === 'fleet') document.documentElement.dataset.skin = 'fleet'; } catch (e) { }
 const term = $('term'), out = $('out'), cmd = $('cmd'), line = document.querySelector('.cmdline');
 const hist = []; let hi = 0, busy = false;
 
@@ -23,6 +26,14 @@ function print(text, cls) { const d = document.createElement('div'); if (cls) d.
 async function run(text) {
   echo(text);
   if (text === 'clear' || text === 'cls') { out.innerHTML = ''; return; }
+  const sk = /^skin(?:\s+(\S+))?$/i.exec(text);   // the look of these pages: handled here, never sent to the server
+  if (sk) {
+    const v = (sk[1] || '').toLowerCase();
+    if (v !== 'fleet' && v !== 'phoenix') { print('Skin: ' + (document.documentElement.dataset.skin || 'phoenix') + '. Use skin fleet or skin phoenix.', 'res'); return; }
+    try { localStorage.setItem('phoenix.skin', v); } catch (e) { }
+    document.documentElement.dataset.skin = v;
+    print(v === 'fleet' ? 'Fleet skin on for the console and dashboard.' : 'Phoenix look on.', 'res'); return;
+  }
   busy = true; line.classList.add('busy');   // like a terminal: no prompt while a command runs
   try {
     const r = await fetch('/api/console', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ line: text }) });
@@ -53,8 +64,10 @@ cmd.addEventListener('keydown', e => {
 let tabState = null, models = [];
 async function loadModels() { try { models = (await (await fetch('/api/models')).json()).models.map(m => m.name.replace(/\.gguf$/i, '')); } catch (e) { } }
 const ARGS = { load: () => models, debug: () => ['on', 'off'], apikey: () => ['new', 'set ', 'off'], bench: () => ['64', '128', '256', '512'], log: () => ['10', '30', '100'] };
+ARGS.skin = () => ['fleet', 'phoenix'];
 const ANYWHERE = { load: true };   // model names: "load e2b" finds gemma-4-e2b_... (other words match from the start)
 const CMDS = ['help', 'status', 'clients', 'recent', 'models', 'load', 'unload', 'bench', 'apitest', 'apikey', 'vram', 'debug', 'log', 'gc', 'restart', 'clear'];
+CMDS.splice(CMDS.indexOf('clear'), 0, 'skin');
 function complete(back) {
   if (!tabState) {
     const v = cmd.value, sp = v.indexOf(' ');
