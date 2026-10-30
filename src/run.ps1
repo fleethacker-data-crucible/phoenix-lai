@@ -1,4 +1,4 @@
-﻿# Phoenix LAI launcher (run-phoenix-server.ps1 and run-phoenix-client.ps1 call it). Windows PowerShell 5.1 only.
+# Phoenix LAI launcher (run-phoenix-server.ps1 and run-phoenix-client.ps1 call it). Windows PowerShell 5.1 only.
 # Two separate programs, never one process: the server (models + OpenAI API on localhost:1234/v1, tray) and the
 # Phoenix Client (the chat window, an OpenAI /v1 client for any provider).
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Role Client        # checks, compile, chat in a Chrome/Edge app window
@@ -13,7 +13,9 @@ param(
     # Server = run-phoenix-server.ps1 (models + OpenAI API, tray); Client = run-phoenix-client.ps1 (the chat UI for any
     # OpenAI /v1 provider). There is no all-in-one mode: the client never runs inside the server.
     # VsCode = run-phoenix-vscode.ps1: the VS Code extension's own client (no window), started by the extension.
-    [ValidateSet('Server', 'Client', 'VsCode')][string]$Role = 'Client'
+    [ValidateSet('Server', 'Client', 'VsCode')][string]$Role = 'Client',
+    [switch]$Stay,
+    [switch]$Replace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,6 +209,11 @@ if ($Role -eq 'Server') {
     }
 }
 
+if ($Role -eq 'Client' -and $Replace) {
+    & (Join-Path $src 'Stop-PhoenixClient.ps1') -Root $Root
+    if (-not $?) { throw 'The previous Phoenix Client did not stop; replacement cancelled.' }
+}
+
 $cp = New-Object System.CodeDom.Compiler.CompilerParameters
 $cp.GenerateInMemory = $true
 $cp.CompilerOptions = '/unsafe /optimize+'
@@ -227,5 +234,5 @@ $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
 switch ($Role) {
     'Server' { exit ([Phoenix.ServerHost]::Run($Root, $modelPath, $Context)) }
     'VsCode' { exit ([Phoenix.WebServer]::RunVsCode($Root)) }
-    default  { exit ([Phoenix.WebServer]::RunClient($Root)) }
+    default  { exit ([Phoenix.WebServer]::RunClient($Root, [bool]$Stay)) }
 }

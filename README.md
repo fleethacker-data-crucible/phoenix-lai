@@ -175,3 +175,9 @@ vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
   (`openai-compat.py`, `client-qa.py`, `client-e2e.py`). llama.cpp is a development reference only, never a runtime
   dependency.
 - Close Phoenix before model tests (`.claude\tools\close-phoenix.ps1`): one chat model per machine.
+
+## Client lifecycle
+
+The Phoenix Client owns its chat window: heartbeats and a leaving beacon stop only the client when its last app window closes. End session (or `/quit`) waits for active requests and indexing to finish. The independent tray/model server keeps running. Use `src/Stop-PhoenixClient.ps1` for a verified, graceful stop of clients from this checkout; `src/Stop-Phoenix.ps1` is a compatibility alias. No process is force-stopped. Launch the client with `-Stay` or set `PHOENIX_CLIENT_AUTO_STOP=0` to disable automatic stopping; `-Replace` requests a graceful stop before relaunch. The VS Code client retains its separate connection-based lifetime.
+
+Development validation: `powershell.exe -NoProfile -File .claude/claude_tests/client-lifecycle-test.ps1` compiles the complete C# 5 source set and exercises the lifecycle policy and routes without loading a model.

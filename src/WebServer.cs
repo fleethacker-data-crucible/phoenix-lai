@@ -77,7 +77,9 @@ namespace Phoenix
 
         // The Phoenix Client (run-phoenix-client.ps1): opens its window and runs until it is closed. One client per user:
         // a second launch brings the open window forward. The mutex is freed by Windows if we crash.
-        public static int RunClient(string root)
+        public static int RunClient(string root) { return RunClient(root, false); }
+
+        public static int RunClient(string root, bool stay)
         {
             Application.EnableVisualStyles();
             bool first;
@@ -89,7 +91,7 @@ namespace Phoenix
                     if (EventWaitHandle.TryOpenExisting(ShowEventName, out show)) using (show) show.Set();
                     return 0;
                 }
-                try { return RunServer(root, null, 0); }
+                try { return RunServer(root, null, 0, stay); }
                 finally { single.ReleaseMutex(); }
             }
         }
@@ -115,9 +117,9 @@ namespace Phoenix
                         ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
                         // up to 2 minutes for the first VS Code chat to check in, then until the last one has been gone 30 s
                         DateTime start = DateTime.UtcNow;
-                        while (!server.ShutdownRequested && server.VsCodePages() == 0 && DateTime.UtcNow - start < TimeSpan.FromMinutes(2)) Thread.Sleep(500);
+                        while (!server.ClientEndRequested && server.VsCodePages() == 0 && DateTime.UtcNow - start < TimeSpan.FromMinutes(2)) Thread.Sleep(500);
                         DateTime lastSeen = DateTime.UtcNow;
-                        while (!server.ShutdownRequested && DateTime.UtcNow - lastSeen < TimeSpan.FromSeconds(30))
+                        while (!server.ClientEndRequested && DateTime.UtcNow - lastSeen < TimeSpan.FromSeconds(30))
                         {
                             if (server.VsCodePages() > 0) lastSeen = DateTime.UtcNow;
                             Thread.Sleep(500);
@@ -242,10 +244,12 @@ namespace Phoenix
         }
 
         // The client's window loop: start, open the window, run while any window is open, then shut down.
-        static int RunServer(string root, string modelPath, int ctx)
+        static int RunServer(string root, string modelPath, int ctx, bool stay)
         {
             using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
+            using (ClientRuntime runtime = new ClientRuntime(server, root))
             {
+                server.ClientAutoStop = !stay && ClientAutoStopSetting();
                 server.ContextLength = ctx;
                 // the active provider's saved model, so the first message needs no picking
                 ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
@@ -273,18 +277,19 @@ namespace Phoenix
                 {
                     server._focusRequested = true;
                     server.Log.Text("an app window from before is still open: reusing it");
-                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                    server.WaitForClientStop();
                 }
                 else
                 {
                     Process browser = OpenWindow(server.Url, server.Log);
                     if (browser != null)
                     {
-                        using (browser) while (!browser.WaitForExit(500) && !server.ShutdownRequested) { }
+                        // The browser may hand the window to another process. Its heartbeat owns the lifetime.
+                        browser.Dispose();
                         // If an app window was already open, the browser hands the new one to that process and exits at once,
                         // so the process alone can't tell us when the user is done: stay up while any page is still talking to
                         // us (each window checks in every 2 s and says goodbye when it closes).
-                        server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                        server.WaitForClientStop();
                     }
                     else
                     {
@@ -646,7 +651,6 @@ namespace Phoenix
         }
 
         long _lastRequestTicks = DateTime.UtcNow.Ticks;
-        long _lastWindowTicks = DateTime.UtcNow.Ticks;   // last check-in of an app window (not the VS Code chat)
         int _activeRequests;
         volatile bool _focusRequested;
         readonly Dictionary<string, DateTime> _pages = new Dictionary<string, DateTime>();   // page id -> last poll (UTC)
@@ -654,25 +658,7 @@ namespace Phoenix
         // Windows that are open: polled within the last 75 s (minimized windows poll only about once a minute) and not closed.
         int OpenPages()
         {
-            lock (_pages)
-            {
-                List<string> stale = new List<string>();
-                foreach (KeyValuePair<string, DateTime> kv in _pages) if (DateTime.UtcNow - kv.Value > TimeSpan.FromSeconds(75)) stale.Add(kv.Key);
-                foreach (string k in stale) _pages.Remove(k);
-                // the chat inside VS Code (page ids starting "vs-") is not the app window: a second launch still opens one
-                int n = 0;
-                foreach (string k in _pages.Keys) if (!k.StartsWith("vs-")) n++;
-                return n;
-            }
-        }
-
-        void WaitWhilePagesActive(TimeSpan idle)
-        {
-            Thread.Sleep(3000);   // give a new window time to load and check in
-            // Only the app window keeps the server up: closing it shuts the server down, even while the VS Code chat or
-            // another API client is connected (they reconnect when it is started again). The 5 s grace covers a reload.
-            while (!ShutdownRequested && (OpenPages() > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastWindowTicks) < TimeSpan.FromSeconds(5).Ticks))
-                Thread.Sleep(500);
+            return _clientPresence.OpenWindows(DateTime.UtcNow);
         }
 
         void Handle(HttpListenerContext ctx)
@@ -789,6 +775,8 @@ namespace Phoenix
             if (IsClient)
             {
                 if (ServerOnlyPath(path)) { SendJson(res, 404, "{\"error\":\"That is a Phoenix server setting (its dashboard or console), not the client's.\"}"); return; }
+                string lifecycle = ClientLifecycleApi(path, post, body, page);
+                if (lifecycle != null) { SendJson(res, 200, lifecycle); return; }
                 string cr = ClientApi(path, post, body);
                 if (cr != null) { SendJson(res, 200, cr); return; }
             }
@@ -816,7 +804,7 @@ namespace Phoenix
             if (path == "/api/info")
             {
                 if (page != null && page.Length <= 40) lock (_pages) _pages[page] = DateTime.UtcNow;
-                if (page != null && !page.StartsWith("vs-")) Interlocked.Exchange(ref _lastWindowTicks, DateTime.UtcNow.Ticks);
+                if (IsClient) _clientPresence.Beat(page, DateTime.UtcNow);
                 string json = Info();
                 if (_focusRequested && page != null) { _focusRequested = false; json = json.Substring(0, json.Length - 1) + ",\"focus\":true}"; }
                 SendJson(res, 200, json);

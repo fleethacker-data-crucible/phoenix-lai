@@ -92,7 +92,33 @@ function drawStatus(offline) {
 }
 // This window's id: the server counts open windows by it, so launching the app again reuses this window.
 const PAGE_ID = (window.PHX_VSCODE ? 'vs-' : '') + Math.random().toString(36).slice(2, 12);   // vs-: the VS Code chat, not an app window
-window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye?page=' + PAGE_ID));
+// The window owns the server (TechStack "Lifecycle rules"): a heartbeat every 5 s, and a "leaving" beacon when the page
+// goes away. The client stops 20 s after the last heartbeat, or 5 s after "leaving" with no new one, so a reload (which
+// checks in again at once with a new id) never stops it. A hidden (minimized) window says so: its timers slow down.
+// Only the page id travels (it is not a secret); the server checks Host and Origin on these routes.
+function heartbeat(leaving) {
+  const body = JSON.stringify({ leaving: !!leaving, hidden: document.visibilityState === 'hidden' });
+  if (leaving) {
+    // sendBeacon is what browsers deliver during unload; it cannot set headers, and nothing secret is sent anyway.
+    let sent = false;
+    try { sent = navigator.sendBeacon('/api/heartbeat?page=' + PAGE_ID, new Blob([body], { type: 'application/json' })); } catch (e) { sent = false; }
+    if (sent) return;
+  }
+  try { fetch('/api/heartbeat?page=' + PAGE_ID, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {}); } catch (e) { }
+}
+heartbeat(false);
+setInterval(() => heartbeat(false), 5000);
+window.addEventListener('pagehide', () => heartbeat(true));
+window.addEventListener('pageshow', () => heartbeat(false));
+document.addEventListener('visibilitychange', () => heartbeat(false));
+// End session (/quit, sidebar): the server finishes what it is writing, then stops; this window says so and stays put.
+async function endSession() {
+  if (!confirm('End this Phoenix Client session?\n\nThe client stops (after any reply, model load or indexing in progress finishes) and this window can be closed. Start it again with Phoenix_Client.lnk.')) return;
+  let r = {};
+  try { r = await api('/api/quit', {}); } catch (e) { systemLine('Could not end the session: ' + e.message); return; }
+  systemLine(r.waitingFor ? 'Ending the session: the client stops after ' + r.waitingFor + ' finishes. You can close this window.' : 'Session ended: the client has stopped. You can close this window.');
+}
+
 // Launched again while this window is open: come to the front (and flash the title in case Windows blocks that).
 function bringForward() {
   window.focus();
@@ -559,6 +585,7 @@ const COMMANDS = [
       else systemLine('The Skill Builder is in the Phoenix window (it needs more room than this panel). Skills you save there work here too: call one with /<skill-name>.');
     } },
   { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() },
+  { name: '/quit', use: '/quit', desc: 'end this client session without stopping the model server', run: () => endSession() },
   { name: '/skin', use: '/skin phoenix|fleet', desc: 'the look: Phoenix (default) or the shared FleetHacker Fleet skin', arg: true,
     options: () => SKINS.map(k => ({ value: k.id, desc: k.desc + ((settings.skin || 'phoenix') === k.id ? ' (current)' : '') })),
     run: arg => {
@@ -1310,6 +1337,7 @@ if ($('modelMenu')) {
 // Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
 if ($('side')) {
   $('navNew').onclick = () => newChat();
+  if ($('navQuit')) $('navQuit').onclick = () => endSession();
   $('navSettings').onclick = () => openSettings();
   $('modelPick').onclick = e => {
     e.stopPropagation();
