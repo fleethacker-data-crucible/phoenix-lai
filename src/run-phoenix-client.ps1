@@ -4,6 +4,7 @@
 #   powershell.exe -NoProfile -STA -WindowStyle Hidden -File src\run-phoenix-client.ps1
 # First run: create or repair Phoenix_Client.lnk and Phoenix_LAI_Server.lnk in the project root (made on this
 # computer, never tracked). Best effort: a missing or blocked WScript.Shell never stops the launch.
+param([switch]$Stay, [switch]$Replace)
 try { Import-Module (Join-Path $PSScriptRoot 'PhoenixShortcuts.psm1') -Force; $null = Sync-PhoenixShortcut -Root (Split-Path -Parent $PSScriptRoot) } catch { $null = $_ }
-& (Join-Path $PSScriptRoot 'run.ps1') -Role Client
+& (Join-Path $PSScriptRoot 'run.ps1') -Role Client -Stay:$Stay -Replace:$Replace
 exit $LASTEXITCODE
