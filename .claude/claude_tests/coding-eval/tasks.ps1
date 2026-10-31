@@ -52,7 +52,7 @@
      test = { $h = Get-ExtensionCount -Path @('a.TXT', 'b.txt', 'c:\x\y.ps1', 'README', 'd.tar.gz'); if ($h['txt'] -ne 2 -or $h['ps1'] -ne 1 -or $h[''] -ne 1 -or $h['gz'] -ne 1 -or $h.Count -ne 4) { throw 'counts' } } }
   @{ id = 'ps-ipv4'; lang = 'powershell'
      prompt = 'Write a PowerShell 5.1 function `Test-IPv4` with a parameter -Address that returns $true only for a dotted IPv4 address of four decimal numbers 0-255 without leading zeros (so "01.2.3.4" is invalid), otherwise $false.'
-     test = { foreach ($p in @(@('192.168.1.1', $true), @('255.255.255.255', $true), @('256.1.1.1', $false), @('1.2.3', $false), @('01.2.3.4', $false), @('a.b.c.d', $false), @('0.0.0.0', $true), @('1.2.3.4.5', $false))) { if ((Test-IPv4 -Address $p[0]) -ne $p[1]) { throw $p[0] } } } }
+     test = { foreach ($p in @(@('203.0.113.7', $true), @('255.255.255.255', $true), @('256.1.1.1', $false), @('1.2.3', $false), @('01.2.3.4', $false), @('a.b.c.d', $false), @('0.0.0.0', $true), @('1.2.3.4.5', $false))) { if ((Test-IPv4 -Address $p[0]) -ne $p[1]) { throw $p[0] } } } }
   @{ id = 'ps-median'; lang = 'powershell'
      prompt = 'Write a PowerShell 5.1 function `Get-Median` with a parameter -Values (double array) that returns the median as a double (the mean of the two middle values for an even count). An empty array returns $null.'
      test = { if ((Get-Median -Values @(3, 1, 2)) -ne 2) { throw 'odd' }; if ((Get-Median -Values @(4, 1, 3, 2)) -ne 2.5) { throw 'even' }; if ($null -ne (Get-Median -Values @())) { throw 'empty' } } }
