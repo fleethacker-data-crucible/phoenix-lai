@@ -159,9 +159,9 @@ vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
 
 | Document | What it covers |
 |---|---|
-| `.claudedocsARCHITECTURE.md` (local, not in the repo) | From the shortcut to running code; how the server and the client work, file by file |
-| `.claudedocsSECURITY.md` (local, not in the repo) | Every security rule, where it is enforced, how it was tested, and its limits |
-| `.claudedocsCHANGELOG.md` (local, not in the repo) | Every change since 2026-10-15 |
+| `.claude\docs\ARCHITECTURE.md` (local, not in the repo) | From the shortcut to running code; how the server and the client work, file by file |
+| `.claude\docs\SECURITY.md` (local, not in the repo) | Every security rule, where it is enforced, how it was tested, and its limits |
+| `.claude\docs\CHANGELOG.md` (local, not in the repo) | Every change since 2026-10-15 |
 | [CLAUDE.md](CLAUDE.md) | Development rules (hard rules, build, workflow) |
 | [nvidia/NVIDIA.md](nvidia/NVIDIA.md) | Testing on the NVIDIA target machine |
 
