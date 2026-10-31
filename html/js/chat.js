@@ -209,7 +209,7 @@ function welcome() {
 }
 // The prompt always sits at the end of the conversation.
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); syncComposer(); scrollDown(); }
-function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
+function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); Modal.closeAll(); input.focus(); }
 
 // The conversation survives a reload (F5) of this window: what is on screen, the history sent to the model and the
 // speed/context numbers are kept in sessionStorage (per window, gone when it closes). Only /new starts over.
@@ -368,9 +368,7 @@ chatEl.addEventListener('mouseup', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    if (controller) controller.abort();
-    if ($('settingsModal').classList.contains('show')) closeSettings(false);
-    document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show'));
+    if (controller) controller.abort();   // an open modal takes Esc first (modal.js)
   }
 });
 
@@ -704,12 +702,12 @@ async function openSettings() {
   // (server GPU setting) $('sGpuSafe').checked = !!g.safe;
   // (server GPU setting) $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
   syncSkinControls();
-  $('settingsModal').classList.add('show');
+  Modal.open($('settingsModal'), { onClose: () => closeSettings(false) });
   $('settingsBody').scrollTop = 0;
 }
 function closeSettings(applied) {
   if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; settings.light = lookBefore.light; settings.skin = lookBefore.skin; applyLook(); }   // undo the preview
-  $('settingsModal').classList.remove('show');
+  Modal.close($('settingsModal'));
 }
 $('closeSettings').addEventListener('click', () => closeSettings(false));
 $('settingsNew').addEventListener('click', () => { closeSettings(true); save(); newChat(); });
@@ -1372,10 +1370,10 @@ function openModelSettings(name) {
   mmName = name;
   $('mmTitle').textContent = name.replace(/\.gguf$/i, '').toLowerCase();
   fillModelSettings(ms(name));
-  $('modelModal').classList.add('show');
+  Modal.open($('modelModal'), { onClose: closeModelSettings });
   $('modelModal').querySelector('.body').scrollTop = 0;
 }
-function closeModelSettings() { $('modelModal').classList.remove('show'); if (promptLine.isConnected) input.focus(); }
+function closeModelSettings() { Modal.close($('modelModal')); }
 $('closeModel').onclick = closeModelSettings;
 $('mReset').onclick = () => { const all = settings.models || {}, keep = all[mmName]; delete all[mmName]; fillModelSettings(ms(mmName)); if (keep) all[mmName] = keep; };   // shown only; saved with save
 $('mSave').onclick = async () => {
@@ -1397,7 +1395,6 @@ $('mSave').onclick = async () => {
 };
 $('modelModal').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('mSave').click(); }
-  else if (e.key === 'Escape') { e.stopPropagation(); closeModelSettings(); }
 });
 
 // Welcome logo: pinned at the centre of the chat area (a fixed top margin). Messages build up from the bottom underneath

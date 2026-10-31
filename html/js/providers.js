@@ -102,7 +102,7 @@
     fillModels([], p ? p.model : '');
     $('pModelNote').textContent = "asks the provider's /models with the URL and key above";
     $('pTests').innerHTML = '<span class="hint">Runs the OpenAI /v1 calls the chat uses: models, chat, streaming, embeddings.</span>';
-    $('provModal').classList.add('show');
+    Modal.open($('provModal'), { onClose: closeProvider });
     setTimeout(() => (p ? (p.phoenix ? $('pModelBtn') : $('pKey')) : $('pName')).focus(), 50);
     if (p) loadModels(true);
   }
@@ -118,7 +118,7 @@
       return '<span class="feat ' + (v === true ? 'yes' : v === false ? 'no' : 'unk') + '" title="' + esc(v === true ? 'allowed' : v === false ? 'not allowed: the client does not use it' : 'not tested') + '">' + (v === true ? '✓ ' : v === false ? '✗ ' : '? ') + esc(x.label) + '</span>';
     }).join('') + (note ? '<span class="hint fnote">' + esc(note) + '</span>' : '');
   }
-  function closeProvider() { $('pKey').value = ''; $('provModal').classList.remove('show'); if (promptLine.isConnected) input.focus(); }
+  function closeProvider() { $('pKey').value = ''; Modal.close($('provModal')); }
   async function loadModels(quiet) {
     const f = form(), key = $('pKey').value.trim();
     if (!f.url) { $('pModelNote').textContent = 'Give the base URL first.'; return; }
@@ -132,8 +132,7 @@
   $('pLoad').onclick = () => loadModels(false);
   $('closeProv').onclick = closeProvider;
   $('provModal').addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.stopPropagation(); closeProvider(); }
-    else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') { e.preventDefault(); $('pSave').click(); }
+    if (e.key === 'Enter' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') { e.preventDefault(); $('pSave').click(); }
   });
   $('pTest').onclick = async () => {
     const f = form(), key = $('pKey').value.trim();
@@ -219,7 +218,7 @@
   }
   function showDown(text, note) {
     $('downText').textContent = text; $('downNote').textContent = note || '';
-    if (!downShown) { downShown = true; $('downModal').classList.add('show'); $('downExit').focus(); }
+    if (!downShown) { downShown = true; Modal.open($('downModal'), { onClose: () => Modal.close($('downModal')), focus: $('downExit') }); }
   }
   async function watchBackend() {
     const alive = await clientAlive();

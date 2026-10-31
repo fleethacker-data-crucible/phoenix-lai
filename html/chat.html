@@ -40,8 +40,8 @@
 <div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div></div>
 <div id="files"></div>
 <div class="modal" id="settingsModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header><h2 id="settingsTitle"><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <div class="body" id="settingsBody">
       <section id="catDocs">
         <div class="section">docs</div>
@@ -75,8 +75,8 @@
 </div>
 
 <div class="modal" id="modelModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="modelTitle">
+    <header><h2 id="modelTitle"><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <div class="section">system prompt</div>
@@ -106,8 +106,8 @@
 </div>
 
 <div class="modal" id="provModal">
-  <div class="window settings">
-    <header><h2>OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
+    <header><h2 id="provTitle">OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
@@ -140,8 +140,8 @@
 </div>
 
 <div class="modal" id="downModal">
-  <div class="window downbox">
-    <header><h2><span class="chev">›</span> phoenix client stopped</h2></header>
+  <div class="window downbox" role="dialog" aria-modal="true" aria-labelledby="downTitle" aria-describedby="downText">
+    <header><h2 id="downTitle"><span class="chev">›</span> phoenix client stopped</h2></header>
     <div class="body"><p id="downText">The Phoenix Client has stopped.</p></div>
     <footer><span class="keys" id="downNote"></span><button class="primary" id="downExit">exit</button></footer>
   </div>
@@ -149,6 +149,7 @@
 
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
+<script src="js/modal.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/skills.js"></script>
 <script src="js/providers.js"></script>

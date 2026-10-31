@@ -22,8 +22,8 @@
 <div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div><div class="pbar" id="pbar"><button id="pbNew" title="New chat" aria-label="New chat"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button id="pbCmd" title="Commands (/help, /model, /recall, ...)" aria-label="Commands"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M10.5 2.5 5.5 13.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><div class="mpick"><button id="pbModel" class="chip" title="Model (click to change)"></button><div id="modelMenu"></div></div><span id="pbCtx" class="ctx" title="Context used by this chat"></span><span class="grow"></span><button id="pbMode" class="mode" title="Auto: file actions run without asking · Accept: approve each one"></button><button id="pbSettings" title="Settings" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M6.9 1.8h2.2l.35 1.7 1.2.7 1.65-.55 1.1 1.9-1.3 1.15v1.4l1.3 1.15-1.1 1.9-1.65-.55-1.2.7-.35 1.7H6.9l-.35-1.7-1.2-.7-1.65.55-1.1-1.9 1.3-1.15V7.3L2.6 6.15l1.1-1.9 1.65.55 1.2-.7z"/></svg></button><button id="pbSend" class="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
 <div id="files"></div>
 <div class="modal" id="settingsModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header><h2 id="settingsTitle"><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <nav class="cats" id="settingsCats">
       <button data-cat="catProv">providers</button><button data-cat="catDocs">docs</button><button data-cat="catLook">appearance</button><button data-cat="catApp">app</button>
     </nav>
@@ -60,8 +60,8 @@
 </div>
 
 <div class="modal" id="modelModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="modelTitle">
+    <header><h2 id="modelTitle"><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <div class="section">system prompt</div>
@@ -91,8 +91,8 @@
 </div>
 
 <div class="modal" id="provModal">
-  <div class="window settings">
-    <header><h2>OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
+    <header><h2 id="provTitle">OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
@@ -125,8 +125,8 @@
 </div>
 
 <div class="modal" id="downModal">
-  <div class="window downbox">
-    <header><h2><span class="chev">›</span> phoenix client stopped</h2></header>
+  <div class="window downbox" role="dialog" aria-modal="true" aria-labelledby="downTitle" aria-describedby="downText">
+    <header><h2 id="downTitle"><span class="chev">›</span> phoenix client stopped</h2></header>
     <div class="body"><p id="downText">The Phoenix Client has stopped.</p></div>
     <footer><span class="keys" id="downNote"></span><button class="primary" id="downExit">exit</button></footer>
   </div>
@@ -135,6 +135,7 @@
 <script src="js/vscode-theme.js"></script>
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
+<script src="js/modal.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/providers.js"></script>
 <script src="js/vscode-ui.js"></script>
