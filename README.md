@@ -132,7 +132,7 @@ completion uses the server. Rebuild with `vscode-ext-source\build.ps1`.
   `.phoenix`; projects are jailed in `Phoenix_Projects` (no `..`, absolute paths or junctions).
 - Every start runs `src\run.ps1`'s locality checks first and refuses to run if any rule is broken.
 
-Full details: [.claude/docs/SECURITY.md](.claude/docs/SECURITY.md).
+Full details: `.claude\docs\SECURITY.md` (development copy, not in the repo).
 
 ## Project layout
 
@@ -152,16 +152,16 @@ skills\                   app skills
 logs\                     server and client logs
 nvidia\                   test kit for the NVIDIA target machine
 vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
-.claude\                  development only: tests, tools, reports, plans, docs (never copied to production)
+.claude\                  development only, not in the repo (.gitignore): tests, tools, reports, plans, docs
 ```
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| [.claude/docs/ARCHITECTURE.md](.claude/docs/ARCHITECTURE.md) | From the shortcut to running code; how the server and the client work, file by file |
-| [.claude/docs/SECURITY.md](.claude/docs/SECURITY.md) | Every security rule, where it is enforced, how it was tested, and its limits |
-| [.claude/docs/CHANGELOG.md](.claude/docs/CHANGELOG.md) | Every change since 2026-10-15 |
+| `.claudedocsARCHITECTURE.md` (local, not in the repo) | From the shortcut to running code; how the server and the client work, file by file |
+| `.claudedocsSECURITY.md` (local, not in the repo) | Every security rule, where it is enforced, how it was tested, and its limits |
+| `.claudedocsCHANGELOG.md` (local, not in the repo) | Every change since 2026-10-15 |
 | [CLAUDE.md](CLAUDE.md) | Development rules (hard rules, build, workflow) |
 | [nvidia/NVIDIA.md](nvidia/NVIDIA.md) | Testing on the NVIDIA target machine |
 
