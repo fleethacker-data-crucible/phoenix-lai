@@ -237,7 +237,13 @@ function restoreChat() {
     chatEl.innerHTML = s.html;
     chatEl.querySelectorAll('.caret').forEach(c => c.remove());
     // Upgrade the welcome artwork in conversations saved before Fleet branding.
-    if (chatEl.querySelector('#empty')) welcome();
+    chatEl.querySelectorAll('#empty .logos').forEach(legacy => {
+      const emblem = document.createElement('img');
+      emblem.className = 'logo'; emblem.src = 'assets/brand/emblem-transparent.png';
+      emblem.width = 300; emblem.height = 300;
+      emblem.alt = 'Phoenix LAI: a phoenix rising above a ship binnacle';
+      legacy.replaceWith(emblem);
+    });
     chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
     history = s.history || []; ctxUsed = s.ctxUsed || 0;
     (s.tps || []).forEach(t => recordTps(t));
