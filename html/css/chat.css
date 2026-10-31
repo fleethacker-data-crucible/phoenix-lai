@@ -121,14 +121,7 @@ body {
 #chat > :first-child { margin-top: auto; }
 .empty { text-align: center; color: var(--dim); margin: auto 0; }
 .empty .hint { font-family: var(--sans); font-size: 13px; }
-.empty .logo { width: min(300px, 60vw); height: auto; aspect-ratio: 1312 / 1199; display: block; margin: 0 auto 6px; }   /* sized before it loads: no jump */
-/* Dark and light logo stacked; a click cross-fades them. */
-.empty .logos { position: relative; width: min(300px, 60vw); margin: 0 auto 6px; cursor: pointer; }
-.empty .logos .logo { margin: 0; transition: opacity 1.8s ease-in-out; }
-.empty .logos .alt { position: absolute; inset: 0; opacity: 0; }
-.empty .logos .logo:not(.alt) { position: relative; top: -2px; }   /* the dark logo sits 2px higher to line up with the light one */
-.empty .logos.light .logo:not(.alt) { opacity: 0; }
-.empty .logos.light .alt { opacity: 1; }
+.empty .logo { width: min(300px, 60vw, 40vh); height: auto; aspect-ratio: 1; display: block; margin: 0 auto 12px; }
 /* System lines (loading, loaded, folder…): tight together, a gap before the next message. */
 .sysline { margin: 0 0 4px; white-space: pre-wrap; }
 .sysline + .turn, .sysline + .approve { margin-top: 18px; }

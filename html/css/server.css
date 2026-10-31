@@ -22,6 +22,10 @@ main.dash { padding: 16px 20px 28px; display: grid; gap: 14px; grid-template-col
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
 .card h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
 .card.wide { grid-column: 1 / -1; }
+.fleet-welcome { display: flex; align-items: center; gap: 24px; }
+.fleet-welcome img { width: clamp(100px, 16vw, 160px); height: auto; flex: none; }
+.fleet-welcome p { margin: 0; color: var(--soft); }
+@media (max-width: 520px) { .fleet-welcome { flex-direction: column; gap: 12px; text-align: center; } }
 .big { font: 26px/1.2 var(--mono); color: var(--text); }
 .big small { font-size: 13px; color: var(--dim); }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 13px; }

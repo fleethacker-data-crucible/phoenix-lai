@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="html/assets/brand/emblem-transparent.png" width="280" alt="Phoenix LAI fleet emblem: a phoenix rising above a ship binnacle, in navy, brass and ivory">
+</p>
+
 # Phoenix LAI
 
 > local Gemma models on your GPU behind an OpenAI-compatible API, plus a Chrome app client.

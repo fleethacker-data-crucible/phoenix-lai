@@ -200,24 +200,13 @@ async function setFolder(arg) {
 }
 
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
-// Each time the app window opens, the welcome logo starts on the other version (dark / light) than last time. A refresh
-// (F5) keeps it: sessionStorage survives a reload of the window but not a new window.
-try {
-  if (!sessionStorage.getItem('phx.logoSet')) { settings.logoLight = !settings.logoLight; save(); sessionStorage.setItem('phx.logoSet', '1'); }
-} catch (e) {}
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><div class="logos' + (settings.logoLight ? ' light' : '') + '">' +
-    '<img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI"><img class="logo alt" src="assets/light_phoenix_logo.png" alt=""></div>' +
+  chatEl.innerHTML = '<div class="empty" id="empty">' +
+    '<img class="logo" src="assets/brand/emblem-transparent.png" width="300" height="300" alt="Phoenix LAI: a phoenix rising above a ship binnacle">' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.</div></div>';   // version: in the title bar
   placePrompt(); centerEmpty();
 }
-// Click the welcome logo: the dark and light versions dissolve into each other (the choice is remembered; one listener,
-// so a chat restored after a reload keeps working).
-chatEl.addEventListener('click', e => {
-  const l = e.target.closest('.logos'); if (!l) return;
-  settings.logoLight = !settings.logoLight; l.classList.toggle('light', settings.logoLight); save();
-});
 // The prompt always sits at the end of the conversation.
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); syncComposer(); scrollDown(); }
 function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
@@ -247,7 +236,8 @@ function restoreChat() {
     if (s.composer) chatEl.style.setProperty('--composer', s.composer);   // the box's height from before: no jump while it is re-measured
     chatEl.innerHTML = s.html;
     chatEl.querySelectorAll('.caret').forEach(c => c.remove());
-    chatEl.querySelectorAll('.logos').forEach(l => l.classList.toggle('light', !!settings.logoLight));   // this load's logo
+    // Upgrade the welcome artwork in conversations saved before Fleet branding.
+    if (chatEl.querySelector('#empty')) welcome();
     chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
     history = s.history || []; ctxUsed = s.ctxUsed || 0;
     (s.tps || []).forEach(t => recordTps(t));
