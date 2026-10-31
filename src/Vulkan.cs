@@ -124,6 +124,8 @@ namespace Phoenix
     public static unsafe class Vk
     {
 
+        [DllImport("vulkan-1.dll")] public static extern int vkEnumerateDeviceExtensionProperties(IntPtr phys, IntPtr layerName, uint* count, byte* props);   // VkExtensionProperties: char[256] + u32
+        [DllImport("vulkan-1.dll")] public static extern IntPtr vkGetInstanceProcAddr(IntPtr instance, string name);
         [DllImport("vulkan-1.dll")] public static extern int vkCreateInstance(VkInstanceCreateInfo* info, IntPtr alloc, IntPtr* instance);
         [DllImport("vulkan-1.dll")] public static extern void vkDestroyInstance(IntPtr instance, IntPtr alloc);
         [DllImport("vulkan-1.dll")] public static extern int vkEnumeratePhysicalDevices(IntPtr instance, uint* count, IntPtr* devices);

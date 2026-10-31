@@ -2,11 +2,10 @@
 *.gguf
 /logs/
 /docs/.index/
-/.claude/rag-eval-oldroot/
 /nvidia/results/
 /nvidia/logs/
 /Phoenix_LAI_Package.7z
-/.claude/worktrees/
+/.claude/
 
 # Local environment files (secrets)
 .env

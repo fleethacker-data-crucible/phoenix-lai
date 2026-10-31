@@ -1,4 +1,4 @@
-// Gemma 4 (text) forward pass on the GPU through Vulkan compute. C# 5 only.
+﻿// Gemma 4 (text) forward pass on the GPU through Vulkan compute. C# 5 only.
 // Same graph and rounding points as GemmaCpu, which is its ground truth. Weights: Q4_0 / Q8_0 / Q4_K-Q6_K.
 using System;
 using System.Collections.Generic;
@@ -33,6 +33,9 @@ namespace Phoenix
             public int HeadDim, NHeadKv, KvDim, NFf, NRot, Ring;
             public bool Swa;
             public bool Shared;   // E2B/E4B: no K/V of its own; KCache/VCache/Ring are the source layer's (C.KvSrc)
+            // mixture of experts (26B A4B): router (f32), fused gate|up and down experts (all experts, rows stacked), norms
+            public GpuBuffer GateInp, GateInpT, GateInpS, DownScale, PreFfwNorm2, PostFfwNorm1, PostFfwNorm2;   // GateInpT: [n][nExp] (prefill)
+            public GW GateUpExp, DownExp;
         }
 
         // E2B/E4B per-layer inputs: the f16 model projection on the GPU, the token rows (Q6_K, ~2 GB) stay mapped on the CPU.
@@ -77,15 +80,21 @@ namespace Phoenix
         readonly GpuKernel[] _kQ80 = new GpuKernel[4], _kQ8K = new GpuKernel[4];
         readonly GpuKernel _kMvQ8, _kMvQ4, _kMvQ4K, _kMvQ5K, _kMvQ6K, _kRope, _kHeadNorm, _kNormAdd, _kNormAddQ, _kSoftcap, _kKvT, _kSoftmax, _kReduce;
         IntPtr _graph;
+        GpuKernel _kRouterLogits, _kRouterSelect, _kMoeGateUp, _kMoeDown, _kNorm2;
+        GpuBuffer _route, _rlogits, _mlp, _moe, _xq2, _xd2, _g2, _u2;
 
         // Batched prefill (KernelsPrefill): chunk buffers, allocated on first use.
-        int _chunk = 512;                            // current chunk size (adaptive, see Prefill)
+        int _chunkCap;                               // largest chunk: PrefillChunk, or MoePrefillChunk for the 26B
+        int _chunk;                                  // current chunk size (adaptive, see Prefill)
+        public static int MoePrefillChunk = 2048;    // experts read every expert once per chunk: 512 -> 1,040, 2048 -> 1,200 tok/s (8060S, pp2048)
         const int ChunkMin = 32;
         const double ChunkSlowMs = 400, ChunkFastMs = 150;
         public static int PrefillChunk = 512;       // tokens per chunk (larger chunks keep the GPU busier: 64 -> 241, 512 -> 328 tok/s)
         const int LayersPerSubmit = 12;              // GPU submissions stay far below Windows' ~2 s timeout
+        int SubmitLayers { get { return _gpu.LayersPerSubmit(C.Moe ? 6 : LayersPerSubmit); } }   // 26B: 2048-token chunks, half the layers per submit
         public static bool UsePrefill = true;
-        const uint MmTok = 24;                       // tokens per prefill matmul tile (RX 6700 XT sweep: 16 6.0, 24 7.4, 32 6.6 TMAC/s)
+        public static uint MmTok = 24;               // tokens per prefill matmul tile (RX 6700 XT sweep: 16 6.0, 24 7.4, 32 6.6 TMAC/s)
+        public static uint MmRpt = 1;                // rows per thread of the prefill matmul tile (64 * MmRpt rows per workgroup)
         GpuKernel _kMm, _kMmAny, _kKvRows, _kAttnPre, _kCopyRange, _kRowNorm, _kRopeRows, _kCopyRows;
         public static bool UseFlash = true;
         bool _flash;
@@ -112,6 +121,8 @@ namespace Phoenix
             _gpu = gpu;
             Kv = kv; KvV = kvV;
             C = GemmaConfig.FromGguf(g);
+            _chunkCap = C.Moe ? Math.Max(PrefillChunk, MoePrefillChunk) : PrefillChunk;
+            _chunk = _chunkCap;
             if (C.Embedding) throw new NotSupportedException("EmbeddingGemma runs on the CPU.");
             MaxCtx = maxCtx;
             _embdScale = (float)Math.Sqrt(C.NEmbd);
@@ -164,6 +175,21 @@ namespace Phoenix
                     l.Up = UploadW(T(g, p + "ffn_up.weight"));
                     l.Down = UploadW(T(g, p + "ffn_down.weight"));
                     if (g.TensorsByName.ContainsKey(p + "layer_output_scale.weight")) l.OutScale = *(float*)T(g, p + "layer_output_scale.weight").Data;
+                    if (C.Moe)
+                    {
+                        l.GateInp = UploadF32(T(g, p + "ffn_gate_inp.weight"));
+                        l.GateInpT = UploadTransposedF32(T(g, p + "ffn_gate_inp.weight"));
+                        l.GateInpS = UploadF32(T(g, p + "ffn_gate_inp.scale"));
+                        l.DownScale = UploadF32(T(g, p + "ffn_down_exps.scale"));
+                        l.PreFfwNorm2 = UploadF32(T(g, p + "pre_ffw_norm_2.weight"));
+                        l.PostFfwNorm1 = UploadF32(T(g, p + "post_ffw_norm_1.weight"));
+                        l.PostFfwNorm2 = UploadF32(T(g, p + "post_ffw_norm_2.weight"));
+                        l.GateUpExp = UploadW(T(g, p + "ffn_gate_up_exps.weight"));
+                        l.DownExp = UploadW(T(g, p + "ffn_down_exps.weight"));
+                        if (l.GateUpExp.Type != GgmlType.Q4_0 || l.DownExp.Type != GgmlType.Q4_0)
+                            throw new NotSupportedException("Mixture-of-experts weights must be q4_0 on the GPU.");
+                        maxFf = Math.Max(maxFf, C.NExpertUsed * C.NFfExp);
+                    }
                     if (C.NEmbdPerLayer > 0)
                     {
                         l.PleGate = UploadW(T(g, p + "inp_gate.weight"));
@@ -186,6 +212,21 @@ namespace Phoenix
                     maxQ = Math.Max(maxQ, C.NHead * l.HeadDim); maxKv = Math.Max(maxKv, l.KvDim); maxFf = Math.Max(maxFf, l.NFf);
                     _layers[i] = l;
                     if (!Q4(l.Wq) || !Q4(l.Wk) || !Q4(l.Wv) || !Q4(l.Wo) || !Q4(l.Gate) || !Q4(l.Up) || !Q4(l.Down) || !Q4(l.PleGate) || !Q4(l.PleProj)) _prefillOk = false;
+                }
+                if (C.Moe)
+                {
+                    _kRouterLogits = Kernel(KernelsMoe.RouterLogits(gpu.SubgroupArithmetic), 4, 4, "moe router logits");
+                    _kRouterSelect = Kernel(KernelsMoe.RouterSelect(), 3, 2, "moe router select");
+                    _kMoeGateUp = Kernel(KernelsMoe.GateUp(gpu.IntegerDot, gpu.SubgroupArithmetic), 7, 4, "moe gate|up q4_0");
+                    _kMoeDown = Kernel(KernelsMoe.Down(gpu.IntegerDot, gpu.SubgroupArithmetic), 6, 4, "moe down q4_0");
+                    _kNorm2 = Kernel(KernelsMoe.Norm2(), 5, 2, "moe norm2");
+                    _route = Buf(2 * KernelsMoe.MaxUsed * 4, BufferKind.Device);
+                    _rlogits = Buf((ulong)C.NExpert * 4, BufferKind.Device);
+                    _mlp = Buf((ulong)C.NEmbd * 4, BufferKind.Device);
+                    int nIn = Math.Max(C.NEmbd, C.NExpertUsed * C.NFfExp);
+                    _xq2 = Buf((ulong)nIn, BufferKind.Device); _xd2 = Buf((ulong)(nIn / 32) * 4, BufferKind.Device);
+                    _g2 = Buf((ulong)(C.NExpertUsed * C.NFfExp) * 4, BufferKind.Device); _u2 = Buf((ulong)(C.NExpertUsed * C.NFfExp) * 4, BufferKind.Device);
+                    _moe = Buf((ulong)C.NEmbd * 4, BufferKind.Device);
                 }
                 _swa = MakeKind(true, ropeFreqs);
                 _global = MakeKind(false, ropeFreqs);
@@ -282,6 +323,20 @@ namespace Phoenix
             return b;
         }
 
+        // A 2-D f32 tensor [rows][cols] uploaded as [cols][rows].
+        GpuBuffer UploadTransposedF32(GgufTensor t)
+        {
+            if (t.Type != GgmlType.F32 || t.Dims.Length != 2) throw new NotSupportedException(t.Name + " must be 2-D f32.");
+            int cols = (int)t.Dims[0], rows = (int)t.Dims[1];
+            float* src = (float*)t.Data;
+            float[] tr = new float[(long)rows * cols];
+            for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++) tr[(long)c * rows + r] = src[(long)r * cols + c];
+            GpuBuffer b = Buf((ulong)t.SizeBytes, BufferKind.Device);
+            fixed (float* p = tr) _gpu.Upload(b, 0, (IntPtr)p, (ulong)t.SizeBytes);
+            WeightBytes += t.SizeBytes;
+            return b;
+        }
+
         GW UploadW(GgufTensor t)
         {
             switch (t.Type)
@@ -300,6 +355,7 @@ namespace Phoenix
         GW UploadBlocks(GgufTensor t, int qk, int blockBytes, int payload, bool halfScales)
         {
             Weight w = new Weight(t);
+            w.Rows = (int)(t.ElementCount / w.Cols);   // 3-D expert tensors: every expert's rows, stacked
             GW q = new GW();
             q.Type = t.Type; q.Rows = w.Rows; q.Cols = w.Cols; q.Nb = w.Cols / qk;
             q.Stride = halfScales ? q.Nb + RowPad : q.Nb;   // Q4_0 (fp16 scales) padded; Q8_0 kernels expect packed rows
@@ -561,11 +617,16 @@ namespace Phoenix
                     _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, _xb, l.PostAttnNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(1f) }, 1, 1, 1);
                     Quant(KernelsQuant.Mode.RmsNorm, _x, l.FfnNorm, C.NEmbd, l.Gate, l.Up);
                 }
-                MatVec(l.Gate, _g, false);
-                MatVec(l.Up, _u, true);
-                Quant(KernelsQuant.Mode.GeluMul, _g, _u, l.NFf, l.Down);
-                MatVec(l.Down, _xb, true);
-                GpuBuffer lastNorm = l.PostFfnNorm;
+                GpuBuffer lastNorm = l.PostFfnNorm, ffn = _xb;
+                if (C.Moe && Q80Users(l.Gate, l.Up, l.Down)) { RecordFfnMoe(l); ffn = _mlp; }
+                else
+                {
+                    MatVec(l.Gate, _g, false);
+                    MatVec(l.Up, _u, true);
+                    Quant(KernelsQuant.Mode.GeluMul, _g, _u, l.NFf, l.Down);
+                    MatVec(l.Down, _xb, true);
+                    if (C.Moe) { RecordMoe(l); ffn = _mlp; }
+                }
                 if (_pleTok != null)
                 {
                     // x += norm(ffn); then x += norm(proj(gelu(inp_gate(x)) * ple[il])) (the output scale comes after)
@@ -580,14 +641,66 @@ namespace Phoenix
                 Layer next = il + 1 < C.NLayer ? _layers[il + 1] : null;
                 inputReady = next != null && Q80Users(next.Wq, next.Wk, next.Wv);
                 if (inputReady)
-                    _gpu.Record(_kNormAddQ, new GpuBuffer[] { _x, _xb, lastNorm, next.AttnNorm, _xq, _xd }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
+                    _gpu.Record(_kNormAddQ, new GpuBuffer[] { _x, ffn, lastNorm, next.AttnNorm, _xq, _xd }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
                 else
-                    _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, _xb, lastNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
+                    _gpu.Record(_kNormAdd, new GpuBuffer[] { _x, ffn, lastNorm }, new uint[] { (uint)C.NEmbd, eps, Bits(l.OutScale) }, 1, 1, 1);
             }
             Quant(KernelsQuant.Mode.RmsNorm, _x, _outputNorm, C.NEmbd, _output);
             MatVec(_output, _logits, true);
             if (C.Softcap > 0)
                 _gpu.Record(_kSoftcap, new GpuBuffer[] { _logits }, new uint[] { (uint)C.NVocab, Bits(C.Softcap) }, Groups(C.NVocab, Kernels.Wg), 1, 1);
+        }
+
+        // Routed experts of one decode step on attn_out (_x); the shared MLP's output is in _xb. Leaves
+        // norm1(mlp) + norm2(experts) in _mlp. Routing never leaves the GPU (KernelsMoe).
+        void RecordMoe(Layer l)
+        {
+            int d = C.NEmbd, nf = C.NFfExp, k = C.NExpertUsed;
+            uint eps = Bits(C.Eps);
+            _gpu.Record(_kRouterLogits, new GpuBuffer[] { _x, l.GateInpS, l.GateInp, _rlogits }, new uint[] { (uint)d, eps, Bits(1f / (float)Math.Sqrt(d)), (uint)C.NExpert }, (uint)C.NExpert, 1, 1);
+            _gpu.Record(_kRouterSelect, new GpuBuffer[] { _rlogits, l.DownScale, _route }, new uint[] { (uint)C.NExpert, (uint)k }, 1, 1, 1, false);
+            Quant(KernelsQuant.Mode.RmsNorm, _x, l.PreFfwNorm2, d, l.GateUpExp);
+            GW gu = l.GateUpExp, dn = l.DownExp;
+            uint guRows = (uint)(2 * nf), dnRows = (uint)d;
+            _gpu.Record(_kMoeGateUp, new GpuBuffer[] { gu.A, gu.B, _xq, _xd, _g, _u, _route }, new uint[] { guRows, (uint)gu.Nb, (uint)gu.Stride, (uint)nf }, guRows, (uint)k, 1);
+            Quant(KernelsQuant.Mode.GeluMul, _g, _u, k * nf, dn);
+            _gpu.Record(_kMoeDown, new GpuBuffer[] { dn.A, dn.B, _xq, _xd, _moe, _route }, new uint[] { dnRows, (uint)dn.Nb, (uint)dn.Stride, (uint)k }, dnRows, 1, 1);
+            _gpu.Record(_kNorm2, new GpuBuffer[] { _xb, _moe, l.PostFfwNorm1, l.PostFfwNorm2, _mlp }, new uint[] { (uint)d, eps }, 1, 1, 1);
+        }
+
+        // Q8_0 quantization of x (mode as KernelsQuant) into the given buffers.
+        void Q80To(KernelsQuant.Mode mode, GpuBuffer x, GpuBuffer aux, int n, GpuBuffer xq, GpuBuffer xd, bool barrierAfter)
+        {
+            int nb = n / 32;
+            GpuBuffer[] b = mode == KernelsQuant.Mode.Plain ? new GpuBuffer[] { x, xq, xd } : new GpuBuffer[] { x, xq, xd, aux };
+            _gpu.Record(_kQ80[(int)mode], b, new uint[] { (uint)nb, (uint)n, Bits(C.Eps) }, Groups(nb, 8), 1, 1, barrierAfter);
+        }
+
+        // The whole feed-forward of a 26B decode step (attn_out in _x, ffn_norm(x) already quantized in _xq), scheduled so
+        // the shared MLP and the routed experts overlap: 6 barriers instead of 9, and the small router kernels run beside
+        // the big matvecs instead of alone. The experts use their own activation buffers (_xq2, _g2, _u2). Leaves
+        // norm1(mlp) + norm2(experts) in _mlp.
+        void RecordFfnMoe(Layer l)
+        {
+            int d = C.NEmbd, nf = C.NFfExp, k = C.NExpertUsed;
+            uint eps = Bits(C.Eps);
+            GW gu = l.GateUpExp, dn = l.DownExp;
+            uint guRows = (uint)(2 * nf), dnRows = (uint)d;
+            // A: shared gate / up, router logits, the experts' input
+            MatVec(l.Gate, _g, false);
+            MatVec(l.Up, _u, false);
+            _gpu.Record(_kRouterLogits, new GpuBuffer[] { _x, l.GateInpS, l.GateInp, _rlogits }, new uint[] { (uint)d, eps, Bits(1f / (float)Math.Sqrt(d)), (uint)C.NExpert }, (uint)C.NExpert, 1, 1, false);
+            Q80To(KernelsQuant.Mode.RmsNorm, _x, l.PreFfwNorm2, d, _xq2, _xd2, true);
+            // B: shared GELU, top-k
+            Q80To(KernelsQuant.Mode.GeluMul, _g, _u, l.NFf, _xq, _xd, false);
+            _gpu.Record(_kRouterSelect, new GpuBuffer[] { _rlogits, l.DownScale, _route }, new uint[] { (uint)C.NExpert, (uint)k }, 1, 1, 1, true);
+            // C: shared down, experts' gate|up
+            MatVec(l.Down, _xb, false);
+            _gpu.Record(_kMoeGateUp, new GpuBuffer[] { gu.A, gu.B, _xq2, _xd2, _g2, _u2, _route }, new uint[] { guRows, (uint)gu.Nb, (uint)gu.Stride, (uint)nf }, guRows, (uint)k, 1, true);
+            // D-F: experts' GELU, down (weighted sum), the two branch norms
+            Q80To(KernelsQuant.Mode.GeluMul, _g2, _u2, k * nf, _xq2, _xd2, true);
+            _gpu.Record(_kMoeDown, new GpuBuffer[] { dn.A, dn.B, _xq2, _xd2, _moe, _route }, new uint[] { dnRows, (uint)dn.Nb, (uint)dn.Stride, (uint)k }, dnRows, 1, 1, true);
+            _gpu.Record(_kNorm2, new GpuBuffer[] { _xb, _moe, l.PostFfwNorm1, l.PostFfwNorm2, _mlp }, new uint[] { (uint)d, eps }, 1, 1, 1, true);
         }
 
         // Per-layer inputs of T rows of x (each row the scaled input embedding): out[l][t][pl]. tok holds the token
@@ -627,7 +740,7 @@ namespace Phoenix
                     // Chunk size adapts so one submit stays short: attention work grows with the position (and with the
                     // cache stride, i.e. the context size), and a 128K context made a 512-token chunk at position 20K
                     // run past the Windows GPU timeout (device lost, 2026-10-17).
-                    int T = ImageTokens.Fit(tokens, i, Math.Min(PrefillChunk, _chunk), end);   // an image stays in one chunk
+                    int T = ImageTokens.Fit(tokens, i, Math.Min(_chunkCap, _chunk), end);   // an image stays in one chunk
                     if (BidiImages)
                     {
                         // the two-way span covers one image per chunk: a second image starts the next chunk
@@ -641,8 +754,10 @@ namespace Phoenix
                     long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                     logits = PrefillChunkRun(tokens, i, T);
                     double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    // the timeout applies per submit: a chunk is split every LayersPerSubmit layers
+                    ms *= Math.Min(1.0, (double)SubmitLayers / C.NLayer);
                     if (ms > ChunkSlowMs && _chunk > ChunkMin) _chunk = Math.Max(ChunkMin, _chunk / 2);
-                    else if (ms < ChunkFastMs && T == _chunk && _chunk < PrefillChunk) _chunk = Math.Min(PrefillChunk, _chunk * 2);
+                    else if (ms < ChunkFastMs && T == _chunk && _chunk < _chunkCap) _chunk = Math.Min(_chunkCap, _chunk * 2);
                     i += T;
                 }
             }
@@ -653,7 +768,13 @@ namespace Phoenix
         void EnsurePrefill()
         {
             if (_kMm != null) return;
-            _kMm = Kernel(KernelsPrefill.MatMulQ4Q8Tile(_gpu.IntegerDot, 1, MmTok, true), 5, 4, "pf matmul q4_0");
+            _kMm = Kernel(KernelsPrefill.MatMulQ4Q8Tile(_gpu.IntegerDot, MmRpt, MmTok, true), 5, 4, "pf matmul q4_0");
+            _coop = UseCoop && _gpu.CoopMat && _gpu.SubgroupSize == 64;
+            if (_coop)
+            {
+                _kCoop = Kernel(KernelsCoop.MatMul(false, CoopBm, CoopBn, CoopSr), 4, 4, "pf matmul coop f16");
+                _kGeluMul = Kernel(KernelsCoop.GeluMul(), 2, 1, "pf gelu mul");
+            }
             _kMmAny = Kernel(KernelsPrefill.MatMulQ4Q8(_gpu.IntegerDot, 1), 5, 4, "pf matmul q4_0 (any)");
             _kKvRows = Kernel(KernelsKv.StoreRows(Kv, KvV), 4, 5, "pf kv store " + KernelsKv.Name(Kv) + "/" + KernelsKv.Name(KvV));
             // tiled attention when shared memory allows (KernelsFlash: ~16x less K/V traffic at long context)
@@ -683,7 +804,7 @@ namespace Phoenix
             _kRowNorm = Kernel(KernelsBatch.RowNorm(), 3, 4, "pf row norm");
             _kRopeRows = Kernel(KernelsBatch.RopeNeoxRows(), 2, 4, "pf rope");
             _kCopyRows = Kernel(KernelsBatch.Copy(), 2, 1, "pf v=k");
-            ulong T = (ulong)PrefillChunk, d = (ulong)C.NEmbd;
+            ulong T = (ulong)_chunkCap, d = (ulong)C.NEmbd;
             int maxIn = Math.Max(Math.Max(C.NEmbd, _maxQ), _maxFf);
             _pX = Buf(T * d * 4, BufferKind.Device); _pXb = Buf(T * d * 4, BufferKind.Device); _pTmp = Buf(T * d * 4, BufferKind.Device);
             _pQ = Buf(T * (ulong)_maxQ * 4, BufferKind.Device); _pK = Buf(T * (ulong)_maxKv * 4, BufferKind.Device); _pV = Buf(T * (ulong)_maxKv * 4, BufferKind.Device);
@@ -700,6 +821,64 @@ namespace Phoenix
                 _pPleProj = Buf(T * n * 4, BufferKind.Device);
                 _pPle = Buf(T * n * 4, BufferKind.Device);
             }
+            if (C.Moe)
+            {
+                ulong ne = (ulong)C.NExpert, k = (ulong)C.NExpertUsed;
+                _kBucket = Kernel(KernelsMoe.Bucket(), 3, 2, "pf moe bucket");
+                if (C.NExpert >= 64 && 1024 % C.NExpert == 0 && C.NEmbd % 64 == 0) _kRouterRows = Kernel(KernelsMoe.RouterLogitsRows((uint)C.NExpert), 4, 4, "pf moe router");
+                _kGm = Kernel(KernelsMoe.GroupedMm(_gpu.IntegerDot, GmRpt), 8, 6, "pf moe grouped mm");
+                if (_coop) _kCoopG = Kernel(KernelsCoop.MatMul(true, GmCoopBm, GmCoopBn, GmCoopSr), 7, 6, "pf moe coop f16");
+                _kCombine = Kernel(KernelsMoe.Combine(), 3, 2, "pf moe combine");
+                _pLogits = Buf(T * ne * 4, BufferKind.Device);
+                _pRoute = Buf(T * 2 * k * 4, BufferKind.Device);
+                _pList = Buf(ne * T * 4, BufferKind.Device);
+                _pCnt = Buf(ne * 4, BufferKind.Device);
+                _pYd = Buf(T * k * d * 4, BufferKind.Device);
+                _pMoe = Buf(T * d * 4, BufferKind.Device);
+                _pMlp = Buf(T * d * 4, BufferKind.Device);
+            }
+        }
+
+        // Routed experts of T prompt rows (attn_out in _pX, the shared MLP's down output in _pTmp): route, gather each
+        // expert's tokens, grouped gate|up and down, weighted sum per token; leaves norm1(mlp) + norm2(experts) in _pMlp.
+        public static uint GmRpt = 4;
+        public static uint GmCoopBm = 128, GmCoopBn = 32, GmCoopSr = 4;  // expert tiles on the matrix units (rows x tokens, subgroup rows; 8060S sweep)
+        public static uint CoopBm = 64, CoopBn = 64, CoopSr = 2;         // dense tiles
+        GpuKernel _kBucket, _kGm, _kCombine, _kRouterRows;
+        GpuBuffer _pLogits, _pRoute, _pList, _pCnt, _pYd, _pMoe, _pMlp;
+
+        void RecordMoeRows(Layer l, int T)
+        {
+            int d = C.NEmbd, nf = C.NFfExp, k = C.NExpertUsed;
+            uint eps = Bits(C.Eps), tiles = Groups(T, KernelsMoe.GmTok);
+            if (_kRouterRows != null)
+                _gpu.Record(_kRouterRows, new GpuBuffer[] { _pX, l.GateInpS, l.GateInpT, _pLogits }, new uint[] { (uint)d, eps, Bits(1f / (float)Math.Sqrt(d)), (uint)T }, Groups(T, KernelsMoe.RtTok), 1, 1);
+            else
+                _gpu.Record(_kRouterLogits, new GpuBuffer[] { _pX, l.GateInpS, l.GateInp, _pLogits }, new uint[] { (uint)d, eps, Bits(1f / (float)Math.Sqrt(d)), (uint)C.NExpert }, (uint)C.NExpert, (uint)T, 1);
+            _gpu.Record(_kRouterSelect, new GpuBuffer[] { _pLogits, l.DownScale, _pRoute }, new uint[] { (uint)C.NExpert, (uint)k }, (uint)T, 1, 1);
+            _gpu.Record(_kBucket, new GpuBuffer[] { _pRoute, _pList, _pCnt }, new uint[] { (uint)T, (uint)k }, (uint)C.NExpert, 1, 1);
+            _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.PreFfwNorm2 }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
+            PfIn(_pXb, null, KernelsQuant.Mode.Plain, T * d);
+            GW gu = l.GateUpExp, dn = l.DownExp;
+            if (_coop)
+            {
+                uint ctiles = Groups(T, GmCoopBn);
+                _gpu.Record(_kCoopG, new GpuBuffer[] { gu.A, gu.B, _pIn, _pG, _pU, _pList, _pCnt },
+                    new uint[] { (uint)(2 * nf), (uint)gu.Nb, (uint)gu.Stride, (uint)T, (uint)k, (uint)nf }, (uint)(2 * nf) / GmCoopBm, ctiles, (uint)C.NExpert);
+                PfIn(_pG, _pU, KernelsQuant.Mode.GeluMul, T * k * nf);
+                _gpu.Record(_kCoopG, new GpuBuffer[] { dn.A, dn.B, _pIn, _pYd, _pYd, _pList, _pCnt },
+                    new uint[] { (uint)d, (uint)dn.Nb, (uint)dn.Stride, (uint)T, 1, 0 }, (uint)d / GmCoopBm, ctiles, (uint)C.NExpert);
+            }
+            else
+            {
+                _gpu.Record(_kGm, new GpuBuffer[] { gu.A, gu.B, _pXq, _pXd, _pG, _pU, _pList, _pCnt },
+                    new uint[] { (uint)(2 * nf), (uint)gu.Nb, (uint)gu.Stride, (uint)T, (uint)k, (uint)nf }, Groups(2 * nf, 64 * GmRpt), tiles, (uint)C.NExpert);
+                PfIn(_pG, _pU, KernelsQuant.Mode.GeluMul, T * k * nf);
+                _gpu.Record(_kGm, new GpuBuffer[] { dn.A, dn.B, _pXq, _pXd, _pYd, _pYd, _pList, _pCnt },
+                    new uint[] { (uint)d, (uint)dn.Nb, (uint)dn.Stride, (uint)T, 1, 0 }, Groups(d, 64 * GmRpt), tiles, (uint)C.NExpert);
+            }
+            _gpu.Record(_kCombine, new GpuBuffer[] { _pYd, _pRoute, _pMoe }, new uint[] { (uint)d, (uint)k }, Groups(d, Kernels.Wg), (uint)T, 1);
+            _gpu.Record(_kNorm2, new GpuBuffer[] { _pTmp, _pMoe, l.PostFfwNorm1, l.PostFfwNorm2, _pMlp }, new uint[] { (uint)d, eps }, (uint)T, 1, 1);
         }
 
         void RowQuant(GpuBuffer x, GpuBuffer aux, KernelsQuant.Mode mode, int n)
@@ -709,11 +888,38 @@ namespace Phoenix
             _gpu.Record(_kQ80[(int)mode], b, new uint[] { (uint)nb, (uint)n, Bits(C.Eps) }, Groups(nb, 8), 1, 1);
         }
 
+        // Prefill matmul input: with cooperative matrices the f32 rows are read as they are (f16 tiles; GeluMul applied in
+        // place), otherwise quantized to Q8_0 for the integer kernels.
+        public static bool UseCoop = true;
+        bool _coop;
+        GpuBuffer _pIn;
+        GpuKernel _kCoop, _kCoopG, _kGeluMul;
+
+        void PfIn(GpuBuffer x, GpuBuffer aux, KernelsQuant.Mode mode, int n)
+        {
+            if (!_coop) { RowQuant(x, aux, mode, n); return; }
+            if (mode == KernelsQuant.Mode.GeluMul) _gpu.Record(_kGeluMul, new GpuBuffer[] { x, aux }, new uint[] { (uint)n }, Groups(n, Kernels.Wg), 1, 1);
+            _pIn = x;
+        }
+
+        static bool CoopShape(GW w) { return w.Type == GgmlType.Q4_0 && w.Rows % CoopBm == 0 && w.Cols % KernelsCoop.Bk == 0; }
+
         void Mm(GW w, GpuBuffer y, int T, bool barrierAfter)
         {
+            if (_coop)
+            {
+                if (CoopShape(w))
+                {
+                    _gpu.Record(_kCoop, new GpuBuffer[] { w.A, w.B, _pIn, y }, new uint[] { (uint)w.Rows, (uint)w.Nb, (uint)T, (uint)w.Stride },
+                        (uint)(w.Rows / CoopBm), Groups(T, CoopBn), 1, barrierAfter);
+                    return;
+                }
+                RowQuant(_pIn, null, KernelsQuant.Mode.Plain, T * w.Cols);   // another shape: quantize for the integer kernel
+                barrierAfter = true;   // the next fallback re-quantizes into the same buffer
+            }
             bool fast = w.Nb % (int)KernelsPrefill.MmKb == 0;
             _gpu.Record(fast ? _kMm : _kMmAny, new GpuBuffer[] { w.A, w.B, _pXq, _pXd, y }, new uint[] { (uint)w.Rows, (uint)w.Nb, (uint)T, (uint)w.Stride },
-                Groups(w.Rows, KernelsPrefill.MmThreads), Groups(T, fast ? MmTok : KernelsPrefill.MmTok), 1, barrierAfter);
+                Groups(w.Rows, fast ? KernelsPrefill.MmThreads * MmRpt : KernelsPrefill.MmThreads), Groups(T, fast ? MmTok : KernelsPrefill.MmTok), 1, barrierAfter);
         }
 
         void UploadRopeRows(Kind kd, GpuBuffer dst, int p0, int T)
@@ -781,7 +987,7 @@ namespace Phoenix
                 GpuBuffer cs = l.Swa ? _pCsSwa : _pCsGlobal;
 
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.AttnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
-                RowQuant(_pXb, null, KernelsQuant.Mode.Plain, T * d);
+                PfIn(_pXb, null, KernelsQuant.Mode.Plain, T * d);
                 if (l.Shared)
                 {
                     Mm(l.Wq, _pQ, T, true);
@@ -822,29 +1028,31 @@ namespace Phoenix
                 else
                     _gpu.Record(_kAttnPre, new GpuBuffer[] { _pQ, l.KCache, l.VCache, _pAtt },
                         new uint[] { (uint)hd, (uint)l.KvDim, (uint)l.Ring, (uint)C.NHead, (uint)l.NHeadKv, (uint)p0, l.Swa ? (uint)C.NSwa : 0u, Bits(1f), l.Swa ? (uint)bidi0 : 0u, l.Swa ? (uint)bidi1 : 0u }, (uint)T, (uint)C.NHead, 1);
-                RowQuant(_pAtt, null, KernelsQuant.Mode.Plain, T * qDim);
+                PfIn(_pAtt, null, KernelsQuant.Mode.Plain, T * qDim);
                 Mm(l.Wo, _pTmp, T, true);
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostAttnNorm }, new uint[] { (uint)d, eps, 1, Bits(1f) }, (uint)T, 1, 1);
 
                 _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pXb, l.FfnNorm }, new uint[] { (uint)d, eps, 0, Bits(1f) }, (uint)T, 1, 1);
-                RowQuant(_pXb, null, KernelsQuant.Mode.Plain, T * d);
+                PfIn(_pXb, null, KernelsQuant.Mode.Plain, T * d);
                 Mm(l.Gate, _pG, T, false);
                 Mm(l.Up, _pU, T, true);
-                RowQuant(_pG, _pU, KernelsQuant.Mode.GeluMul, T * l.NFf);
+                PfIn(_pG, _pU, KernelsQuant.Mode.GeluMul, T * l.NFf);
                 Mm(l.Down, _pTmp, T, true);
+                GpuBuffer pFfn = _pTmp;
+                if (C.Moe) { RecordMoeRows(l, T); pFfn = _pMlp; }
                 bool ple = _pleTok != null;
-                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PostFfnNorm }, new uint[] { (uint)d, eps, 1, Bits(ple ? 1f : l.OutScale) }, (uint)T, 1, 1);
+                _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, pFfn, l.PostFfnNorm }, new uint[] { (uint)d, eps, 1, Bits(ple ? 1f : l.OutScale) }, (uint)T, 1, 1);
                 if (ple)
                 {
-                    RowQuant(_pX, null, KernelsQuant.Mode.Plain, T * d);
+                    PfIn(_pX, null, KernelsQuant.Mode.Plain, T * d);
                     Mm(l.PleGate, _pG, T, false);
                     _gpu.Record(_kCopyRange, new GpuBuffer[] { _pPle, _pU }, new uint[] { (uint)(T * Pl), (uint)(il * T * Pl), 0 }, Groups(T * Pl, Kernels.Wg), 1, 1);
-                    RowQuant(_pG, _pU, KernelsQuant.Mode.GeluMul, T * Pl);
+                    PfIn(_pG, _pU, KernelsQuant.Mode.GeluMul, T * Pl);
                     Mm(l.PleProj, _pTmp, T, true);
                     _gpu.Record(_kRowNorm, new GpuBuffer[] { _pX, _pTmp, l.PlePostNorm }, new uint[] { (uint)d, eps, 1, Bits(l.OutScale) }, (uint)T, 1, 1);
                 }
 
-                if ((il + 1) % _gpu.LayersPerSubmit(LayersPerSubmit) == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
+                if ((il + 1) % SubmitLayers == 0 && il + 1 < C.NLayer) { _gpu.SubmitAndWait(); _gpu.Begin(); }
             }
             if (_allRows) { _gpu.SubmitAndWait(); return null; }   // PrefillRows: rows' logits on demand (RowLogits)
             RecordHead(T - 1);
