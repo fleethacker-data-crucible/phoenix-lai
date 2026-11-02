@@ -177,7 +177,7 @@ This packs into `nvidia\results\phoenix-nvidia-<computer>-<date>.zip`:
 > **Privacy:** the session logs contain the chat text from step 3 (and any earlier chats on that machine). Open the
 > zip and check them before it leaves the machine, if that matters.
 
-**Bring that one zip file back** to the dev machine and give it to Claude. With it I can tell which kernels, limits
+**Bring that one zip file back** to the dev machine and give it to the reviewer. With it I can tell which kernels, limits
 or memory settings need changing, make the changes on the dev machine, verify them, and you copy the updated Phoenix
 folder over.
 
