@@ -1,6 +1,6 @@
 # Phoenix LAI: Tech Test Walkthrough
 
-This guide tests Phoenix LAI end to end on one PC: the **Local LLM** (Gemma 4 on your GPU) and a **Cloud API** (any OpenAI-compatible `/v1` provider). It takes about 30 to 45 minutes.
+This guide tests Phoenix LAI end to end on one PC: the **Local LLM** (Gemma 4 on your GPU), a **Cloud API** (any OpenAI-compatible `/v1` provider), and the **Fairlead** gateway that routes between them. It takes about 45 to 60 minutes.
 
 ![How the pieces connect](walkthrough/01-architecture.svg)
 
@@ -114,7 +114,85 @@ Then switch back to **Phoenix Local Server**, send the same message, and confirm
 
 ---
 
-## 6. Failure checks
+## 6. Route Phoenix through Fairlead
+
+Fairlead is the local model gateway. Phoenix can talk to Fairlead as one OpenAI `/v1` provider. Fairlead then routes each request to the local model or your cloud API. This section tests that path. Do sections 3 to 5 first, so you know each model works directly.
+
+![Phoenix through Fairlead](walkthrough/04-fairlead-path.svg)
+
+### 6.1 Start Fairlead
+1. Double-click **`Launch-Fairlead.bat`** in the Fairlead folder. A tray icon appears.
+2. Open the admin page from the tray icon.
+
+**Expected:** Fairlead is listening on `127.0.0.1:8776`.
+
+### 6.2 Add the providers in Fairlead
+1. Under **Providers**, add **Phoenix Local Server** as an OpenAI-compatible provider at `http://127.0.0.1:1234/v1`, with no key. *UNVERIFIED: confirm the exact fields in the Providers screen.*
+2. Add your **cloud API** as a provider with its base URL. Paste the key in Fairlead's Providers screen, where it is stored encrypted.
+3. Under **Routes**, make `local` point at the Phoenix Local Server, and `smart` point at the cloud API.
+4. Press **Test** on each provider.
+
+**Expected:** both providers show online.
+
+### 6.3 Create a client key for Phoenix
+Open a terminal in the Fairlead folder and run:
+
+```powershell
+.\fairlead.cmd clients add phoenix --routes local,smart
+```
+
+Copy the `fl-...` key it prints. It is shown **once**.
+
+### 6.4 Point Phoenix at Fairlead
+1. In Phoenix, press **+** under Providers.
+2. Fill in:
+
+| Field | Value |
+|---|---|
+| **Name** | `Fairlead` |
+| **Base URL** | `http://127.0.0.1:8776/v1` |
+| **API key** | the `fl-...` key from 6.3 |
+| **Send local context** | Leave **off** |
+
+3. Press **Save**, then **Test**.
+4. Open the model menu. The Fairlead routes (`local`, `smart`) should appear.
+
+**Expected:** the Fairlead dot is green. Routes appear in the model menu.
+
+### 6.5 Test the local route
+1. Choose the **`local`** route.
+2. Send: `In one sentence, what is a GPU?`
+
+**Expected:** the answer streams in. Fairlead's response headers show `X-Fairlead-Target` pointing at the local model. *UNVERIFIED: check this in Fairlead's Activity log.*
+
+### 6.6 Test the cloud route
+1. Choose the **`smart`** route.
+2. Send the same message.
+
+**Expected:** the answer comes from the cloud model. Fairlead's Activity log shows the cloud target.
+
+### 6.7 Test the privacy rule
+Fairlead scans requests for secrets (keys, passwords, private keys). A request that contains one is kept on local models, even if it goes to `smart`.
+
+1. Choose the **`smart`** route.
+2. Send a message containing a fake key, for example: `Check this: api_key=TEST-FAKE-0000`.
+
+**Expected:** the request is answered by the local model. Fairlead's Activity log marks it as **private**. Remember this is expected behavior, not a fault.
+
+### 6.8 Check Kedge mode
+Kedge keeps requests on local models only, for example when the internet is down. Check its state:
+
+```powershell
+.\fairlead.cmd settings
+```
+
+**Expected:** `kedge` is `auto`. If it shows `on`, cloud routes will skip the cloud. Set it back to `auto` before testing cloud.
+
+![Fairlead route check](walkthrough/02-test-flow.svg)
+
+---
+
+## 7. Failure checks
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -124,10 +202,14 @@ Then switch back to **Phoenix Local Server**, send the same message, and confirm
 | `404` or "model not found" | Model name not offered by provider | Use a model from the Test result |
 | Cloud stalls, then fails | Firewall or proxy blocks the host | Ask IT to allow the provider's host |
 | Reply is blank or cut off | Context too long | Type `/new` and try again |
+| Fairlead dot is **red** | Fairlead not running or wrong port | Start `Launch-Fairlead.bat`; check port 8776 |
+| Fairlead returns `401` | Missing or wrong `fl-` key | Create a new key with `clients add` and paste it into Phoenix |
+| `smart` always answers from local | Privacy rule or Kedge mode | Check the Activity log; set Kedge to `auto` |
+| No routes in the model menu | Routes not granted to the key | Re-run `clients add` with `--routes local,smart` |
 
 ---
 
-## 7. Checklist
+## 8. Checklist
 
 Copy this into your test record.
 
@@ -140,13 +222,19 @@ Copy this into your test record.
 - [ ] Cloud model appears in the model menu
 - [ ] Cloud model answered the test message
 - [ ] Switching between Local and Cloud changes the top bar
+- [ ] Fairlead running; both providers online in Fairlead
+- [ ] Phoenix Fairlead provider added with a `fl-` key; routes appear
+- [ ] `local` route answered from the local model
+- [ ] `smart` route answered from the cloud model
+- [ ] Privacy test kept the request local and was logged as private
+- [ ] Kedge set to `auto`
 - [ ] Any failure recorded with the exact error text
 
 **Tester:** ____________________ **Date:** ____________ **Result:** Pass / Fail
 
 ---
 
-## 8. Reporting a problem
+## 9. Reporting a problem
 
 Send the tester's notes with:
 
