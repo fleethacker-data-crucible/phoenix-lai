@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <rect width="880" height="300" rx="16" fill="#f8fafc"/>
+  <text x="440" y="38" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Test flow at a glance</text>
+
+  <!-- Step boxes -->
+  <g>
+    <circle cx="90" cy="130" r="30" fill="#6366f1"/>
+    <text x="90" y="137" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">1</text>
+    <text x="90" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">Start</text>
+    <text x="90" y="204" text-anchor="middle" font-size="12" fill="#64748b">server + client</text>
+  </g>
+  <line x1="130" y1="130" x2="200" y2="130" stroke="#94a3b8" stroke-width="2.5" marker-end="url(#arr2)"/>
+
+  <g>
+    <circle cx="240" cy="130" r="30" fill="#10b981"/>
+    <text x="240" y="137" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">2</text>
+    <text x="240" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">Local LLM</text>
+    <text x="240" y="204" text-anchor="middle" font-size="12" fill="#64748b">green = online</text>
+  </g>
+  <line x1="280" y1="130" x2="350" y2="130" stroke="#94a3b8" stroke-width="2.5" marker-end="url(#arr2)"/>
+
+  <g>
+    <circle cx="390" cy="130" r="30" fill="#f97316"/>
+    <text x="390" y="137" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">3</text>
+    <text x="390" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">Add cloud</text>
+    <text x="390" y="204" text-anchor="middle" font-size="12" fill="#64748b">+ in Providers</text>
+  </g>
+  <line x1="430" y1="130" x2="500" y2="130" stroke="#94a3b8" stroke-width="2.5" marker-end="url(#arr2)"/>
+
+  <g>
+    <circle cx="540" cy="130" r="30" fill="#0ea5e9"/>
+    <text x="540" y="137" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">4</text>
+    <text x="540" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">Test</text>
+    <text x="540" y="204" text-anchor="middle" font-size="12" fill="#64748b">18 features</text>
+  </g>
+  <line x1="580" y1="130" x2="650" y2="130" stroke="#94a3b8" stroke-width="2.5" marker-end="url(#arr2)"/>
+
+  <g>
+    <circle cx="690" cy="130" r="30" fill="#8b5cf6"/>
+    <text x="690" y="137" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">5</text>
+    <text x="690" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">Chat</text>
+    <text x="690" y="204" text-anchor="middle" font-size="12" fill="#64748b">both providers</text>
+  </g>
+
+  <!-- Result card -->
+  <rect x="120" y="230" width="640" height="52" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="440" y="252" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">Pass = answer appears, model name shows in the top bar, no red error line</text>
+  <text x="440" y="270" text-anchor="middle" font-size="12" fill="#64748b">Stop at any failed step and note it on the checklist (section 7)</text>
+</svg>
