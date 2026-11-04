@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="880" height="340" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="880" height="340" rx="16" fill="#f8fafc"/>
+  <text x="440" y="36" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Phoenix LAI: how the pieces connect</text>
+
+  <!-- Tech PC -->
+  <rect x="20" y="60" width="840" height="250" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="40" y="88" font-size="14" font-weight="600" fill="#475569">This PC</text>
+
+  <!-- Client -->
+  <rect x="50" y="120" width="230" height="130" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="165" y="152" text-anchor="middle" font-size="17" font-weight="700" fill="#312e81">Phoenix Client</text>
+  <text x="165" y="176" text-anchor="middle" font-size="13" fill="#3730a3">Chat window</text>
+  <text x="165" y="196" text-anchor="middle" font-size="12" fill="#4338ca">127.0.0.1 : 8790-8798</text>
+  <text x="165" y="226" text-anchor="middle" font-size="12" fill="#4338ca">Phoenix_Client.lnk</text>
+
+  <!-- Local server -->
+  <rect x="380" y="120" width="230" height="130" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="495" y="152" text-anchor="middle" font-size="17" font-weight="700" fill="#065f46">Phoenix Local Server</text>
+  <text x="495" y="176" text-anchor="middle" font-size="13" fill="#047857">Gemma 4 on your GPU</text>
+  <text x="495" y="196" text-anchor="middle" font-size="12" fill="#059669">localhost : 1234 /v1</text>
+  <text x="495" y="226" text-anchor="middle" font-size="12" fill="#059669">Phoenix_LAI_Server.lnk</text>
+
+  <!-- Arrows client -> local -->
+  <line x1="280" y1="185" x2="378" y2="185" stroke="#64748b" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="329" y="176" text-anchor="middle" font-size="12" fill="#475569">Local</text>
+
+  <!-- Cloud -->
+  <rect x="610" y="120" width="230" height="130" rx="12" fill="#fff7ed" stroke="#f97316" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="725" y="152" text-anchor="middle" font-size="17" font-weight="700" fill="#9a3412">Cloud API</text>
+  <text x="725" y="176" text-anchor="middle" font-size="13" fill="#c2410c">Any OpenAI /v1 provider</text>
+  <text x="725" y="196" text-anchor="middle" font-size="12" fill="#ea580c">https://&lt;your-provider&gt;/v1</text>
+  <text x="725" y="226" text-anchor="middle" font-size="12" fill="#ea580c">Key in Credential Manager</text>
+
+  <!-- Arrow client -> cloud (routed under the server) -->
+  <path d="M 165 250 L 165 282 L 725 282 L 725 252" fill="none" stroke="#64748b" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+  <text x="440" y="300" text-anchor="middle" font-size="12" fill="#475569">Cloud: added with + in Providers (name, base URL, key)</text>
+
+  <text x="440" y="334" text-anchor="middle" font-size="12" fill="#64748b">Both are OpenAI /v1 providers to the client. The client never sends your files to the cloud.</text>
+</svg>
