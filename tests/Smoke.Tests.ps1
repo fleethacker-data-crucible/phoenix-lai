@@ -42,6 +42,14 @@ Describe 'Console models command without a models folder' {
     }
 }
 
+Describe 'Headless client switch' {
+    It 'PHOENIX_CLIENT_NOWINDOW skips OpenWindow and turns auto-stop off' {
+        $text = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\WebServer.cs'))
+        $text | Should -Match 'PHOENIX_CLIENT_NOWINDOW'
+        $text | Should -Match '(?s)PHOENIX_CLIENT_NOWINDOW.{0,400}ClientAutoStop = false'
+    }
+}
+
 BeforeAll {
     $script:RepoRootRun = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
