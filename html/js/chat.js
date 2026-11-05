@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
 const mirror = $('mirror');
 let history = [], info = {}, controller = null, filesAt = '.';
-const settings = { pretype: true, typeEffect: true, skin: 'fleet' };   // skin: Fleet look by default for the hackathon (/skin phoenix switches back)
+const settings = { pretype: true, typeEffect: true };   // skin omitted: Phoenix is the default (/skin fleet turns the Fleet skin on)
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
 // The client is a plain /v1 client: the only per-model setting it keeps is the system prompt (part of the messages).
@@ -203,27 +203,16 @@ async function setFolder(arg) {
 }
 
 // Welcome screen: shown on start and after every New chat, with the prompt line under it.
-// Each time the app window opens, the welcome logo starts on the other version (dark / light) than last time. A refresh
-// (F5) keeps it: sessionStorage survives a reload of the window but not a new window.
-try {
-  if (!sessionStorage.getItem('phx.logoSet')) { settings.logoLight = !settings.logoLight; save(); sessionStorage.setItem('phx.logoSet', '1'); }
-} catch (e) {}
 function welcome() {
   promptLine.remove();
-  chatEl.innerHTML = '<div class="empty" id="empty"><div class="logos' + (settings.logoLight ? ' light' : '') + '">' +
-    '<img class="logo" src="assets/dark_phoenix_logo.png" alt="Phoenix LAI"><img class="logo alt" src="assets/light_phoenix_logo.png" alt=""></div>' +
+  chatEl.innerHTML = '<div class="empty" id="empty">' +
+    '<img class="logo" src="assets/brand/emblem-transparent.png" width="300" height="300" alt="Phoenix LAI: a phoenix rising above a ship binnacle">' +
     '<div class="hint">Everything runs locally on this machine. Use /help to list all commands.</div></div>';   // version: in the title bar
   placePrompt(); centerEmpty();
 }
-// Click the welcome logo: the dark and light versions dissolve into each other (the choice is remembered; one listener,
-// so a chat restored after a reload keeps working).
-chatEl.addEventListener('click', e => {
-  const l = e.target.closest('.logos'); if (!l) return;
-  settings.logoLight = !settings.logoLight; l.classList.toggle('light', settings.logoLight); save();
-});
 // The prompt always sits at the end of the conversation.
 function placePrompt() { chatEl.appendChild(promptLine); drawPrompt(); syncComposer(); scrollDown(); }
-function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show')); input.focus(); }
+function newChat() { if (controller) controller.abort(); history = []; if (typeof pendingImages !== 'undefined') { pendingImages = []; drawTray(); } ctxUsed = 0; forgetChat(); chatId = null; drawRecents(); if (info.file) drawStatus(false); welcome(); Modal.closeAll(); input.focus(); }
 
 // The conversation survives a reload (F5) of this window: what is on screen, the history sent to the model and the
 // speed/context numbers are kept in sessionStorage (per window, gone when it closes). Only /new starts over.
@@ -250,7 +239,14 @@ function restoreChat() {
     if (s.composer) chatEl.style.setProperty('--composer', s.composer);   // the box's height from before: no jump while it is re-measured
     chatEl.innerHTML = s.html;
     chatEl.querySelectorAll('.caret').forEach(c => c.remove());
-    chatEl.querySelectorAll('.logos').forEach(l => l.classList.toggle('light', !!settings.logoLight));   // this load's logo
+    // Upgrade the welcome artwork in conversations saved before Fleet branding.
+    chatEl.querySelectorAll('#empty .logos').forEach(legacy => {
+      const emblem = document.createElement('img');
+      emblem.className = 'logo'; emblem.src = 'assets/brand/emblem-transparent.png';
+      emblem.width = 300; emblem.height = 300;
+      emblem.alt = 'Phoenix LAI: a phoenix rising above a ship binnacle';
+      legacy.replaceWith(emblem);
+    });
     chatEl.querySelectorAll('.work.busy').forEach(w => w.classList.remove('busy'));
     history = s.history || []; ctxUsed = s.ctxUsed || 0;
     (s.tps || []).forEach(t => recordTps(t));
@@ -375,9 +371,7 @@ chatEl.addEventListener('mouseup', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    if (controller) controller.abort();
-    if ($('settingsModal').classList.contains('show')) closeSettings(false);
-    document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show'));
+    if (controller) controller.abort();   // an open modal takes Esc first (modal.js)
   }
 });
 
@@ -580,11 +574,16 @@ const COMMANDS = [
   { name: '/provider', use: '/provider <name>', desc: 'switch to another OpenAI /v1 provider (Providers in the left panel; + adds one)', arg: true,
     options: () => (window.providerNames ? window.providerNames() : []).map(n => ({ value: n, desc: '' })),
     run: async arg => { if (window.useProviderNamed) await window.useProviderNamed(arg); } },
-  { name: '/skin', use: '/skin fleet|phoenix', desc: 'switch between the Phoenix look and the Fleet hackathon look', arg: true,
-    options: () => [{ value: 'phoenix', desc: 'Phoenix look' + (settings.skin !== 'fleet' ? ' (current)' : '') }, { value: 'fleet', desc: 'Fleet look: navy and brass, Segoe UI' + (settings.skin === 'fleet' ? ' (current)' : '') }],
-    run: arg => { const a = (arg || '').trim().toLowerCase();
-      if (a !== 'fleet' && a !== 'phoenix') { systemLine('Skin: ' + (settings.skin === 'fleet' ? 'fleet' : 'phoenix') + '. Use /skin fleet or /skin phoenix.'); return; }
-      settings.skin = a; save(); applyLook(); if ($('sSkin')) $('sSkin').checked = a === 'fleet'; systemLine('Skin: ' + a + '.'); } },
+  { name: '/skin', use: '/skin phoenix|fleet', desc: 'the look: Phoenix (default) or the shared FleetHacker Fleet skin', arg: true,
+    options: () => SKINS.map(k => ({ value: k.id, desc: k.desc + ((settings.skin || 'phoenix') === k.id ? ' (current)' : '') })),
+    run: arg => {
+      const v = (arg || '').trim().toLowerCase();
+      if (!SKINS.some(k => k.id === v)) { systemLine('Skin: ' + (settings.skin || 'phoenix') + '. Use /skin phoenix or /skin fleet.'); return; }
+      settings.skin = v; save(); applyLook();
+      const picked = document.querySelector('#sSkin input[value="' + v + '"]');
+      if (picked) picked.checked = true;
+      systemLine(v === 'fleet' ? 'Fleet skin on: navy and brass, Segoe UI. The accent and chat font are fixed while it is on; /skin phoenix switches back.' : 'Phoenix look on.');
+    } },
   { name: '/skills', use: '/skills [name]', desc: 'open the Skill Builder (a skill is called in chat with /<skill-name>)', arg: true,
     options: () => (window.skillNames ? window.skillNames() : []).map(n => ({ value: n, desc: 'edit' })),
     run: arg => {   // no name: the builder as it was (or the first skill)
@@ -626,7 +625,7 @@ function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255
 function applyLook() {
   document.documentElement.classList.toggle('no-banner', !settings.banner);
   document.documentElement.classList.toggle('grid', !!settings.grid);
-  if (settings.skin === 'fleet') document.documentElement.dataset.skin = 'fleet'; else delete document.documentElement.dataset.skin;   // css/fleet-skin.css (hackathon look)
+  document.documentElement.dataset.skin = settings.skin === 'fleet' ? 'fleet' : 'phoenix';   // /skin: Phoenix's own look is the default skin
   document.documentElement.classList.toggle('light', !!settings.light);   // settings > appearance > light mode   // grid background + faint logo, else solid   // banner kept, off by default
   const acc = /^#[0-9a-f]{6}$/i.test(settings.accent || '') ? settings.accent : ACCENTS[0], rgb = hexRgb(acc), root = document.documentElement.style;
   root.setProperty('--accent', acc);
@@ -683,10 +682,6 @@ async function openSettings() {
     $('sGrid').checked = !!settings.grid;
     $('sGrid').onchange = () => { settings.grid = $('sGrid').checked; applyLook(); };
   }
-  if ($('sSkin')) {
-    $('sSkin').checked = settings.skin === 'fleet';
-    $('sSkin').onchange = () => { settings.skin = $('sSkin').checked ? 'fleet' : 'phoenix'; applyLook(); };
-  }
   if ($('sLight')) {
     $('sLight').checked = !!settings.light;
     $('sLight').onchange = () => { settings.light = $('sLight').checked; applyLook(); };
@@ -711,12 +706,12 @@ async function openSettings() {
   // (server GPU setting) $('sGpuSafe').checked = !!g.safe;
   // (server GPU setting) $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
   syncSkinControls();
-  $('settingsModal').classList.add('show');
+  Modal.open($('settingsModal'), { onClose: () => closeSettings(false) });
   $('settingsBody').scrollTop = 0;
 }
 function closeSettings(applied) {
   if (!applied && lookBefore) { settings.font = lookBefore.font; settings.size = lookBefore.size; settings.accent = lookBefore.accent; settings.banner = lookBefore.banner; settings.grid = lookBefore.grid; settings.light = lookBefore.light; settings.skin = lookBefore.skin; applyLook(); }   // undo the preview
-  $('settingsModal').classList.remove('show');
+  Modal.close($('settingsModal'));
 }
 $('closeSettings').addEventListener('click', () => closeSettings(false));
 $('settingsNew').addEventListener('click', () => { closeSettings(true); save(); newChat(); });
@@ -1370,10 +1365,10 @@ function openModelSettings(name) {
   mmName = name;
   $('mmTitle').textContent = name.replace(/\.gguf$/i, '').toLowerCase();
   fillModelSettings(ms(name));
-  $('modelModal').classList.add('show');
+  Modal.open($('modelModal'), { onClose: closeModelSettings });
   $('modelModal').querySelector('.body').scrollTop = 0;
 }
-function closeModelSettings() { $('modelModal').classList.remove('show'); if (promptLine.isConnected) input.focus(); }
+function closeModelSettings() { Modal.close($('modelModal')); }
 $('closeModel').onclick = closeModelSettings;
 $('mReset').onclick = () => { const all = settings.models || {}, keep = all[mmName]; delete all[mmName]; fillModelSettings(ms(mmName)); if (keep) all[mmName] = keep; };   // shown only; saved with save
 $('mSave').onclick = () => {
@@ -1387,7 +1382,6 @@ $('mSave').onclick = () => {
 };
 $('modelModal').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('mSave').click(); }
-  else if (e.key === 'Escape') { e.stopPropagation(); closeModelSettings(); }
 });
 
 // Welcome logo: pinned at the centre of the chat area (a fixed top margin). Messages build up from the bottom underneath

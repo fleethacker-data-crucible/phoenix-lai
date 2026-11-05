@@ -40,8 +40,8 @@
 <div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div></div>
 <div id="files"></div>
 <div class="modal" id="settingsModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header><h2 id="settingsTitle"><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <div class="body" id="settingsBody">
       <section id="catDocs">
         <div class="section">docs</div>
@@ -51,7 +51,6 @@
         <div class="section">appearance</div>
         <div class="field">chat font<div class="radios" id="sFont"></div></div>
         <div class="field" style="margin-top:10px">text size<div class="radios" id="sSize"></div></div>
-        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sSkin"><span class="sw"></span>fleet skin<span class="hint"> · hackathon look: navy and brass, Segoe UI (on by default; off = Phoenix look) · /skin</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sLight"><span class="sw"></span>light mode<span class="hint"> · light background and panels (off = dark)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sGrid"><span class="sw"></span>grid background<span class="hint"> · grid and faint logo behind the chat (off = solid)</span></label>
         <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
@@ -76,8 +75,8 @@
 </div>
 
 <div class="modal" id="modelModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="modelTitle">
+    <header><h2 id="modelTitle"><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <div class="section">system prompt</div>
@@ -91,8 +90,8 @@
 </div>
 
 <div class="modal" id="provModal">
-  <div class="window settings">
-    <header><h2>PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
+    <header><h2 id="provTitle">PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
@@ -126,8 +125,8 @@
 </div>
 
 <div class="modal" id="downModal">
-  <div class="window downbox">
-    <header><h2><span class="chev">›</span> phoenix client stopped</h2></header>
+  <div class="window downbox" role="dialog" aria-modal="true" aria-labelledby="downTitle" aria-describedby="downText">
+    <header><h2 id="downTitle"><span class="chev">›</span> phoenix client stopped</h2></header>
     <div class="body"><p id="downText">The Phoenix Client has stopped.</p></div>
     <footer><span class="keys" id="downNote"></span><button class="primary" id="downExit">exit</button></footer>
   </div>
@@ -135,6 +134,7 @@
 
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
+<script src="js/modal.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/skills.js"></script>
 <script src="js/providers.js"></script>

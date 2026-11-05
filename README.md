@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="html/assets/brand/emblem-transparent.png" width="280" alt="Phoenix LAI fleet emblem: a phoenix rising above a ship binnacle, in navy, brass and ivory">
+</p>
+
 # Phoenix LAI
 
 > local Gemma models on your GPU behind an OpenAI-compatible API, plus a Chrome app client.
@@ -178,6 +182,6 @@ vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
 
 ## Client lifecycle
 
-The Phoenix Client owns its chat window: heartbeats and a leaving beacon stop only the client when its last app window closes. End session (or `/quit`) waits for active requests and indexing to finish. The independent tray/model server keeps running. Use `src/Stop-PhoenixClient.ps1` for a verified, graceful stop of clients from this checkout; `src/Stop-Phoenix.ps1` is a compatibility alias. No process is force-stopped. Launch the client with `-Stay` or set `PHOENIX_CLIENT_AUTO_STOP=0` to disable automatic stopping; `-Replace` requests a graceful stop before relaunch. The VS Code client retains its separate connection-based lifetime.
+The Phoenix Client owns its chat window: heartbeats and a leaving beacon stop only the client when its last app window closes. End session (or `/quit`) waits for active requests and indexing to finish. The independent tray/model server keeps running. Use `src/Stop-PhoenixClient.ps1` for a verified, graceful stop of clients from this checkout; `src/Stop-Phoenix.ps1` is a compatibility alias. No process is force-stopped. Launch the client with `-Stay` or set `PHOENIX_CLIENT_AUTO_STOP=0` to disable automatic stopping; `-Replace` requests a graceful stop before relaunch. The VS Code client retains its separate connection-based lifetime. For automated capture and tests, set `PHOENIX_CLIENT_NOWINDOW=1`: the client serves its chat page on its loopback port without opening an app window and runs until `POST /__fleethacker/shutdown` (or `/quit`).
 
 Development validation: `powershell.exe -NoProfile -File .claude/claude_tests/client-lifecycle-test.ps1` compiles the complete C# 5 source set and exercises the lifecycle policy and routes without loading a model.

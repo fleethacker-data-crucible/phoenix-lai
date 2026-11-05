@@ -36,15 +36,15 @@
 
 <!-- Chat history: VS Code's "Show Chats" list, as a full-panel view -->
 <div class="modal" id="histModal">
-  <div class="window settings">
-    <header><h2>CHATS</h2><button class="x" id="closeHist" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="histTitle">
+    <header><h2 id="histTitle">CHATS</h2><button class="x" id="closeHist" title="Close (Esc)">✕</button></header>
     <div class="body"><div id="recentList" class="vlist recents"></div></div>
   </div>
 </div>
 
 <div class="modal" id="settingsModal">
-  <div class="window settings">
-    <header><h2>SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header><h2 id="settingsTitle">SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <div class="body" id="settingsBody">
       <section id="catProviders">
         <div class="section vsec">providers<button id="newProvider" class="vadd" title="Add a provider (OpenAI /v1 or Anthropic /v1)">+ add</button></div>
@@ -77,8 +77,8 @@
 </div>
 
 <div class="modal" id="modelModal">
-  <div class="window settings">
-    <header><h2><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="modelTitle">
+    <header><h2 id="modelTitle"><span class="chev">›</span> <span id="mmTitle">model</span></h2><button class="x" id="closeModel" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <div class="section">system prompt</div>
@@ -92,8 +92,8 @@
 </div>
 
 <div class="modal" id="provModal">
-  <div class="window settings">
-    <header><h2>PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
+    <header><h2 id="provTitle">PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
@@ -107,7 +107,7 @@
       </section>
       <section>
         <div class="section">privacy</div>
-        <label class="toggle locked" title="Fixed for now: only the Phoenix Local Server gets local context"><input type="checkbox" id="pLocal" disabled><span class="sw"></span>send local context<span class="hint" id="pLocalNote"></span></label>
+        <label class="toggle" id="pLocalRow"><input type="checkbox" id="pLocal"><span class="sw"></span>send local context<span class="hint" id="pLocalNote"></span></label>
       </section>
       <section>
         <div class="section">model</div>
@@ -127,8 +127,8 @@
 </div>
 
 <div class="modal" id="downModal">
-  <div class="window downbox">
-    <header><h2><span class="chev">›</span> phoenix client stopped</h2></header>
+  <div class="window downbox" role="dialog" aria-modal="true" aria-labelledby="downTitle" aria-describedby="downText">
+    <header><h2 id="downTitle"><span class="chev">›</span> phoenix client stopped</h2></header>
     <div class="body"><p id="downText">The Phoenix Client has stopped.</p></div>
     <footer><span class="keys" id="downNote"></span><button class="primary" id="downExit">exit</button></footer>
   </div>
@@ -137,6 +137,7 @@
 <script src="js/vscode-theme.js"></script>
 <script src="js/highlight.js"></script>
 <script src="js/markdown.js"></script>
+<script src="js/modal.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/skills.js"></script>
 <script src="js/providers.js"></script>

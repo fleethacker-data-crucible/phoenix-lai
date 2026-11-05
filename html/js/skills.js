@@ -87,8 +87,8 @@
   const modal = document.createElement('div');
   modal.className = 'modal'; modal.id = 'skillModal';
   modal.innerHTML =
-    '<div class="window settings skillwin">' +
-      '<header><h2><span class="chev">›</span> SKILL BUILDER <span class="skpath" id="skPath"></span></h2><button class="x" id="skClose" title="Close (Esc)">✕</button></header>' +
+    '<div class="window settings skillwin" role="dialog" aria-modal="true" aria-labelledby="skTitle">' +
+      '<header><h2 id="skTitle"><span class="chev">›</span> SKILL BUILDER <span class="skpath" id="skPath"></span></h2><button class="x" id="skClose" title="Close (Esc)">✕</button></header>' +
       '<div class="skgrid">' +
         '<aside class="sklist">' +
           '<input id="skFilter" placeholder="Filter skills" spellcheck="false">' +
@@ -152,7 +152,7 @@
   async function openBuilder(name, scope) {
     if (!dirs.appDir) await loadSkillList();
     $('skModel').textContent = info.file ? '· ' + String(info.file).replace(/\.gguf$/i, '') : '· no model loaded';
-    modal.classList.add('show');
+    Modal.open(modal, { onClose: close });
     if (name === undefined) { if (!cur) { if (skills.length) select(skills[0].name, skills[0].scope); else newSkill('blank'); } }
     else if (name === null) newSkill('blank');
     else select(name, scope || (skills.find(s => s.name === name) || {}).scope || 'app');
@@ -278,12 +278,11 @@
   function close() {
     if (aiBusy) aiBusy.abort();
     if (!confirmLeave()) return;
-    dirty = false; modal.classList.remove('show'); if (promptLine.isConnected) input.focus();
+    dirty = false; Modal.close(modal);
   }
   $('skClose').onclick = close;
   modal.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.stopPropagation(); close(); }
-    else if (e.key === 's' && e.ctrlKey) { e.preventDefault(); if (!$('skSave').disabled) $('skSave').click(); }
+    if (e.key === 's' && e.ctrlKey) { e.preventDefault(); if (!$('skSave').disabled) $('skSave').click(); }
   });
 
   // ---------- the assistant (the loaded model writes or changes the skill) ----------

@@ -31,13 +31,13 @@
   $('vhSettings').onclick = () => openSettings();
   // Show Chats: the saved chats (chat.js keeps #recentList filled); picking one opens it and closes the list
   const hist = $('histModal');
-  const closeHist = () => { hist.classList.remove('show'); input.focus(); };
-  $('vhHistory').onclick = async () => { if (typeof loadSidebar === 'function') await loadSidebar(); hist.classList.add('show'); };
+  const closeHist = () => { Modal.close(hist); input.focus(); };
+  $('vhHistory').onclick = async () => { if (typeof loadSidebar === 'function') await loadSidebar(); Modal.open(hist, { onClose: closeHist }); };
   $('closeHist').onclick = closeHist;
   hist.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeHist(); } });
   $('recentList').addEventListener('click', (e) => { const it = e.target.closest('.sitem'); if (it && !e.target.closest('.del')) setTimeout(closeHist, 0); });
-  // a provider picked in Settings: back to the chat
-  $('providerList').addEventListener('click', (e) => { if (e.target.closest('.sitem') && !e.target.closest('.cedit')) setTimeout(() => $('settingsModal').classList.remove('show'), 0); });
+  // a provider picked in Settings: back to the chat. Close through the helper so the inert background is restored.
+  $('providerList').addEventListener('click', (e) => { if (e.target.closest('.sitem') && !e.target.closest('.cedit')) setTimeout(() => Modal.close($('settingsModal')), 0); });
 
   $('pbCmd').onclick = () => {
     input.value = '/';

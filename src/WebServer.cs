@@ -279,6 +279,14 @@ namespace Phoenix
                     server.Log.Text("an app window from before is still open: reusing it");
                     server.WaitForClientStop();
                 }
+                else if (Environment.GetEnvironmentVariable("PHOENIX_CLIENT_NOWINDOW") == "1")
+                {
+                    // Automated capture and tests: serve the chat page without opening an app window; runs until
+                    // POST /__fleethacker/shutdown (or the quit command), because no window heartbeat will ever arrive.
+                    server.ClientAutoStop = false;
+                    server.Log.Text("PHOENIX_CLIENT_NOWINDOW=1: no app window opened; " + server.Url);
+                    server.WaitForClientStop();
+                }
                 else
                 {
                     Process browser = OpenWindow(server.Url, server.Log);

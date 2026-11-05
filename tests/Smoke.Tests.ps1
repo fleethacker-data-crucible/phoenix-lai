@@ -35,6 +35,14 @@ Describe 'Loopback-only bind' -Skip:($script:Servers.Count -eq 0) {
     }
 }
 
+Describe 'Headless client switch' {
+    It 'PHOENIX_CLIENT_NOWINDOW skips OpenWindow and turns auto-stop off' {
+        $text = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\WebServer.cs'))
+        $text | Should -Match 'PHOENIX_CLIENT_NOWINDOW'
+        $text | Should -Match '(?s)PHOENIX_CLIENT_NOWINDOW.{0,400}ClientAutoStop = false'
+    }
+}
+
 BeforeAll {
     $script:RepoRootRun = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }

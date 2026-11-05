@@ -12,6 +12,10 @@
 <body>
 <header class="top"><img src="assets/toolbar_icon.png" alt=""><h1>Phoenix Server</h1><span class="state" id="state"><i></i><span>connecting…</span></span><span class="sp"></span><button id="skinBtn" title="Switch between the Phoenix and Fleet looks">Skin</button><a href="console.html">Console</a></header>
 <main class="dash">
+  <section class="card wide fleet-welcome" aria-labelledby="fleet-welcome-title">
+    <img src="assets/brand/emblem-transparent.png" width="160" height="160" alt="Phoenix LAI: a phoenix rising above a ship binnacle">
+    <div><h2 id="fleet-welcome-title">Phoenix LAI</h2><p>Your local model server. Monitor models, memory and requests from this dashboard.</p></div>
+  </section>
   <section class="card wide"><h2>What the AI is doing</h2><div class="act" id="act">…</div></section>
   <section class="card"><h2>Model</h2><div class="kv" id="model"></div></section>
   <section class="card"><h2>Server load</h2><div class="big" id="cpu">–</div><div class="bar"><i id="cpuBar" style="width:0"></i></div><svg class="spark" id="cpuSpark" viewBox="0 0 120 48" preserveAspectRatio="none"></svg><div class="kv" id="proc"></div></section>
