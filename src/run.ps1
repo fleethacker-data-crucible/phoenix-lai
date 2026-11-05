@@ -12,7 +12,10 @@ param(
     [string]$Root,
     # Server = run-phoenix-server.ps1 (models + OpenAI API, tray); Client = run-phoenix-client.ps1 (the chat UI for any
     # OpenAI /v1 provider). There is no all-in-one mode: the client never runs inside the server.
-    [ValidateSet('Server', 'Client')][string]$Role = 'Client'
+    # VsCode = run-phoenix-vscode.ps1: the VS Code extension's own client (no window), started by the extension.
+    [ValidateSet('Server', 'Client', 'VsCode')][string]$Role = 'Client',
+    [switch]$Stay,
+    [switch]$Replace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -185,6 +188,32 @@ if ($failures.Count -gt 0) {
 Write-Host "Locality checks passed."
 if ($CheckOnly) { exit 0 }
 
+# FleetHacker port block (edge-ops PORTS.md, src\FleetPorts.psd1): the server is 'exclusive' on 8780-8789. Checked
+# before the compile through /__fleethacker/id, so a second launch exits at once, and an older running server is never
+# stopped (it holds the GPU and the API port). The client roles are 'multi' (8790-8798) and keep their own one-window rule.
+if ($Role -eq 'Server') {
+    Import-Module (Join-Path $src 'FleetPort.psm1') -Force
+    $fleetVersion = (([string](Get-Content -LiteralPath (Join-Path $Root '__version.info') -TotalCount 1 -ErrorAction SilentlyContinue)).Trim() -replace '_', '.')
+    if (-not $fleetVersion) { $fleetVersion = '0.0' }
+    $fleetMsg = $null; $fleetCode = 0
+    try {
+        $fleet = Resolve-FleetPort -Tool 'phoenix-lai-server' -Version $fleetVersion -NoListener
+        if ($fleet.Action -eq 'Reuse') { $fleetMsg = "A Phoenix server is already running (http://127.0.0.1:$($fleet.Port)/dashboard.html; see the Phoenix icon in the notification area)." }
+    } catch { $fleetMsg = $_.Exception.Message; $fleetCode = 1 }
+    if ($fleetMsg) {
+        Write-Host $fleetMsg
+        # the server is usually started hidden, so say it in a message box too (tests set PHOENIX_FLEET_NO_MESSAGEBOX=1)
+        if ($env:PHOENIX_FLEET_NO_MESSAGEBOX -ne '1') { try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($fleetMsg, 'Phoenix LAI server') } catch { } }
+        if ($fleetCode) { exit $fleetCode }
+        exit 0
+    }
+}
+
+if ($Role -eq 'Client' -and $Replace) {
+    & (Join-Path $src 'Stop-PhoenixClient.ps1') -Root $Root
+    if (-not $?) { throw 'The previous Phoenix Client did not stop; replacement cancelled.' }
+}
+
 $cp = New-Object System.CodeDom.Compiler.CompilerParameters
 $cp.GenerateInMemory = $true
 $cp.CompilerOptions = '/unsafe /optimize+'
@@ -193,9 +222,17 @@ $References | ForEach-Object { [void]$cp.ReferencedAssemblies.Add($_) }
 $paths = @(Get-ChildItem $src -Recurse -Filter *.cs | ForEach-Object { $_.FullName })
 Add-Type -Path $paths -CompilerParameters $cp
 
+# Where Phoenix lives, for the VS Code extension (it starts src\run-phoenix-vscode.ps1 from here; the folder can move).
+try {
+    $appData = Join-Path $env:LOCALAPPDATA 'LocalLLMStudio'
+    New-Item -ItemType Directory -Force $appData | Out-Null
+    [IO.File]::WriteAllText((Join-Path $appData 'phoenix-root.txt'), $Root)
+} catch { }
+
 # No model loads at startup (unless -Model is given): the chat opens on "Select model" and one is picked from the drop-down.
 $modelPath = if ($Model) { (Resolve-Path $Model).Path } else { $null }
 switch ($Role) {
     'Server' { exit ([Phoenix.ServerHost]::Run($Root, $modelPath, $Context)) }
-    default  { exit ([Phoenix.WebServer]::RunClient($Root)) }
+    'VsCode' { exit ([Phoenix.WebServer]::RunVsCode($Root)) }
+    default  { exit ([Phoenix.WebServer]::RunClient($Root, [bool]$Stay)) }
 }

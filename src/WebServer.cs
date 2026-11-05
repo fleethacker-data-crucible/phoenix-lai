@@ -31,7 +31,7 @@ namespace Phoenix
         public readonly Rag Rag;
         int _requestId, _clientChats;
 
-        // IsClient: the Phoenix Client (run-phoenix-client.ps1, ports 8790-8799): the chat page with every feature
+        // IsClient: the Phoenix Client (run-phoenix-client.ps1, ports 8790-8798): the chat page with every feature
         // (projects, file tools, docs search, skills, code check, compact), its model calls going to the active OpenAI /v1
         // provider (RemoteChatModel) and docs-search embeddings to the Phoenix server's /v1/embeddings. No engine, no GPU.
         // Otherwise the Phoenix server (run-phoenix-server.ps1): the local engine, the /v1 API, dashboard and console.
@@ -46,6 +46,9 @@ namespace Phoenix
             _modelsDir = Path.GetFullPath(modelsDir);
             Port = port;
             _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
+            // localhost too, only so FleetHacker launchers can reach /__fleethacker/id (http.sys matches on Host);
+            // every other path still requires Host 127.0.0.1:<port> (HandleRequest).
+            _listener.Prefixes.Add("http://localhost:" + port + "/");
             _listener.Start();
             Log = new ChatLog(logsDir, client ? "client" : "session");
             Dbg.Attach(Log, AppDataDir);
@@ -74,7 +77,9 @@ namespace Phoenix
 
         // The Phoenix Client (run-phoenix-client.ps1): opens its window and runs until it is closed. One client per user:
         // a second launch brings the open window forward. The mutex is freed by Windows if we crash.
-        public static int RunClient(string root)
+        public static int RunClient(string root) { return RunClient(root, false); }
+
+        public static int RunClient(string root, bool stay)
         {
             Application.EnableVisualStyles();
             bool first;
@@ -86,12 +91,63 @@ namespace Phoenix
                     if (EventWaitHandle.TryOpenExisting(ShowEventName, out show)) using (show) show.Set();
                     return 0;
                 }
-                try { return RunServer(root, null, 0); }
+                try { return RunServer(root, null, 0, stay); }
                 finally { single.ReleaseMutex(); }
             }
         }
 
         const string ShowEventName = @"Local\PhoenixAI.ClientShow";
+
+        // The VS Code extension's own Phoenix Client (run-phoenix-vscode.ps1, started by the extension; approved 2026-10-22):
+        // the same client (same providers, keys, settings and chats on disk) on its own port, with no window of its own.
+        // It is independent of the Phoenix Client window and stays up while a VS Code chat ("vs-" pages) checks in; one per
+        // user (VS Code windows share it). The extension finds it by /api/info "instance":"vscode".
+        public static int RunVsCode(string root)
+        {
+            bool first;
+            using (Mutex single = new Mutex(true, @"Local\PhoenixAI.ClientVsCode", out first))
+            {
+                if (!first) return 0;
+                try
+                {
+                    using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
+                    {
+                        server.Embedded = true;
+                        server.Log.Text("VS Code client: no window, runs while a VS Code chat is connected");
+                        ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
+                        // up to 2 minutes for the first VS Code chat to check in, then until the last one has been gone 30 s
+                        DateTime start = DateTime.UtcNow;
+                        while (!server.ClientEndRequested && server.VsCodePages() == 0 && DateTime.UtcNow - start < TimeSpan.FromMinutes(2)) Thread.Sleep(500);
+                        DateTime lastSeen = DateTime.UtcNow;
+                        while (!server.ClientEndRequested && DateTime.UtcNow - lastSeen < TimeSpan.FromSeconds(30))
+                        {
+                            if (server.VsCodePages() > 0) lastSeen = DateTime.UtcNow;
+                            Thread.Sleep(500);
+                        }
+                        try { if (server._pindex != null) server._pindex.Dispose(); } catch { }   // saves the project index
+                        server.Log.Text("VS Code client stopped (no VS Code chat connected)");
+                        server.Log.Json("server_stop", null);
+                    }
+                    return 0;
+                }
+                finally { single.ReleaseMutex(); }
+            }
+        }
+
+        // True for the VS Code extension's own client (RunVsCode).
+        public bool Embedded;
+
+        // VS Code chats ("vs-" pages) that checked in within the last 10 s.
+        int VsCodePages()
+        {
+            lock (_pages)
+            {
+                int n = 0;
+                foreach (KeyValuePair<string, DateTime> kv in _pages)
+                    if (kv.Key.StartsWith("vs-") && DateTime.UtcNow - kv.Value < TimeSpan.FromSeconds(10)) n++;
+                return n;
+            }
+        }
 
         // Opens the app window on `url` in the preferred browser; returns the browser process (or null if none found).
         internal static Process OpenWindow(string url, ChatLog log)
@@ -188,10 +244,12 @@ namespace Phoenix
         }
 
         // The client's window loop: start, open the window, run while any window is open, then shut down.
-        static int RunServer(string root, string modelPath, int ctx)
+        static int RunServer(string root, string modelPath, int ctx, bool stay)
         {
             using (WebServer server = StartOnFreePort(Path.Combine(root, "html"), Path.Combine(root, "models"), Path.Combine(root, "logs"), true))
+            using (ClientRuntime runtime = new ClientRuntime(server, root))
             {
+                server.ClientAutoStop = !stay && ClientAutoStopSetting();
                 server.ContextLength = ctx;
                 // the active provider's saved model, so the first message needs no picking
                 ThreadPool.QueueUserWorkItem(delegate { try { server.UseProviderModel(null); } catch (Exception ex) { server.Log.Text("provider: " + ex.Message); } });
@@ -219,18 +277,19 @@ namespace Phoenix
                 {
                     server._focusRequested = true;
                     server.Log.Text("an app window from before is still open: reusing it");
-                    server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                    server.WaitForClientStop();
                 }
                 else
                 {
                     Process browser = OpenWindow(server.Url, server.Log);
                     if (browser != null)
                     {
-                        using (browser) browser.WaitForExit();
+                        // The browser may hand the window to another process. Its heartbeat owns the lifetime.
+                        browser.Dispose();
                         // If an app window was already open, the browser hands the new one to that process and exits at once,
                         // so the process alone can't tell us when the user is done: stay up while any page is still talking to
                         // us (each window checks in every 2 s and says goodbye when it closes).
-                        server.WaitWhilePagesActive(TimeSpan.FromSeconds(75));
+                        server.WaitForClientStop();
                     }
                     else
                     {
@@ -248,10 +307,11 @@ namespace Phoenix
 
         internal static WebServer StartOnFreePort(string htmlDir, string modelsDir, string logsDir) { return StartOnFreePort(htmlDir, modelsDir, logsDir, false); }
 
-        // The server takes 8765-8789, the Phoenix Client 8790-8799.
+        // FleetHacker port blocks (edge-ops PORTS.md): the server takes 8780-8789, the Phoenix Client (and the VS Code
+        // client) 8790-8798. 8799 is the dev port (.claude\claude_tests\chat-e2e.ps1), 1893 the default API port.
         internal static WebServer StartOnFreePort(string htmlDir, string modelsDir, string logsDir, bool client)
         {
-            int from = client ? 8790 : 8765, to = client ? 8800 : 8790;
+            int from = client ? 8790 : 8780, to = client ? 8799 : 8790;
             for (int port = from; port < to; port++)
             {
                 try { return new WebServer(htmlDir, modelsDir, logsDir, port, client); }
@@ -593,7 +653,6 @@ namespace Phoenix
         }
 
         long _lastRequestTicks = DateTime.UtcNow.Ticks;
-        long _lastWindowTicks = DateTime.UtcNow.Ticks;   // last check-in of an app window (not the VS Code chat)
         int _activeRequests;
         volatile bool _focusRequested;
         readonly Dictionary<string, DateTime> _pages = new Dictionary<string, DateTime>();   // page id -> last poll (UTC)
@@ -601,25 +660,7 @@ namespace Phoenix
         // Windows that are open: polled within the last 75 s (minimized windows poll only about once a minute) and not closed.
         int OpenPages()
         {
-            lock (_pages)
-            {
-                List<string> stale = new List<string>();
-                foreach (KeyValuePair<string, DateTime> kv in _pages) if (DateTime.UtcNow - kv.Value > TimeSpan.FromSeconds(75)) stale.Add(kv.Key);
-                foreach (string k in stale) _pages.Remove(k);
-                // the chat inside VS Code (page ids starting "vs-") is not the app window: a second launch still opens one
-                int n = 0;
-                foreach (string k in _pages.Keys) if (!k.StartsWith("vs-")) n++;
-                return n;
-            }
-        }
-
-        void WaitWhilePagesActive(TimeSpan idle)
-        {
-            Thread.Sleep(3000);   // give a new window time to load and check in
-            // Only the app window keeps the server up: closing it shuts the server down, even while the VS Code chat or
-            // another API client is connected (they reconnect when it is started again). The 5 s grace covers a reload.
-            while (OpenPages() > 0 || DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastWindowTicks) < TimeSpan.FromSeconds(5).Ticks)
-                Thread.Sleep(500);
+            return _clientPresence.OpenWindows(DateTime.UtcNow);
         }
 
         void Handle(HttpListenerContext ctx)
@@ -652,6 +693,7 @@ namespace Phoenix
             {
                 // Only same-machine pages may talk to us (blocks DNS-rebinding and other sites' scripts).
                 string host = req.Headers["Host"] ?? "";
+                if (req.Url.AbsolutePath.StartsWith("/__fleethacker/")) { FleetHacker(req, res, host); return; }
                 // HEAD (readiness checks): status only. A HEAD response may not carry a body, so Send would throw.
                 if (req.HttpMethod == "HEAD") { res.StatusCode = host == "127.0.0.1:" + Port ? 200 : 403; res.ContentLength64 = 0; res.OutputStream.Close(); return; }
                 if (host != "127.0.0.1:" + Port) { Send(res, 403, "text/plain", "Forbidden"); return; }
@@ -686,6 +728,45 @@ namespace Phoenix
             }
         }
 
+        // FleetHacker self-detection (edge-ops PORTS.md): GET /__fleethacker/id and POST /__fleethacker/shutdown (header
+        // X-FleetHacker-Shutdown: 1). Host must be this port on 127.0.0.1 or localhost; a sent Origin must be the same.
+        // No "path" is reported, so a launcher can never force-stop Phoenix; shutdown is the only way it is stopped.
+        public volatile bool ShutdownRequested;
+
+        void FleetHacker(HttpListenerRequest req, HttpListenerResponse res, string host)
+        {
+            if (req.HttpMethod == "HEAD") { res.StatusCode = 405; res.ContentLength64 = 0; res.OutputStream.Close(); return; }
+            string a = "127.0.0.1:" + Port, b = "localhost:" + Port;
+            string origin = req.Headers["Origin"];
+            if ((host != a && host != b) || (origin != null && origin != "http://127.0.0.1:" + Port && origin != "http://localhost:" + Port) || !req.IsLocal)
+            { Send(res, 403, "text/plain", "Forbidden"); return; }
+            string path = req.Url.AbsolutePath;
+            if (path == "/__fleethacker/id")
+            {
+                if (req.HttpMethod != "GET") { Send(res, 405, "text/plain", "Method not allowed"); return; }
+                string tool = IsClient ? "phoenix-lai-client" : "phoenix-lai-server";
+                int pid; using (Process me = Process.GetCurrentProcess()) pid = me.Id;
+                SendJson(res, 200, "{\"tool\":" + Json.Quote(tool) + ",\"version\":" + Json.Quote(FleetVersion(Version())) + ",\"pid\":" + pid + "}");
+                return;
+            }
+            if (path == "/__fleethacker/shutdown")
+            {
+                if (req.HttpMethod != "POST" || req.Headers["X-FleetHacker-Shutdown"] != "1") { Send(res, 405, "text/plain", "Method not allowed"); return; }
+                Log.Text("shutdown requested by a FleetHacker launcher");
+                ShutdownRequested = true;
+                SendJson(res, 202, "{\"stopping\":true}");
+                return;
+            }
+            Send(res, 404, "text/plain", "Not found");
+        }
+
+        // __version.info "2026_1022_160032" -> "2026.1022.160032" (a version FleetPort can compare); "0.0" when missing.
+        public static string FleetVersion(string v)
+        {
+            v = (v ?? "").Trim().Replace('_', '.');
+            return v.Length > 0 ? v : "0.0";
+        }
+
         void Api(HttpListenerRequest req, HttpListenerResponse res, string path)
         {
             bool post = req.HttpMethod == "POST";
@@ -696,6 +777,8 @@ namespace Phoenix
             if (IsClient)
             {
                 if (ServerOnlyPath(path)) { SendJson(res, 404, "{\"error\":\"That is a Phoenix server setting (its dashboard or console), not the client's.\"}"); return; }
+                string lifecycle = ClientLifecycleApi(path, post, body, page);
+                if (lifecycle != null) { SendJson(res, 200, lifecycle); return; }
                 string cr = ClientApi(path, post, body);
                 if (cr != null) { SendJson(res, 200, cr); return; }
             }
@@ -723,7 +806,7 @@ namespace Phoenix
             if (path == "/api/info")
             {
                 if (page != null && page.Length <= 40) lock (_pages) _pages[page] = DateTime.UtcNow;
-                if (page != null && !page.StartsWith("vs-")) Interlocked.Exchange(ref _lastWindowTicks, DateTime.UtcNow.Ticks);
+                if (IsClient) _clientPresence.Beat(page, DateTime.UtcNow);
                 string json = Info();
                 if (_focusRequested && page != null) { _focusRequested = false; json = json.Substring(0, json.Length - 1) + ",\"focus\":true}"; }
                 SendJson(res, 200, json);
@@ -1074,7 +1157,7 @@ namespace Phoenix
             IChatModel e = _engine;
             Workspace w = _folderAccess ? _workspace : null;
             IChatModel er = _engine;
-            return "{\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
+            return "{\"instance\":" + (Embedded ? "\"vscode\"" : IsClient ? "\"client\"" : "\"server\"") + ",\"debug\":" + (Dbg.On ? "true" : "false") + ",\"recall\":{\"files\":" + (er != null ? er.RecallFiles : 0) + ",\"mb\":" + (er != null ? er.RecallBytes >> 20 : 0) +
                    ",\"busy\":" + (_recallProgress != null ? Json.Quote(_recallProgress) : "null") + "},\"mode\":\"" + (_acceptMode ? "accept" : "auto") + "\",\"device\":" + (_useGpu ? "\"gpu\"" : "\"cpu\"") + ",\"folderAccess\":" + (_folderAccess ? "true" : "false") + ",\"model\":" + (e != null ? Json.Quote(e.ModelName) : "null") +
                    ",\"file\":" + (e != null ? Json.Quote(Path.GetFileName(e.ModelPath)) : "null") +
                    ",\"backend\":" + (e != null ? Json.Quote(e.Backend) : "null") +

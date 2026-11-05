@@ -1,5 +1,7 @@
 # Phoenix LAI
 
+> local Gemma models on your GPU behind an OpenAI-compatible API, plus a Chrome app client.
+
 **Local AI for coding, on locked-down Windows machines.** Phoenix LAI runs Google's Gemma 4 models on your own GPU and
 gives you a chat app that can work on your project files. It needs nothing installed: only Windows PowerShell 5.1 and
 the GPU driver that is already there. No admin rights, no SDK, no downloads, no third-party code, and nothing leaves the
@@ -36,13 +38,22 @@ The dev machine is an AMD Radeon RX 6700 XT (12 GB); the target is an HP ZBook w
 ## Quick start
 
 1. Put the model files in `models\`.
-2. Double-click **`Phoenix_LAI_Server.lnk`**. A Phoenix icon appears in the notification area. The first start
+2. **First time only:** double-click **`Phoenix_LAI.bat`**. It creates `Phoenix_LAI_Server.lnk` and
+   `Phoenix_Client.lnk` in this folder (no admin rights), then starts the server and the client. Use
+   `Phoenix_LAI.bat -NoStart` to make the shortcuts only. After that, use the shortcuts.
+3. Double-click **`Phoenix_LAI_Server.lnk`**. A Phoenix icon appears in the notification area. The first start
    checks and compiles the code (a few seconds). Nothing loads until a model is asked for.
-3. Double-click **`Phoenix_Client.lnk`**. The chat window opens. Pick a model at the top and type.
-4. To work on files, create a project with the **+** next to Projects (a folder in `%USERPROFILE%\Phoenix_Projects`)
+4. Double-click **`Phoenix_Client.lnk`**. The chat window opens. Pick a model at the top and type.
+5. To work on files, create a project with the **+** next to Projects (a folder in `%USERPROFILE%\Phoenix_Projects`)
    and click it.
 
 The folder can live anywhere: the shortcuts find it from their own location.
+
+The shortcuts are made on your computer and are not in git (`*.lnk` is in `.gitignore`), because a Windows shortcut
+file records the computer's name and your Windows account ID. Every start through `Phoenix_LAI.bat`,
+`src\run-phoenix-server.ps1` or `src\run-phoenix-client.ps1` re-creates a missing shortcut and repairs one that no
+longer matches; if Windows Script Host is blocked, Phoenix still starts and only the shortcut is skipped. `Package.ps1`
+leaves `.lnk` files out of packages: after unpacking, run `Phoenix_LAI.bat` once.
 
 ## The Phoenix server
 
@@ -58,6 +69,11 @@ The folder can live anywhere: the shortcuts find it from their own location.
   Dashboard, Exit.
 - **Console** commands: `help`, `status`, `clients`, `recent`, `models`, `load`, `unload`, `bench`, `apitest`, `vram`,
   `debug`, `log`, `gc`, `apikey new|set|off`, `restart`.
+- **Ports** (FleetHacker port blocks, edge-ops `PORTS.md`): dashboard and console on the first free port in
+  `127.0.0.1:8780-8789` (was 8765-8789), the Phoenix Client on `8790-8798`, the API on `1893`. Starting the server
+  while one is already running shows a message and exits; an older running server is never stopped (close it from the
+  tray, then start the new one). Both listeners answer `GET /__fleethacker/id`; `POST /__fleethacker/shutdown` (header
+  `X-FleetHacker-Shutdown: 1`) exits as the tray's Exit does.
 - **Optional API key** (off by default): `apikey new` in the console; stored in Windows Credential Manager.
 - **GPU profile:** auto, AMD or NVIDIA (+ safe kernels), in `%LOCALAPPDATA%\LocalLLMStudio\gpu-profile.txt` or the
   `PHOENIX_GPU_PROFILE` / `PHOENIX_GPU_SAFE` environment variables.
@@ -116,16 +132,18 @@ completion uses the server. Rebuild with `vscode-ext-source\build.ps1`.
   `.phoenix`; projects are jailed in `Phoenix_Projects` (no `..`, absolute paths or junctions).
 - Every start runs `src\run.ps1`'s locality checks first and refuses to run if any rule is broken.
 
-Full details: [.claude/docs/SECURITY.md](.claude/docs/SECURITY.md).
+Full details: `.claude\docs\SECURITY.md` (development copy, not in the repo).
 
 ## Project layout
 
 ```
-Phoenix_Client.lnk        start the client
-Phoenix_LAI_Server.lnk    start the server
+Phoenix_LAI.bat           first run: makes the two shortcuts below (not in git), then starts Phoenix
+Phoenix_Client.lnk        start the client (made on this computer)
+Phoenix_LAI_Server.lnk    start the server (made on this computer)
 CLAUDE.md                 project rules for development
 README.md                 this file
-__version.info            the app version
+__version.info            the app version (yyyy_MMdd_HHmm stamp from Package.ps1)
+VERSION                   the same version as X.Y.Z for the release-zip workflow: yyyy.[int]MMdd.[int]HHmm, leading zeros stripped (2026_0905_0930 -> 2026.905.930); bump both together
 src\                      all C# code and the launcher scripts (run.ps1 checks and compiles at every start)
 html\                     the chat, dashboard and console pages
 models\                   GGUF model files (not in git)
@@ -134,16 +152,16 @@ skills\                   app skills
 logs\                     server and client logs
 nvidia\                   test kit for the NVIDIA target machine
 vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
-.claude\                  development only: tests, tools, reports, plans, docs (never copied to production)
+.claude\                  development only, not in the repo (.gitignore): tests, tools, reports, plans, docs
 ```
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| [.claude/docs/ARCHITECTURE.md](.claude/docs/ARCHITECTURE.md) | From the shortcut to running code; how the server and the client work, file by file |
-| [.claude/docs/SECURITY.md](.claude/docs/SECURITY.md) | Every security rule, where it is enforced, how it was tested, and its limits |
-| [.claude/docs/CHANGELOG.md](.claude/docs/CHANGELOG.md) | Every change since 2026-10-15 |
+| `.claude\docs\ARCHITECTURE.md` (local, not in the repo) | From the shortcut to running code; how the server and the client work, file by file |
+| `.claude\docs\SECURITY.md` (local, not in the repo) | Every security rule, where it is enforced, how it was tested, and its limits |
+| `.claude\docs\CHANGELOG.md` (local, not in the repo) | Every change since 2026-10-15 |
 | [CLAUDE.md](CLAUDE.md) | Development rules (hard rules, build, workflow) |
 | [nvidia/NVIDIA.md](nvidia/NVIDIA.md) | Testing on the NVIDIA target machine |
 
@@ -157,3 +175,9 @@ vscode-ext-source\        VS Code extension source;  vscode-ext\  built packages
   (`openai-compat.py`, `client-qa.py`, `client-e2e.py`). llama.cpp is a development reference only, never a runtime
   dependency.
 - Close Phoenix before model tests (`.claude\tools\close-phoenix.ps1`): one chat model per machine.
+
+## Client lifecycle
+
+The Phoenix Client owns its chat window: heartbeats and a leaving beacon stop only the client when its last app window closes. End session (or `/quit`) waits for active requests and indexing to finish. The independent tray/model server keeps running. Use `src/Stop-PhoenixClient.ps1` for a verified, graceful stop of clients from this checkout; `src/Stop-Phoenix.ps1` is a compatibility alias. No process is force-stopped. Launch the client with `-Stay` or set `PHOENIX_CLIENT_AUTO_STOP=0` to disable automatic stopping; `-Replace` requests a graceful stop before relaunch. The VS Code client retains its separate connection-based lifetime.
+
+Development validation: `powershell.exe -NoProfile -File .claude/claude_tests/client-lifecycle-test.ps1` compiles the complete C# 5 source set and exercises the lifecycle policy and routes without loading a model.

@@ -7,13 +7,14 @@
 <link rel="icon" type="image/png" href="assets/toolbar_icon.png">
 <link rel="stylesheet" href="css/chat.css">
 <link rel="stylesheet" href="css/skills.css">
-<link rel="stylesheet" href="css/fleet-skin.css">
+<link rel="stylesheet" href="css/fleet-skin.css">   <!-- optional Fleet skin: does nothing unless /skin fleet -->
 </head>
 <body>
-<div id="banner"><span>UNCLASSIFIED</span></div>
+<div id="banner"><span>LOCAL DEMO</span></div>
 <canvas id="bg"></canvas><canvas id="bgLogo"></canvas>
 <aside id="side">
   <div class="brand"><img src="assets/toolbar_icon.png" alt=""><span>Phoenix Client</span><button id="navSettings" title="Settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button></div>
+      <button type="button" id="navQuit">End session</button>
   <div id="sideHw" class="sbar"></div>
   <nav class="snav">
     <button id="navNew"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
@@ -54,6 +55,8 @@
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sLight"><span class="sw"></span>light mode<span class="hint"> · light background and panels (off = dark)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sGrid"><span class="sw"></span>grid background<span class="hint"> · grid and faint logo behind the chat (off = solid)</span></label>
         <div class="field" style="margin-top:10px">accent colour<div class="swatches" id="sAccent"></div><span class="hint">gold is the default · recolours everything gold</span></div>
+        <div class="field" style="margin-top:10px">skin<div class="radios" id="sSkin"></div><span class="hint">Phoenix is the default · Fleet: the shared FleetHacker look (navy, brass, Segoe UI) · also /skin fleet | phoenix</span></div>
+        <p id="sSkinFixedNote" class="hint" hidden>Fleet fixes the chat font and accent colour. Choose Phoenix to customize them.</p>
       </section>
       <section id="catApp">
         <div class="section">app</div>
@@ -65,7 +68,7 @@
         <!-- Answer while I type needs the local engine's cache, which a /v1 provider does not expose:
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label> -->
         <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sTypeEffect"><span class="sw"></span>typing effect<span class="hint"> · the reply types itself out, with the odd backspaced typo (display only)</span></label>
-        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>classification banner (UNCLASSIFIED)</label>
+        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>status banner (LOCAL DEMO)</label>
       </section>
     </div>
     <footer><span class="keys">Enter apply · Esc close</span><button id="settingsNew">new chat</button><button class="primary" id="applySettings">apply</button></footer>
@@ -103,7 +106,7 @@
       </section>
       <section>
         <div class="section">privacy</div>
-        <label class="toggle locked" title="Fixed for now: only the Phoenix Local Server gets local context"><input type="checkbox" id="pLocal" disabled><span class="sw"></span>send local context<span class="hint" id="pLocalNote"></span></label>
+        <label class="toggle" id="pLocalRow"><input type="checkbox" id="pLocal"><span class="sw"></span>send local context<span class="hint" id="pLocalNote"></span></label>
       </section>
       <section>
         <div class="section">model</div>

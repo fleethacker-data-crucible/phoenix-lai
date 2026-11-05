@@ -53,7 +53,7 @@ namespace Phoenix
             }
         }
 
-        // Starts the listeners (chat port 8765+, OpenAI API on 1893) and, if given, loads a model in the background.
+        // Starts the listeners (dashboard port 8780-8789, OpenAI API on 1893) and, if given, loads a model in the background.
         public static void Start(string modelPath)
         {
             lock (_gate)
@@ -122,7 +122,13 @@ namespace Phoenix
             _tray.Visible = true;
             System.Windows.Forms.Timer tip = new System.Windows.Forms.Timer();
             tip.Interval = 2000;
-            tip.Tick += delegate { RefreshTip(); };
+            tip.Tick += delegate
+            {
+                RefreshTip();
+                // POST /__fleethacker/shutdown: the same as the tray's Exit (runs here, on the UI thread)
+                WebServer cur = _server;
+                if (cur != null && cur.ShutdownRequested) Application.ExitThread();
+            };
             tip.Start();
             RefreshTip();
         }

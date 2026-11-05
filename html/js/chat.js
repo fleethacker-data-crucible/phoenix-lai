@@ -95,7 +95,33 @@ function drawStatus(offline) {
 }
 // This window's id: the server counts open windows by it, so launching the app again reuses this window.
 const PAGE_ID = (window.PHX_VSCODE ? 'vs-' : '') + Math.random().toString(36).slice(2, 12);   // vs-: the VS Code chat, not an app window
-window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye?page=' + PAGE_ID));
+// The window owns the server (TechStack "Lifecycle rules"): a heartbeat every 5 s, and a "leaving" beacon when the page
+// goes away. The client stops 20 s after the last heartbeat, or 5 s after "leaving" with no new one, so a reload (which
+// checks in again at once with a new id) never stops it. A hidden (minimized) window says so: its timers slow down.
+// Only the page id travels (it is not a secret); the server checks Host and Origin on these routes.
+function heartbeat(leaving) {
+  const body = JSON.stringify({ leaving: !!leaving, hidden: document.visibilityState === 'hidden' });
+  if (leaving) {
+    // sendBeacon is what browsers deliver during unload; it cannot set headers, and nothing secret is sent anyway.
+    let sent = false;
+    try { sent = navigator.sendBeacon('/api/heartbeat?page=' + PAGE_ID, new Blob([body], { type: 'application/json' })); } catch (e) { sent = false; }
+    if (sent) return;
+  }
+  try { fetch('/api/heartbeat?page=' + PAGE_ID, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {}); } catch (e) { }
+}
+heartbeat(false);
+setInterval(() => heartbeat(false), 5000);
+window.addEventListener('pagehide', () => heartbeat(true));
+window.addEventListener('pageshow', () => heartbeat(false));
+document.addEventListener('visibilitychange', () => heartbeat(false));
+// End session (/quit, sidebar): the server finishes what it is writing, then stops; this window says so and stays put.
+async function endSession() {
+  if (!confirm('End this Phoenix Client session?\n\nThe client stops (after any reply, model load or indexing in progress finishes) and this window can be closed. Start it again with Phoenix_Client.lnk.')) return;
+  let r = {};
+  try { r = await api('/api/quit', {}); } catch (e) { systemLine('Could not end the session: ' + e.message); return; }
+  systemLine(r.waitingFor ? 'Ending the session: the client stops after ' + r.waitingFor + ' finishes. You can close this window.' : 'Session ended: the client has stopped. You can close this window.');
+}
+
 // Launched again while this window is open: come to the front (and flash the title in case Windows blocks that).
 function bringForward() {
   window.focus();
@@ -565,7 +591,8 @@ const COMMANDS = [
       if (window.openSkillBuilder) window.openSkillBuilder(arg || undefined);
       else systemLine('The Skill Builder is in the Phoenix window (it needs more room than this panel). Skills you save there work here too: call one with /<skill-name>.');
     } },
-  { name: '/settings', use: '/settings', desc: 'model, system prompt, docs and browser', run: () => openSettings() }
+  { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() },
+  { name: '/quit', use: '/quit', desc: 'end this client session without stopping the model server', run: () => endSession() },
 ];
 
 async function command(text) {
@@ -592,6 +619,8 @@ const FONTS = [
 ];
 const SIZES = [12, 13, 14, 15, 16, 18];
 // Accent colours: gold (the default) first. Picking one recolours everything that was gold.
+// Skins: Phoenix's own look (the default) or the optional Fleet skin (css/fleet-skin.css, scoped under html[data-skin="fleet"]).
+const SKINS = [{ id: 'phoenix', label: 'Phoenix', desc: "Phoenix's own look" }, { id: 'fleet', label: 'Fleet', desc: 'the shared FleetHacker look' }];
 const ACCENTS = ['#e8c15a', '#f08a3c', '#e85a5a', '#e85aa8', '#a77bf0', '#5a8ce8', '#4fc3e8', '#3cc8a0', '#7ad35a', '#d8d8e0'];
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function applyLook() {
@@ -608,7 +637,23 @@ function applyLook() {
   document.documentElement.style.setProperty('--chat', f.css);
   document.documentElement.style.setProperty('--chat-size', (settings.size || 14) + 'px');
   if (window.applyVscodeTheme) window.applyVscodeTheme();   // vscode.html: VS Code's theme wins over these settings
+  syncSkinControls();
   alignChevrons();
+}
+function syncSkinControls() {
+  const fixed = settings.skin === 'fleet';
+  document.querySelectorAll('#sFont input, #sAccent button, #sAccent input').forEach(el => {
+    el.disabled = fixed;
+    if (fixed) el.setAttribute('aria-describedby', 'sSkinFixedNote');
+    else el.removeAttribute('aria-describedby');
+  });
+  document.querySelectorAll('#sFont input').forEach(el => { el.checked = el.value === (fixed ? 'cascadia' : settings.font || 'syne'); });
+  const accent = fixed ? getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() : settings.accent || ACCENTS[0];
+  document.querySelectorAll('#sAccent button').forEach(el => el.classList.toggle('on', el.dataset.c === accent));
+  if ($('sAccentPick')) $('sAccentPick').value = accent;
+  const hex = document.querySelector('#sAccent .hex'); if (hex) hex.textContent = accent;
+  const note = $('sSkinFixedNote');
+  if (note) note.hidden = !fixed;
 }
 // A row of radio buttons; `value` is the selected one, `onPick` previews a choice immediately.
 function radios(box, items, value, onPick) {
@@ -622,6 +667,7 @@ function drawSwatches() {
     '<label class="custom' + (custom ? ' on' : '') + '" title="Pick any colour"><input type="color" id="sAccentPick" value="' + cur + '"></label><span class="hex">' + cur + '</span>';
   $('sAccentPick').addEventListener('input', e => { settings.accent = e.target.value.toLowerCase(); applyLook(); $('sAccent').querySelector('.hex').textContent = settings.accent;
     $('sAccent').querySelectorAll('button').forEach(b => b.classList.remove('on')); $('sAccent').querySelector('.custom').classList.add('on'); });
+  syncSkinControls();
 }
 $('sAccent').addEventListener('click', e => { const b = e.target.closest('button[data-c]'); if (!b) return; settings.accent = b.dataset.c; applyLook(); drawSwatches(); });
 const radioValue = box => { const r = document.querySelector('#' + box + ' input:checked'); return r ? r.value : null; };
@@ -645,10 +691,12 @@ async function openSettings() {
     $('sLight').checked = !!settings.light;
     $('sLight').onchange = () => { settings.light = $('sLight').checked; applyLook(); };
   }
+  // Status banner ('LOCAL DEMO'), off by default. The stored key stays settings.banner, so saved preferences keep working.
   $('sBanner').onchange = () => { settings.banner = $('sBanner').checked; applyLook(); };
   radios('sFont', FONTS.map(f => ({ value: f.id, label: f.label, style: 'font-family:' + f.css.replace(/"/g, "'") })), settings.font || 'syne', v => { settings.font = v; applyLook(); });
   radios('sSize', SIZES.map(n => ({ value: n, label: n + 'px' })), settings.size || 14, v => { settings.size = +v; applyLook(); });
   drawSwatches();
+  if ($('sSkin')) radios('sSkin', SKINS.map(k => ({ value: k.id, label: k.label })), settings.skin || 'phoenix', v => { settings.skin = v; applyLook(); });
   let b = { browser: 'auto', installed: true };
   try { b = await api('/api/browser'); } catch (e) {}
   openedBrowser = b.browser;
@@ -662,6 +710,7 @@ async function openSettings() {
   // (server GPU setting) radios('sGpu', [{ value: 'amd', label: 'AMD' }, { value: 'nvidia', label: 'NVIDIA' }, { value: 'auto', label: 'Auto' }], g.profile);
   // (server GPU setting) $('sGpuSafe').checked = !!g.safe;
   // (server GPU setting) $('gpuNote').textContent = 'NVIDIA: picks the NVIDIA card on two-GPU laptops and uses shorter GPU jobs · used from the next model load' + (g.backend ? ' · now: ' + g.backend : '');
+  syncSkinControls();
   $('settingsModal').classList.add('show');
   $('settingsBody').scrollTop = 0;
 }
@@ -1246,18 +1295,9 @@ function showGuard(g) {
   }
 }
 
-// Sidebar (chat.html) and the model drop-down (chat.html's top bar; vscode.html's input box): shortcuts for the same
-// /commands, shared by both pages.
-if ($('side')) {
-  $('navNew').onclick = () => newChat();
-  $('navSettings').onclick = () => openSettings();
-}
-if ($('modelPick')) {
-  // Model drop-down: every provider's chat models, grouped; picking one loads it.
-  const modelMenu = $('modelMenu');
-  $('modelPick').onclick = async e => {
-    e.stopPropagation();
-    if ($('modelPick').classList.contains('dis')) return;   // no provider online
+// Model drop-down (chat.html: the top bar; vscode.html: the model chip in the composer): every provider's models;
+// picking one loads it. toggleModelMenu(menu) opens / closes it, pickFromModelMenu(e, menu) handles a click in it.
+async function toggleModelMenu(modelMenu) {
     if (modelMenu.classList.toggle('show')) {
       await loadModelList();
       // Phoenix Client: every provider's models, grouped; an offline provider and its models are greyed out
@@ -1283,12 +1323,31 @@ if ($('modelPick')) {
         '<span>' + esc(m.name.replace(/\.gguf$/i, '')) + '</span><span class="mgear" title="Settings for this model">' + GEAR_ICON + '</span></button>').join('')
         : '<div class="none">' + esc(info.providerError ? (info.provider ? info.provider.name : 'The provider') + ': ' + info.providerError : 'No models from ' + (info.provider ? info.provider.name : 'the provider') + '.') + '</div>';
     }
-  };
-  modelMenu.onclick = e => { const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
+}
+function pickFromModelMenu(e, modelMenu) {
+    const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
     if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; }
     const otherProvider = b.dataset.p && info.provider && b.dataset.p !== info.provider.id;
-    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, b.dataset.p).then(() => window.providersChanged && window.providersChanged()); };
+    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, b.dataset.p).then(() => window.providersChanged && window.providersChanged());
+}
+if ($('modelMenu')) {
+  const modelMenu = $('modelMenu');
+  modelMenu.onclick = e => pickFromModelMenu(e, modelMenu);
   document.addEventListener('click', e => { if (!e.target.closest('.mpick')) modelMenu.classList.remove('show'); });
+}
+
+// Sidebar and top bar (chat.html only; vscode.html shares this script): shortcuts for the same /commands.
+if ($('side')) {
+  $('navNew').onclick = () => newChat();
+  if ($('navQuit')) $('navQuit').onclick = () => endSession();
+  $('navSettings').onclick = () => openSettings();
+}
+if ($('modelPick')) {
+  $('modelPick').onclick = e => {
+    e.stopPropagation();
+    if ($('modelPick').classList.contains('dis')) return;   // no provider online
+    toggleModelMenu($('modelMenu'));
+  };
 }
 
 // The message box is fixed to the bottom: keep the conversation's bottom padding in step with its height.

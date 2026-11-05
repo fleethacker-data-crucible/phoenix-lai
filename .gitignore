@@ -2,8 +2,21 @@
 *.gguf
 /logs/
 /docs/.index/
-/.claude/rag-eval-oldroot/
 /nvidia/results/
 /nvidia/logs/
 /Phoenix_LAI_Package.7z
-/.claude/worktrees/
+/.claude/
+
+# Local environment files (secrets)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+# Local only: session logs, release packages, internal reference docs
+/logs.txt
+/Phoenix_LAI_*.tar.gz
+/Phoenix_LAI_*.package
+/swagger-*.txt
+# Windows shortcuts are made on each computer (Phoenix_LAI.bat / first run): a .lnk records the computer name and SID
+*.lnk

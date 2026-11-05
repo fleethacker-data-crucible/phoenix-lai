@@ -7,6 +7,9 @@ param(
     [string]$Model,
     [int]$Context = 0
 )
+# First run: create or repair Phoenix_Client.lnk and Phoenix_LAI_Server.lnk in the project root (made on this
+# computer, never tracked). Best effort: a missing or blocked WScript.Shell never stops the launch.
+try { Import-Module (Join-Path $PSScriptRoot 'PhoenixShortcuts.psm1') -Force; $null = Sync-PhoenixShortcut -Root (Split-Path -Parent $PSScriptRoot) } catch { $null = $_ }
 $args2 = @{ Role = 'Server'; Context = $Context }
 if ($Model) { $args2.Model = $Model }
 & (Join-Path $PSScriptRoot 'run.ps1') @args2

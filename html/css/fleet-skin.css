@@ -1,90 +1,167 @@
-/* Fleet skin (hackathon): the shared Fleet look (navy and brass, Segoe UI, Cascadia Mono), opt-in with /skin fleet.
-   Every rule is scoped under html[data-skin="fleet"], so with the skin off (/skin phoenix) Phoenix looks exactly as before. On by default for the hackathon.
-   Linked last on chat.html, dashboard.html and console.html. Removing the skin = deleting this file and its <link>s.
-   Token values: Fleet Unified UI --fl-* (Night watch = dark, Chart room = light, Phoenix's .light switch picks). */
+/* Fleet skin for Phoenix LAI: optional, off by default (/skin fleet, /skin phoenix). Phoenix's own look is untouched:
+   every rule here is scoped under html[data-skin="fleet"], so with the skin off this file does nothing, and deleting it
+   (plus its <link>) removes the skin entirely. Values: Fleet Unified UI 3.2 (Night watch / Chart room); accent: Phoenix's
+   own gold in the dark theme, a darkened gold in the light one. Contrast checked for every text colour (>= 4.5:1).
+   What it changes: colours, fonts, accent, focus rings, status shapes, the emblem. What it does not: layout. */
 
-/* ---------- Fleet tokens: Night watch (dark) ---------- */
+/* ---------- Night watch (dark) ---------- */
 html[data-skin="fleet"] {
-  --fl-background: #071a26; --fl-sidebar: #0a2130; --fl-surface: #0d2636; --fl-card: #112d40; --fl-popover: #14334a;
-  --fl-muted: #183a52; --fl-border: #24465e; --fl-border-strong: #34597a; --fl-control-border: #5f8199;
-  --fl-foreground: #f4ead6; --fl-muted-foreground: #a9b4ba; --fl-accent: #c9a66b; --fl-accent-ink: #071a26;
+  --fl-brass: #c9a66b; --fl-control-border: #5f8199; --fl-accent-ink: #071a26;
   --fl-success: #4fb386; --fl-warning: #e0a443; --fl-danger: #ef6a5a; --fl-info: #6aa7e0;
-  --fl-font-body: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --fl-font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
-  --fl-radius-control: 6px; --fl-radius-card: 10px; --fl-radius-dialog: 14px;
-  --fl-shadow: 0 12px 40px -10px rgb(0 0 0 / 0.55);
-
-  /* Phoenix variables -> Fleet tokens */
-  --bg: var(--fl-background); --side-bg: var(--fl-sidebar); --box: var(--fl-card); --settings-bg: var(--fl-surface);
-  --panel: rgba(13,38,54,.92); --panel-solid: var(--fl-surface); --code-bg: #05141e;
-  --line: var(--fl-border); --line-strong: var(--fl-border-strong);
-  --text: var(--fl-foreground); --soft: #d6ccb8; --dim: var(--fl-muted-foreground); --status-text: var(--fl-muted-foreground);
-  --ok: var(--fl-success); --err: var(--fl-danger);
-  --sans: var(--fl-font-body); --mono: var(--fl-font-mono); --r: var(--fl-radius-control);
-  /* The accent picker writes --accent inline; the skin wins while it is on. */
-  --accent: #c9a66b !important; --accent-rgb: 201,166,107 !important; --accent-2: #dcc496 !important; --you: var(--fl-accent);
-  --chat: var(--fl-font-body) !important;
+  --bg: #071a26; --side-bg: #0a2130; --box: #112d40; --panel: rgba(13,38,54,.94); --panel-solid: #112d40;
+  --grid: transparent; --grid-strong: transparent;
+  --line: #24465e; --line-strong: #34597a;
+  --text: #f4ead6; --soft: #a9b4ba; --dim: #93a3ad; --ok: var(--fl-success); --err: var(--fl-danger);
+  --code-bg: #05131c; --settings-bg: #0d2636; --status-text: #93a3ad; --r: 6px;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  /* The accent picker and the chat font choice write these inline; the skin fixes them while it is on. */
+  --accent: #e8c15a !important; --accent-rgb: 232,193,90 !important; --accent-2: #f2d68e !important;
+  --chat: var(--mono) !important;
+  --you: var(--accent);
+  --fl-display: Cambria, Georgia, "Times New Roman", serif;
+  color-scheme: dark;
 }
-
 /* ---------- Chart room (light) ---------- */
 html[data-skin="fleet"].light {
-  --fl-background: #fbfaf2; --fl-sidebar: #f3efe2; --fl-surface: #ffffff; --fl-card: #ffffff; --fl-popover: #ffffff;
-  --fl-muted: #efe9d9; --fl-border: #dcd3bd; --fl-border-strong: #c4b79a; --fl-control-border: #8c8370;
-  --fl-foreground: #132633; --fl-muted-foreground: #4f5d66; --fl-accent: #8a6b45; --fl-accent-ink: #fbfaf2;
-  --fl-success: #2f7d57; --fl-warning: #9a6412; --fl-danger: #b8382b; --fl-info: #1f5fa3;
-  --fl-shadow: 0 12px 40px -12px rgb(19 38 51 / 0.25);
-  --panel: rgba(255,255,255,.94); --code-bg: #f6f3e8; --soft: #2c3e4a;
-  --accent: #8a6b45 !important; --accent-rgb: 138,107,69 !important; --accent-2: #a88a62 !important; --you: var(--fl-accent);
+  --fl-brass: #8a6b45; --fl-control-border: #8c8370; --fl-accent-ink: #fbfaf2;
+  --fl-success: #286d4a; --fl-warning: #87560d; --fl-danger: #b8382b; --fl-info: #1f5fa3;
+  --bg: #fbfaf2; --side-bg: #f3efe2; --box: #ffffff; --panel: rgba(255,255,255,.96); --panel-solid: #ffffff;
+  --line: #dcd3bd; --line-strong: #c4b79a;
+  --text: #132633; --soft: #4f5d66; --dim: #53616a; --ok: var(--fl-success); --err: var(--fl-danger);
+  --code-bg: #f3efe2; --settings-bg: #ffffff; --status-text: #53616a;
+  --accent: #7a5a10 !important; --accent-rgb: 122,90,16 !important; --accent-2: #7a5a10 !important;
+  --you: #7a5a10;
+  color-scheme: light;
 }
 
-/* ---------- Chat page: background, frame, hard-coded colours ---------- */
-html[data-skin="fleet"] #bg, html[data-skin="fleet"] #bgLogo { display: none !important; }   /* no grid or glow */
-html[data-skin="fleet"] body { background: var(--fl-background); color: var(--fl-foreground); font-family: var(--fl-font-body); }
-html[data-skin="fleet"] #side { background: var(--fl-sidebar) !important; backdrop-filter: none; -webkit-backdrop-filter: none;
-  border-right-color: var(--fl-border); border-top-color: var(--fl-border); }
-html[data-skin="fleet"] #main { border-top-color: var(--fl-border); }
-html[data-skin="fleet"] #sideHw, html[data-skin="fleet"] #topSpeed { color: var(--fl-muted-foreground); }
-html[data-skin="fleet"] .brand span { font-family: var(--fl-font-body); font-weight: 600; letter-spacing: .01em; }
+/* ---------- Background: no grid, glows or watermark; solid Fleet surfaces ---------- */
+html[data-skin="fleet"] #bg, html[data-skin="fleet"] #bgLogo { display: none !important; }
+html[data-skin="fleet"] #side, html[data-skin="fleet"].grid #side { background: var(--side-bg); backdrop-filter: none; -webkit-backdrop-filter: none; border-color: var(--line); }
+html[data-skin="fleet"] #main { border-color: var(--line); background: var(--bg); }
+html[data-skin="fleet"] body { font-size: 14px; line-height: 1.5; }
 
-/* Status colours: green / red / blue / amber -> Fleet success / danger / info / warning */
-html[data-skin="fleet"] #providerList .sitem.st-up, html[data-skin="fleet"] #projList .sitem.on, html[data-skin="fleet"] #projList .sitem.on > svg,
-html[data-skin="fleet"] #modelMenu button.on, html[data-skin="fleet"] .ctests .ok, html[data-skin="fleet"] .work.ok .lbl,
-html[data-skin="fleet"] .code header .copy.done, html[data-skin="fleet"] .feats .feat.yes { color: var(--fl-success); }
-html[data-skin="fleet"] #providerList .sitem.st-up .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-up .cdot { background: var(--fl-success); }
-html[data-skin="fleet"] .work.ok .spin { border-color: var(--fl-success); background: var(--fl-success); }
-html[data-skin="fleet"] #providerList .sitem.st-down, html[data-skin="fleet"] #modelMenu button.big, html[data-skin="fleet"] .ctests .fail,
-html[data-skin="fleet"] #side .perr, html[data-skin="fleet"] .work.bad .lbl { color: var(--fl-danger); }
-html[data-skin="fleet"] #providerList .sitem.st-down .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-down .cdot { background: var(--fl-danger); }
-html[data-skin="fleet"] .work.bad .spin { border-color: var(--fl-danger); background: var(--fl-danger); }
+/* ---------- Emblem and wordmark ---------- */
+html[data-skin="fleet"] #side .brand img { content: url("../assets/brand/fleet-mark.png"); border-radius: 50%; box-shadow: 0 0 0 1px var(--fl-brass); }
+html[data-skin="fleet"] #side .brand span { font-family: var(--fl-display); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 15px; }
+html[data-skin="fleet"] .empty .logos .logo { content: url("../assets/brand/fleet-emblem-dark.png"); }
+html[data-skin="fleet"].light .empty .logos .logo { content: url("../assets/brand/fleet-emblem-light.png"); }
+html[data-skin="fleet"] .empty .logos .logo, html[data-skin="fleet"] .empty .logos { aspect-ratio: 1 / 1; }
+html[data-skin="fleet"] .empty .logos .logo:not(.alt) { top: 0; }
+/* The two stacked logos are the same emblem in this skin: show one, so a click does not fade it out. */
+html[data-skin="fleet"] .empty .logos .alt { display: none; }
+html[data-skin="fleet"] .empty .logos.light .logo:not(.alt) { opacity: 1; }
+html[data-skin="fleet"] .empty .hint { font-size: 13px; }
+
+/* ---------- Text, chevrons, side panel ---------- */
+html[data-skin="fleet"] #sideHw, html[data-skin="fleet"] #topSpeed,
+html[data-skin="fleet"].light #sideHw, html[data-skin="fleet"].light #topSpeed { color: var(--soft); }
+html[data-skin="fleet"] #topSpeed .sep { opacity: 1; }
+html[data-skin="fleet"] #side .snav button:hover, html[data-skin="fleet"] #side .sitem:hover,
+html[data-skin="fleet"] #files .item:hover, html[data-skin="fleet"] button:hover { background: rgba(var(--accent-rgb), .08); }
+html[data-skin="fleet"] #side .sitem.on, html[data-skin="fleet"] #providerList .sitem.on { background: rgba(var(--accent-rgb), .14); }
+html[data-skin="fleet"] #side .pnew { border-color: var(--fl-control-border); background: var(--code-bg); }
+html[data-skin="fleet"] #side .perr, html[data-skin="fleet"] .settings .hint.warn { color: var(--fl-danger); }
+html[data-skin="fleet"] #projList .sitem.on, html[data-skin="fleet"] #projList .sitem.on > svg { color: var(--fl-success); }
 html[data-skin="fleet"] #side .sitem .del, html[data-skin="fleet"] #side .sitem .del svg { color: var(--fl-danger); }
-html[data-skin="fleet"] #providerList .sitem.st-busy { color: var(--fl-info); }
-html[data-skin="fleet"] #providerList .sitem.st-busy .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-busy .cdot { background: var(--fl-info); box-shadow: none; }
-html[data-skin="fleet"] .work .spin { border-top-color: var(--fl-accent); }
-html[data-skin="fleet"] .work.warn .spin { border-color: var(--fl-warning); background: var(--fl-warning); }
-html[data-skin="fleet"] .work.warn .lbl, html[data-skin="fleet"] .settings .note { color: var(--fl-warning); }
-html[data-skin="fleet"] .feats .feat.no, html[data-skin="fleet"] #modelMenu button.off { color: var(--fl-muted-foreground); }
+html[data-skin="fleet"] .user::before, html[data-skin="fleet"] .chev { color: var(--accent); }
+html[data-skin="fleet"] .reply .link { color: var(--accent-2); text-decoration: underline; }
+html[data-skin="fleet"] ::selection { background: rgba(var(--accent-rgb), .35); color: var(--text); }
 
-/* Controls: Fleet radii, 32 px targets, brass focus ring */
-html[data-skin="fleet"] button.primary { background: var(--fl-accent); border-color: var(--fl-accent); color: var(--fl-accent-ink); }
-html[data-skin="fleet"] .window { border-radius: var(--fl-radius-dialog); border-color: var(--fl-border-strong); box-shadow: var(--fl-shadow); background: var(--fl-surface); }
-html[data-skin="fleet"] .card, html[data-skin="fleet"] .code { border-radius: var(--fl-radius-card); }
-html[data-skin="fleet"] .snav button, html[data-skin="fleet"] .sitem { min-height: 32px; }
-html[data-skin="fleet"] #side .pnew { background: var(--fl-surface); border-color: var(--fl-control-border); }
-html[data-skin="fleet"] :focus-visible { outline: 2px solid var(--fl-accent); outline-offset: 2px; }
-html[data-skin="fleet"] ::selection { background: rgba(201,166,107,.4); color: var(--fl-foreground); }
-html[data-skin="fleet"] .settings .swatches { opacity: .4; pointer-events: none; }   /* the picker does nothing while the skin is on */
+/* ---------- Status: shape and colour together, never colour alone. Text stays neutral. ----------
+   up = filled dot · busy = ring · down = cross · unknown = dashed ring */
+html[data-skin="fleet"] #providerList .sitem.st-up, html[data-skin="fleet"] #providerList .sitem.st-down,
+html[data-skin="fleet"] #providerList .sitem.st-busy { color: var(--text); }
+html[data-skin="fleet"] .cdot { box-shadow: none !important; }
+html[data-skin="fleet"] .st-up .cdot { background: var(--fl-success) !important; border-radius: 50%; }
+html[data-skin="fleet"] .st-busy .cdot { background: transparent !important; border: 2px solid var(--fl-info); border-radius: 50%; width: 9px !important; height: 9px !important; }
+html[data-skin="fleet"] .st-down .cdot { background: var(--fl-danger) !important; border-radius: 0; width: 9px !important; height: 9px !important;
+  clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+html[data-skin="fleet"] .st-unknown .cdot { background: transparent !important; border: 1.5px dashed var(--dim); border-radius: 50%; width: 9px !important; height: 9px !important; }
+html[data-skin="fleet"] #modelMenu .mgroup.st-down { color: var(--soft); }
+html[data-skin="fleet"] #modelMenu button.on { color: var(--fl-success); }
+html[data-skin="fleet"] #modelMenu button.on::after { content: "loaded"; margin-left: 10px; font-size: 11px; color: var(--soft); }
+html[data-skin="fleet"] #modelMenu button.off, html[data-skin="fleet"].light #modelMenu button.off { color: var(--dim); }
+html[data-skin="fleet"] #modelMenu button.big { color: var(--fl-danger); }
+html[data-skin="fleet"] #modelMenu button.big::after { content: "too big for free memory"; margin-left: 10px; font-size: 11px; color: var(--soft); }
+html[data-skin="fleet"] .feats .feat.yes { color: var(--fl-success); border-color: currentColor; }
+html[data-skin="fleet"] .feats .feat.no { color: var(--dim); }
+html[data-skin="fleet"] .ctests .ok { color: var(--fl-success); } html[data-skin="fleet"] .ctests .fail { color: var(--fl-danger); }
+html[data-skin="fleet"] .ctests .pinfo { border-top-color: var(--line); }
 
-/* Code: keep syntax colours, Fleet surface; light mode gets darker text */
-html[data-skin="fleet"] .code pre { color: #e6dcc6; }
-html[data-skin="fleet"].light .code pre { color: var(--fl-foreground); }
+/* ---------- Work box, code, replies ---------- */
+html[data-skin="fleet"] .work .spin { border-color: var(--line); border-top-color: var(--fl-warning); }
+html[data-skin="fleet"] .work.verified .lbl, html[data-skin="fleet"] .work.ok .lbl { color: var(--fl-success); }
+html[data-skin="fleet"] .work.ok .spin { border-color: var(--fl-success); background: var(--fl-success); }
+html[data-skin="fleet"] .work.warn .spin { border-color: var(--fl-warning); background: var(--fl-warning); } html[data-skin="fleet"] .work.warn .lbl { color: var(--fl-warning); }
+html[data-skin="fleet"] .work.bad .spin { border-color: var(--fl-danger); background: var(--fl-danger); } html[data-skin="fleet"] .work.bad .lbl { color: var(--fl-danger); }
+html[data-skin="fleet"] .work .worklog { color: var(--soft); }
+html[data-skin="fleet"] .code { background: var(--code-bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+html[data-skin="fleet"] .code header .copy.done { color: var(--fl-success); }
+html[data-skin="fleet"] .hl-punc { color: var(--dim); }
+html[data-skin="fleet"] .reply th { background: rgba(var(--accent-rgb), .06); }
+html[data-skin="fleet"] .tool { color: var(--fl-success); } html[data-skin="fleet"] .tool.fail, html[data-skin="fleet"] .err { color: var(--fl-danger); }
 
+/* ---------- Controls: real borders (>= 3:1), Fleet buttons ---------- */
+html[data-skin="fleet"] button, html[data-skin="fleet"] .btn { border-color: var(--fl-control-border); }
+html[data-skin="fleet"] #side .snav button, html[data-skin="fleet"] #side .sitem, html[data-skin="fleet"] #modelPick,
+html[data-skin="fleet"] #navSettings, html[data-skin="fleet"] .settings .cats button, html[data-skin="fleet"] .settings .x,
+html[data-skin="fleet"] #modelMenu button, html[data-skin="fleet"] .dd .ddmenu button, html[data-skin="fleet"] .code header .copy,
+html[data-skin="fleet"] #newSkill, html[data-skin="fleet"] #newProject, html[data-skin="fleet"] #newProvider { border-color: transparent; }
+html[data-skin="fleet"] button.primary { background: var(--accent); border-color: var(--accent); color: var(--fl-accent-ink); }
+html[data-skin="fleet"] .field input, html[data-skin="fleet"] .field textarea, html[data-skin="fleet"] .prow > button:not(.primary) { border-color: var(--fl-control-border); }
+html[data-skin="fleet"] .settings .field input, html[data-skin="fleet"] .settings .field textarea, html[data-skin="fleet"] #pModel { border-bottom-color: var(--fl-control-border); }
+html[data-skin="fleet"] .settings .toggle .sw, html[data-skin="fleet"] .settings .radios span { border-color: var(--fl-control-border); }
+html[data-skin="fleet"] .settings .note { color: var(--fl-warning); }
+html[data-skin="fleet"] .approve .yes { color: var(--fl-success); border-color: var(--fl-success); }
+html[data-skin="fleet"] .approve .no { color: var(--fl-danger); border-color: var(--fl-danger); }
+html[data-skin="fleet"] .approve.accepted, html[data-skin="fleet"] .approve.accepted .q { border-color: var(--fl-success); color: var(--fl-success); }
+html[data-skin="fleet"] .approve.denied, html[data-skin="fleet"] .approve.denied .q { border-color: var(--fl-danger); color: var(--fl-danger); }
+/* The accent picker has no effect while the skin is on: say so instead of letting it look broken. */
+html[data-skin="fleet"] .settings .swatches { pointer-events: none; }
+html[data-skin="fleet"] .settings .swatches button, html[data-skin="fleet"] .settings .swatches input { opacity: .45; }
+html[data-skin="fleet"] #sFont { opacity: .45; pointer-events: none; }
+
+/* ---------- Windows, menus ---------- */
+html[data-skin="fleet"] .window, html[data-skin="fleet"] #modelMenu, html[data-skin="fleet"] #cmds, html[data-skin="fleet"] #files,
+html[data-skin="fleet"] .dd .ddmenu { border-color: var(--line-strong); box-shadow: 0 16px 48px rgba(0,0,0,.45); border-radius: 10px; }
+html[data-skin="fleet"].light .window, html[data-skin="fleet"].light #modelMenu, html[data-skin="fleet"].light #cmds,
+html[data-skin="fleet"].light #files, html[data-skin="fleet"].light .dd .ddmenu { box-shadow: 0 12px 36px rgba(19,38,51,.14); }
+html[data-skin="fleet"] .settings header h2, html[data-skin="fleet"] .settings .section { color: var(--accent); }
+html[data-skin="fleet"] #cmds .c.sel, html[data-skin="fleet"] #cmds .c:hover { background: rgba(var(--accent-rgb), .12); }
+
+/* ---------- Banners ---------- */
+html[data-skin="fleet"] #banner { background: #2f7d57; color: #ffffff; font-family: var(--sans); }
+html[data-skin="fleet"] #guardBanner, html[data-skin="fleet"] #guardBanner.locked { border-color: var(--fl-danger); background: var(--code-bg); color: var(--text); }
+html[data-skin="fleet"] #guardBanner .gb-count { color: var(--text); }
+html[data-skin="fleet"] #guardBanner .gb-x { color: var(--fl-danger); }
+html[data-skin="fleet"] #guardBanner .gb-title { color: var(--fl-danger); animation-name: fleet-guard-flash; }
+@keyframes fleet-guard-flash { 50% { text-shadow: 0 0 14px var(--fl-danger); } }
+
+/* ---------- Focus: a visible 2px brass ring (Phoenix removes outlines on fields and menus) ---------- */
+html[data-skin="fleet"] :focus-visible { outline: 2px solid var(--fl-brass) !important; outline-offset: 2px; }
+html[data-skin="fleet"] .field input:focus-visible, html[data-skin="fleet"] .field textarea:focus-visible,
+html[data-skin="fleet"] .dd .ddbtn:focus-visible, html[data-skin="fleet"] .dd .ddmenu button:focus-visible { outline: 2px solid var(--fl-brass) !important; outline-offset: 1px; }
+html[data-skin="fleet"] .settings .toggle input:focus-visible + .sw, html[data-skin="fleet"] .settings .radios input:focus-visible + span { outline: 2px solid var(--fl-brass); outline-offset: 2px; }
+/* The message box draws its own block cursor, which is its focus sign. */
+html[data-skin="fleet"] #input:focus-visible { outline: none !important; }
+
+/* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
-  html[data-skin="fleet"] * { transition-duration: 0s !important; animation-duration: 0s !important; }
+  html[data-skin="fleet"] *, html[data-skin="fleet"] *::before, html[data-skin="fleet"] *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  html[data-skin="fleet"] #guardBanner .gb-title { animation: none !important; }
 }
 
-/* ---------- Server pages (dashboard, console) ---------- */
-html[data-skin="fleet"] header.top { background: var(--fl-sidebar); border-bottom-color: var(--fl-border); min-height: 56px; }
-html[data-skin="fleet"] header.top a, html[data-skin="fleet"] header.top button { border-color: var(--fl-control-border); border-radius: var(--fl-radius-control); min-height: 32px; display: inline-flex; align-items: center; }
-html[data-skin="fleet"] .card { background: var(--fl-card); border-color: var(--fl-border); }
-html[data-skin="fleet"] .bar { background: var(--fl-muted); }
+/* ---------- Server dashboard and console (server.css pages; dark only) ---------- */
+html[data-skin="fleet"] .top img { content: url("../assets/brand/fleet-mark.png"); border-radius: 50%; box-shadow: 0 0 0 1px var(--fl-brass); }
+html[data-skin="fleet"] .top h1 { font-family: var(--fl-display); letter-spacing: .06em; text-transform: uppercase; }
+html[data-skin="fleet"] header.top { background: var(--side-bg); }
+html[data-skin="fleet"] header.top a, html[data-skin="fleet"] header.top button,
+html[data-skin="fleet"] .settings button, html[data-skin="fleet"] .settings select { border-color: var(--fl-control-border); }
+html[data-skin="fleet"] .card { border-radius: 10px; }
+html[data-skin="fleet"] .card h2 { color: var(--soft); }
+html[data-skin="fleet"] .bar { background: var(--line); }
 html[data-skin="fleet"] .state.on i { box-shadow: none; }
+html[data-skin="fleet"] .state.off i { border-radius: 0; background: var(--fl-danger);
+  clip-path: polygon(20% 0, 50% 30%, 80% 0, 100% 20%, 70% 50%, 100% 80%, 80% 100%, 50% 70%, 20% 100%, 0 80%, 30% 50%, 0 20%); }
+html[data-skin="fleet"] .dot:not(.on) { background: transparent; border: 1.5px solid var(--dim); }
