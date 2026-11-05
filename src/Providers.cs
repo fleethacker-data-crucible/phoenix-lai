@@ -1117,6 +1117,9 @@ namespace Phoenix
     }
 
     // ---------- embeddings over a provider's /v1/embeddings (docs search, project index) ----------
+    // The provider is up but offers no embedding model: not a fault, docs search falls back to keywords.
+    public sealed class NoEmbedderException : InvalidOperationException { public NoEmbedderException(string m) : base(m) { } }
+
     public sealed class RemoteEmbedder : IEmbedder
     {
         readonly Provider _p;
@@ -1127,7 +1130,13 @@ namespace Phoenix
         {
             _p = p;
             if (!p.Has("embeddings")) throw new InvalidOperationException(p.Name + " does not offer embeddings (its last test).");
-            _dim = Embed("dimension probe").Length;
+            try { _dim = Embed("dimension probe").Length; }
+            catch (WebException ex)
+            {
+                // the server answered but has no embedding model (HTTP error): docs search runs on keywords, not an error
+                if (ex.Response != null) throw new NoEmbedderException(p.Name + " has no embedding model loaded (docs search uses keywords).");
+                throw;
+            }
         }
 
         public string ModelPath { get { return _p.Name + " embeddings"; } }

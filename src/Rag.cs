@@ -113,6 +113,7 @@ namespace Phoenix
                         _embedder = EmbedderFactory != null ? EmbedderFactory() : Embedder.Find(ModelsDir);
                         if (_embedder != null && _lastError != null && _lastError.StartsWith("embedding model:")) _lastError = null;
                     }
+                    catch (NoEmbedderException) { /* keywords only; not an error */ }
                     catch (Exception ex) { _lastError = "embedding model: " + ex.Message; }
                 }
                 return _embedder;
