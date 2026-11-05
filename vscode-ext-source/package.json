@@ -2,7 +2,7 @@
   "name": "phoenixlai",
   "displayName": "Phoenix",
   "description": "The local Phoenix server's chat in VS Code (create, edit, delete files in your project, Instant Recall, docs search) plus inline code completion. Loopback only, no settings, no dependencies.",
-  "version": "2.7.0",
+  "version": "2.9.0",
   "publisher": "phoenixlai",
   "license": "UNLICENSED",
   "private": true,

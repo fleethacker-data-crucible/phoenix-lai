@@ -21,6 +21,10 @@ namespace Phoenix
     public sealed class Provider
     {
         public string Id, Name, Url, Model = "";
+        // The API the provider speaks: "openai" (/chat/completions, Authorization: Bearer) or "anthropic" (/messages,
+        // x-api-key + anthropic-version). Both list models at /models.
+        public string Format = "openai";
+        public bool IsAnthropic { get { return Format == "anthropic"; } }
         public bool IsPhoenix { get { return Id == Providers.PhoenixId; } }
         // What the last connection test found the provider allows (Providers.FeatureKeys); null = never tested, so
         // everything is tried. Saved in providers.json.
@@ -36,7 +40,7 @@ namespace Phoenix
     public static class Providers
     {
         public const string PhoenixId = "phoenix";
-        public const string PhoenixUrl = "http" + "://localhost:1234/v1";
+        public static string PhoenixUrl { get { return "http" + "://localhost:" + WebServer.SavedApiPort() + "/v1"; } }   // follows the server's apiport setting
         public const string PhoenixName = "Phoenix Local Server";
         static readonly object _fileLock = new object();
         static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalLLMStudio");
@@ -72,6 +76,7 @@ namespace Phoenix
                             Provider p = new Provider();
                             p.Id = Json.GetStr(d, "id", null); p.Name = Json.GetStr(d, "name", "provider");
                             p.Url = Json.GetStr(d, "url", PhoenixUrl); p.Model = Json.GetStr(d, "model", "");
+                            p.Format = NormFormat(Json.GetStr(d, "format", "openai"));
                             Dictionary<string, object> f = d.ContainsKey("features") ? d["features"] as Dictionary<string, object> : null;
                             if (f != null)
                             {
@@ -84,13 +89,13 @@ namespace Phoenix
                 }
                 catch { }
             }
-            // The Phoenix Local Server is always there, first, at this PC's port 1234: never removed, renamed or re-pointed
+            // The Phoenix Local Server is always there, first, at this PC's API port (apiport, default 1893): never removed, renamed or re-pointed
             // (only its model and API key change).
             Provider ph = list.Find(delegate(Provider p) { return p.IsPhoenix; });
             if (ph == null || list.IndexOf(ph) != 0 || ph.Name != PhoenixName || ph.Url != PhoenixUrl)
             {
                 if (ph == null) { ph = new Provider(); ph.Id = PhoenixId; } else list.Remove(ph);
-                ph.Name = PhoenixName; ph.Url = PhoenixUrl;
+                ph.Name = PhoenixName; ph.Url = PhoenixUrl; ph.Format = "openai";
                 list.Insert(0, ph);
                 Save(list);
             }
@@ -110,7 +115,7 @@ namespace Phoenix
                     Provider p = new Provider();
                     p.Id = Json.GetStr(d, "id", null); p.Name = Json.GetStr(d, "name", "provider"); p.Model = Json.GetStr(d, "model", "");
                     string host = Json.GetStr(d, "host", "127.0.0.1");
-                    p.Url = "http" + "://" + host + ":" + (int)Json.GetNum(d, "port", 1234) + Json.GetStr(d, "path", "/v1");
+                    p.Url = "http" + "://" + host + ":" + (int)Json.GetNum(d, "port", 1893) + Json.GetStr(d, "path", "/v1");
                     if (p.Id != null) list.Add(p);
                 }
             Save(list);
@@ -124,7 +129,7 @@ namespace Phoenix
                 Provider p = list[i];
                 if (i > 0) sb.Append(",\n");
                 sb.Append("{\"id\":").Append(Json.Quote(p.Id)).Append(",\"name\":").Append(Json.Quote(p.Name)).Append(",\"url\":").Append(Json.Quote(p.Url))
-                  .Append(",\"model\":").Append(Json.Quote(p.Model));
+                  .Append(",\"model\":").Append(Json.Quote(p.Model)).Append(",\"format\":").Append(Json.Quote(p.Format));
                 if (p.Features != null) sb.Append(",\"features\":").Append(FeaturesJson(p)).Append(",\"testedAt\":").Append(Json.Quote(p.TestedAt));
                 sb.Append('}');
             }
@@ -173,6 +178,7 @@ namespace Phoenix
             bool key = false;
             key = HasKey(p);
             return "{\"id\":" + Json.Quote(p.Id) + ",\"name\":" + Json.Quote(p.Name) + ",\"url\":" + Json.Quote(p.Url) + ",\"model\":" + Json.Quote(p.Model) +
+                   ",\"format\":" + Json.Quote(p.Format) +
                    ",\"hasKey\":" + (key ? "true" : "false") + ",\"phoenix\":" + (p.IsPhoenix ? "true" : "false") + ",\"local\":" + (IsLocal(p.Url) ? "true" : "false") +
                    ",\"features\":" + (p.Features != null ? FeaturesJson(p) : "null") + ",\"testedAt\":" + Json.Quote(p.TestedAt) +
                    ",\"localContext\":" + (p.SendsLocalContext ? "true" : "false") + "}";
@@ -181,10 +187,11 @@ namespace Phoenix
         // ---------- features: what each provider allows, from its last connection test ----------
         // key, label shown in the page, and the test row that decides it. The client sends nothing a provider refused.
         public static readonly string[][] FeatureKeys = {
-            new string[] { "chat", "chat", "POST /chat/completions" },
-            new string[] { "stream", "streaming", "POST /chat/completions (stream)" },
+            // a 4th entry: the same check's row name in an Anthropic provider's test
+            new string[] { "chat", "chat", "POST /chat/completions", "POST /messages" },
+            new string[] { "stream", "streaming", "POST /chat/completions (stream)", "POST /messages (stream)" },
             new string[] { "include_usage", "token usage in streams", "stream_options.include_usage" },
-            new string[] { "system", "system message", "system message" },
+            new string[] { "system", "system message", "system message", "system prompt" },
             new string[] { "sampling", "temperature / top_p", "temperature / top_p" },
             new string[] { "penalties", "presence / frequency penalty", "presence / frequency_penalty" },
             new string[] { "seed", "seed", "seed" },
@@ -226,7 +233,8 @@ namespace Phoenix
                 foreach (object x in rows)
                 {
                     Dictionary<string, object> r = x as Dictionary<string, object>;
-                    if (Json.GetStr(r, "name", null) != k[2]) continue;
+                    string rn = Json.GetStr(r, "name", null);
+                    if (rn != k[2] && (k.Length < 4 || rn != k[3])) continue;
                     string st = Json.GetStr(r, "state", "");
                     // chat and streaming only "warn" over details (no usage block): they still work
                     f[k[0]] = st == "ok" || (st == "warn" && (k[0] == "chat" || k[0] == "stream"));
@@ -298,8 +306,7 @@ namespace Phoenix
             {
                 HttpWebRequest o = Outgoing(p.Url + "/models");
                 o.Timeout = 2500; o.ReadWriteTimeout = 2500; o.KeepAlive = false;
-                string key = Key(p);
-                if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
+                Auth(o, p, Key(p));
                 HttpWebResponse r;
                 try { r = (HttpWebResponse)o.GetResponse(); }
                 catch (WebException ex) { r = ex.Response as HttpWebResponse; }
@@ -372,6 +379,9 @@ namespace Phoenix
                     if (name.Length == 0 || name.Length > 60) throw new ArgumentException("Give the provider a name (up to 60 characters).");
                     p.Name = name;
                     p.Url = NormUrl(Json.GetStr(body, "url", ""));
+                    string fmt = NormFormat(Json.GetStr(body, "format", "openai"));
+                    if (fmt != p.Format) { p.Features = null; p.TestedAt = ""; }   // another API: the old test results do not apply
+                    p.Format = fmt;
                 }
                 p.Model = Json.GetStr(body, "model", "").Trim();
                 // The key goes straight into Credential Manager; the store file never holds it.
@@ -446,7 +456,23 @@ namespace Phoenix
             }
             Provider p = new Provider();
             p.Id = saved != null ? saved.Id : ""; p.Name = "test"; p.Url = NormUrl(url); p.Model = Json.GetStr(body, "model", "");
+            p.Format = saved != null && saved.IsPhoenix ? "openai" : NormFormat(Json.GetStr(body, "format", saved != null ? saved.Format : "openai"));
             return p;
+        }
+
+        static string NormFormat(string f) { return string.Equals(f, "anthropic", StringComparison.OrdinalIgnoreCase) ? "anthropic" : "openai"; }
+
+        // The key in the provider's own header: OpenAI "Authorization: Bearer", Anthropic "x-api-key" (+ its required
+        // API version header, sent with or without a key).
+        public const string AnthropicVersion = "2023-06-01";
+        public static void Auth(HttpWebRequest o, Provider p, string key)
+        {
+            if (p.IsAnthropic)
+            {
+                o.Headers["anthropic-version"] = AnthropicVersion;
+                if (!string.IsNullOrEmpty(key)) o.Headers["x-api-key"] = key;
+            }
+            else if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
         }
 
         // "http(s)://host[:port]/path" without a trailing slash; anything else is refused.
@@ -487,7 +513,7 @@ namespace Phoenix
         static Uri CheckTarget(string url)
         {
             Uri u;
-            if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out u)) throw new ArgumentException("Give the provider's base URL, e.g. http" + "://localhost:1234/v1.");
+            if (string.IsNullOrEmpty(url) || !Uri.TryCreate(url, UriKind.Absolute, out u)) throw new ArgumentException("Give the provider's base URL, e.g. http" + "://localhost:1893/v1.");
             if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps) throw new ArgumentException("Provider URLs start with http or https (scheme, then the address).");
             if (!string.IsNullOrEmpty(u.UserInfo)) throw new ArgumentException("Put the API key in the key field, not in the URL.");
             if (u.Host.Length == 0) throw new ArgumentException("The URL has no host.");
@@ -556,7 +582,7 @@ namespace Phoenix
                 HttpWebRequest o = Outgoing(p.Url + sub);
                 o.Method = method;
                 o.Timeout = 300000;   // the first chat may load a model
-                if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
+                Auth(o, p, key);
                 if (json != null)
                 {
                     byte[] b = Encoding.UTF8.GetBytes(json);
@@ -597,8 +623,84 @@ namespace Phoenix
         // ---------- connection test ----------
         // Every OpenAI /v1 call the client uses: model list, chat (whole and streamed), text completion, embeddings, the
         // key and the error shape. Optional endpoints a provider does not offer are "not offered", not failures.
+        // An Anthropic Messages provider: the model list, the key, a whole and a streamed reply, the system prompt and a
+        // picture. Rows use the names FeaturesFrom maps (FeatureKeys' 4th entry), so the client then uses only what worked.
+        static string TestAnthropic(Provider c, string key)
+        {
+            StringBuilder sb = new StringBuilder("{\"results\":[");
+            int n = 0;
+            List<string> models = new List<string>(), info = new List<string>();
+            Action<string, string, long, string> add = delegate(string name, string state, long ms, string detail)
+            {
+                if (n++ > 0) sb.Append(',');
+                sb.Append("{\"name\":").Append(Json.Quote(name)).Append(",\"state\":").Append(Json.Quote(state)).Append(",\"ms\":").Append(ms)
+                  .Append(",\"detail\":").Append(Json.Quote(detail)).Append('}');
+            };
+            int code;
+            Stopwatch sw = Stopwatch.StartNew();
+            string text = Call(c, key, "GET", "/models", null, out code);
+            Dictionary<string, object> raw = code == 200 ? SafeParse(text) as Dictionary<string, object> : null;
+            List<ModelInfo> list = code == 200 ? ParseModels(text) : null;
+            if (list == null)
+            {
+                add("GET /models", "fail", sw.ElapsedMilliseconds, code == 0 ? "not answering: " + text : "HTTP " + code + ": " + Short(ErrorText(text)));
+                return Finish(sb, models, info);
+            }
+            foreach (ModelInfo m in list) models.Add(m.Id);
+            add("GET /models", "ok", sw.ElapsedMilliseconds, list.Count + " model" + (list.Count == 1 ? "" : "s"));
+            Section(info, "GET /models", ModelRows(raw != null && raw.ContainsKey("data") ? raw["data"] as List<object> : null), raw);
+            int noKey;
+            Call(c, null, "GET", "/models", null, out noKey);
+            add("API key", noKey == 401 || noKey == 403 ? "ok" : "warn", 0, noKey == 401 || noKey == 403 ? "required (refused without one)" : "not required: the provider answered without a key");
+            string model = !string.IsNullOrEmpty(c.Model) && models.Contains(c.Model) ? c.Model : models.Count > 0 ? models[0] : null;
+            if (model == null) { add("POST /messages", "fail", 0, "no model to test with"); return Finish(sb, models, info); }
+
+            Func<List<ChatMessage>, bool, string, string> run = delegate(List<ChatMessage> msgs, bool images, string rowName)
+            {
+                Stopwatch t = Stopwatch.StartNew();
+                int cd;
+                string body = Call(c, key, "POST", "/messages", RemoteChatModel.AnthropicBody(model, msgs, 64, false, images), out cd);
+                Dictionary<string, object> d = SafeParse(body) as Dictionary<string, object>;
+                List<object> content = d != null && d.ContainsKey("content") ? d["content"] as List<object> : null;
+                string reply = null;
+                if (content != null) foreach (object x in content) { Dictionary<string, object> b = x as Dictionary<string, object>; if (Json.GetStr(b, "type", null) == "text") reply += Json.GetStr(b, "text", ""); }
+                if (cd != 200 || reply == null) { add(rowName, "na", t.ElapsedMilliseconds, "not allowed · " + (cd == 0 ? body : "HTTP " + cd + ": " + Short(ErrorText(body)))); return null; }
+                add(rowName, "ok", t.ElapsedMilliseconds, "allowed: \"" + Short(reply.Trim()) + "\"");
+                return reply;
+            };
+            List<ChatMessage> hi = new List<ChatMessage>(); hi.Add(new ChatMessage("user", "Reply with the single word OK."));
+            if (run(hi, false, "POST /messages") == null) return Finish(sb, models, info);
+
+            Stopwatch ss = Stopwatch.StartNew();
+            StringBuilder streamed = new StringBuilder();
+            try
+            {
+                List<ChatMessage> count = new List<ChatMessage>(); count.Add(new ChatMessage("user", "Count from 1 to 5."));
+                bool done;
+                RemoteChatModel.StreamRaw(c, key, RemoteChatModel.AnthropicBody(model, count, 64, true, false),
+                    delegate(Dictionary<string, object> ev) { string t = RemoteChatModel.AnthropicDelta(ev); if (t != null) streamed.Append(t); return false; }, null, out done);
+                add("POST /messages (stream)", streamed.Length > 0 ? "ok" : "warn", ss.ElapsedMilliseconds,
+                    streamed.Length > 0 ? "allowed: \"" + Short(streamed.ToString().Trim()) + "\"" + (done ? "" : " (no message_stop)") : "no text in the stream");
+            }
+            catch (Exception ex) { add("POST /messages (stream)", "na", ss.ElapsedMilliseconds, "not allowed · " + Short(ex.Message)); }
+
+            List<ChatMessage> sys = new List<ChatMessage>();
+            sys.Add(new ChatMessage("system", "Always answer with the single word BANANA.")); sys.Add(new ChatMessage("user", "Say hello."));
+            run(sys, false, "system prompt");
+
+            // a 1x1 PNG
+            List<ChatMessage> pic = new List<ChatMessage>();
+            ChatMessage pm = new ChatMessage("user", "What colour is this picture? One word.");
+            pm.Images = new List<byte[]>();
+            pm.Images.Add(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="));
+            pic.Add(pm);
+            run(pic, true, "image input (vision)");
+            return Finish(sb, models, info);
+        }
+
         public static string TestProvider(Provider c, string key)
         {
+            if (c.IsAnthropic) return TestAnthropic(c, key);
             StringBuilder sb = new StringBuilder("{\"results\":[");
             int n = 0;
             List<string> models = new List<string>();
@@ -917,6 +1019,7 @@ namespace Phoenix
         public GenerationStats Generate(List<ChatMessage> messages, SamplerSettings s, int maxTokens, TextCallback onText, CancelCheck cancel)
         {
             Refresh();
+            if (_p.IsAnthropic) return GenerateAnthropic(messages, onText, cancel);
             // Only what the provider's last test allowed (an untested provider gets everything): no stream -> one whole
             // reply; no system role -> the system text goes in front of the first user message; no sampling / seed /
             // usage fields it refused; no pictures it cannot read.
@@ -954,14 +1057,9 @@ namespace Phoenix
                 sb.Append('}');
             }
             sb.Append("]");
-            if (_p.Has("sampling")) { CultureInfoNum(sb, "temperature", s.Temperature); CultureInfoNum(sb, "top_p", s.TopP); }
-            if (maxTokens > 0 && maxTokens < int.MaxValue) sb.Append(",\"max_tokens\":").Append(maxTokens);
-            if (s.Seed > 0 && _p.Has("seed")) sb.Append(",\"seed\":").Append(s.Seed);
-            if (_p.IsPhoenix)   // Phoenix's own sampling fields (other providers may refuse unknown ones)
-            {
-                sb.Append(",\"top_k\":").Append(s.TopK);
-                CultureInfoNum(sb, "repeat_penalty", s.RepeatPenalty);
-            }
+            // No sampling, reply limit or seed: the client is a plain /v1 client and every provider uses its own settings for
+            // the model (the Phoenix server: its per-model settings, Gemma 4's by default). Cloud models refused the
+            // top_p / top_k this used to send (2026-11-04).
             sb.Append('}');
 
             GenerationStats st = new GenerationStats();
@@ -1016,9 +1114,129 @@ namespace Phoenix
             return st;
         }
 
-        static void CultureInfoNum(StringBuilder sb, string name, double v)
+        // ---------- Anthropic Messages API (POST /messages) ----------
+        // max_tokens is the one field the Messages API requires (it has no default), so it is the only one sent besides the
+        // model, system and messages: a generous AnthropicMaxTokens, and once AnthropicFallbackTokens if the model's
+        // ceiling is lower (older Claude models stop at 4096). No sampling fields: the provider's own defaults apply.
+        public const int AnthropicMaxTokens = 16384, AnthropicFallbackTokens = 4096;
+
+        public static string AnthropicBody(string model, List<ChatMessage> messages, int maxTokens, bool stream, bool images)
         {
-            sb.Append(",\"").Append(name).Append("\":").Append(v.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            string sys = "";
+            foreach (ChatMessage m in messages) if (m.Role == "system" && !string.IsNullOrEmpty(m.Text)) sys += (sys.Length > 0 ? "\n\n" : "") + m.Text;
+            StringBuilder sb = new StringBuilder("{\"model\":").Append(Json.Quote(model)).Append(",\"max_tokens\":").Append(maxTokens)
+                .Append(stream ? ",\"stream\":true" : "");
+            if (sys.Length > 0) sb.Append(",\"system\":").Append(Json.Quote(sys));
+            sb.Append(",\"messages\":[");
+            int n = 0;
+            foreach (ChatMessage m in messages)
+            {
+                if (m.Role != "user" && m.Role != "assistant") continue;
+                if (n == 0 && m.Role == "assistant") continue;   // the Messages API starts with a user turn
+                if (n++ > 0) sb.Append(',');
+                sb.Append("{\"role\":").Append(Json.Quote(m.Role)).Append(",\"content\":");
+                if (images && m.Images != null && m.Images.Count > 0)
+                {
+                    sb.Append('[');
+                    foreach (byte[] img in m.Images)   // Anthropic: pictures before the text
+                        sb.Append("{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":").Append(Json.Quote(Mime(img)))
+                          .Append(",\"data\":").Append(Json.Quote(Convert.ToBase64String(img))).Append("}},");
+                    sb.Append("{\"type\":\"text\",\"text\":").Append(Json.Quote(string.IsNullOrEmpty(m.Text) ? "(image)" : m.Text)).Append("}]");
+                }
+                else sb.Append(Json.Quote(string.IsNullOrEmpty(m.Text) ? "…" : m.Text));   // empty text blocks are refused
+                sb.Append('}');
+            }
+            return sb.Append("]}").ToString();
+        }
+
+        // The text of one Messages stream event (content_block_delta / text_delta), or null.
+        public static string AnthropicDelta(Dictionary<string, object> ev)
+        {
+            if (Json.GetStr(ev, "type", null) != "content_block_delta") return null;
+            Dictionary<string, object> d = ev.ContainsKey("delta") ? ev["delta"] as Dictionary<string, object> : null;
+            return Json.GetStr(d, "type", null) == "text_delta" ? Json.GetStr(d, "text", null) : null;   // thinking deltas stay out
+        }
+
+        GenerationStats GenerateAnthropic(List<ChatMessage> messages, TextCallback onText, CancelCheck cancel)
+        {
+            bool stream = _p.Has("stream"), images = _p.Has("vision");
+            GenerationStats st = new GenerationStats();
+            Stopwatch sw = Stopwatch.StartNew();
+            double firstAt = -1;
+            int pieces = 0, inTok = 0, outTok = 0, cacheRead = 0;
+            string stop = null;
+            int limit = AnthropicMaxTokens;
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    string body = AnthropicBody(_model, messages, limit, stream, images);
+                    if (!stream)
+                    {
+                        Dictionary<string, object> whole = Providers.PostJson(_p, Providers.Key(_p), "/messages", body);
+                        StringBuilder all = new StringBuilder();
+                        List<object> content = whole.ContainsKey("content") ? whole["content"] as List<object> : null;
+                        if (content != null)
+                            foreach (object c in content)
+                            {
+                                Dictionary<string, object> b = c as Dictionary<string, object>;
+                                if (Json.GetStr(b, "type", null) == "text") all.Append(Json.GetStr(b, "text", ""));
+                            }
+                        stop = Json.GetStr(whole, "stop_reason", null);
+                        Dictionary<string, object> u = whole.ContainsKey("usage") ? whole["usage"] as Dictionary<string, object> : null;
+                        if (u != null) { inTok = (int)Json.GetNum(u, "input_tokens", 0); outTok = (int)Json.GetNum(u, "output_tokens", 0); cacheRead = (int)Json.GetNum(u, "cache_read_input_tokens", 0); }
+                        firstAt = 0;
+                        if (all.Length > 0) { pieces = 1; Interlocked.Increment(ref ChatEngine.LiveTokens); if (onText != null) onText(all.ToString()); }
+                    }
+                    else
+                    {
+                        bool done;
+                        StreamRaw(_p, Providers.Key(_p), body, delegate(Dictionary<string, object> ev)
+                        {
+                            string type = Json.GetStr(ev, "type", null);
+                            if (type == "message_start")
+                            {
+                                Dictionary<string, object> msg = ev.ContainsKey("message") ? ev["message"] as Dictionary<string, object> : null;
+                                Dictionary<string, object> u = msg != null && msg.ContainsKey("usage") ? msg["usage"] as Dictionary<string, object> : null;
+                                if (u != null) { inTok = (int)Json.GetNum(u, "input_tokens", 0); cacheRead = (int)Json.GetNum(u, "cache_read_input_tokens", 0); }
+                            }
+                            else if (type == "message_delta")
+                            {
+                                Dictionary<string, object> d = ev.ContainsKey("delta") ? ev["delta"] as Dictionary<string, object> : null;
+                                string r = Json.GetStr(d, "stop_reason", null);
+                                if (r != null) stop = r;
+                                Dictionary<string, object> u = ev.ContainsKey("usage") ? ev["usage"] as Dictionary<string, object> : null;
+                                if (u != null) outTok = (int)Json.GetNum(u, "output_tokens", outTok);
+                            }
+                            string piece = AnthropicDelta(ev);
+                            if (!string.IsNullOrEmpty(piece))
+                            {
+                                if (firstAt < 0) firstAt = sw.Elapsed.TotalSeconds;
+                                pieces++;
+                                Interlocked.Increment(ref ChatEngine.LiveTokens);
+                                if (onText != null) onText(piece);
+                            }
+                            return cancel != null && cancel();
+                        }, cancel, out done);
+                    }
+                    break;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // a model whose output ceiling is below our limit: try once more with the smaller one, before any text
+                    if (attempt == 0 && pieces == 0 && ex.Message.IndexOf("max_tokens", StringComparison.OrdinalIgnoreCase) >= 0) { limit = AnthropicFallbackTokens; continue; }
+                    throw;
+                }
+            }
+            double total = sw.Elapsed.TotalSeconds;
+            st.ReusedTokens = cacheRead;
+            st.PromptTokens = inTok;
+            st.GeneratedTokens = outTok > 0 ? outTok : pieces;
+            st.PromptSeconds = firstAt >= 0 ? firstAt : total;
+            st.GenerateSeconds = firstAt >= 0 ? Math.Max(0.001, total - firstAt) : 0;
+            st.StopReason = cancel != null && cancel() ? "cancelled" : stop == "max_tokens" ? "max tokens" : stop == "tool_use" ? "tool call" : "end of turn";
+            if (inTok + outTok > 0) _used = inTok + cacheRead + st.GeneratedTokens;
+            return st;
         }
 
         static string Mime(byte[] b)
@@ -1047,11 +1265,11 @@ namespace Phoenix
         public static void StreamRaw(Provider p, string key, string json, Func<Dictionary<string, object>, bool> onEvent, CancelCheck cancel, out bool done)
         {
             done = false;
-            HttpWebRequest o = Providers.Outgoing(p.Url + "/chat/completions");
+            HttpWebRequest o = Providers.Outgoing(p.Url + (p.IsAnthropic ? "/messages" : "/chat/completions"));
             o.Method = "POST";
             o.Timeout = 600000;
             o.Accept = "text/event-stream";
-            if (!string.IsNullOrEmpty(key)) o.Headers["Authorization"] = "Bearer " + key;
+            Providers.Auth(o, p, key);
             byte[] b = Encoding.UTF8.GetBytes(json);
             o.ContentType = "application/json"; o.ContentLength = b.Length;
             bool aborted = false;
@@ -1094,6 +1312,7 @@ namespace Phoenix
                             throw new InvalidOperationException(p.Name + ": " + (e != null ? Json.GetStr(e, "message", data) : data));
                         }
                         if (onEvent(ev)) { aborted = true; o.Abort(); break; }
+                        if (Json.GetStr(ev, "type", null) == "message_stop") { done = true; break; }   // Anthropic's end (no [DONE])
                     }
                 }
             }

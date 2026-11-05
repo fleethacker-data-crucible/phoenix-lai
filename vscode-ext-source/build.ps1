@@ -26,7 +26,7 @@ $bmp.Save($icon, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 $files = @('package.json', 'extension.js', 'icon.png', 'README.md', 'media/triangle.svg')
 foreach ($f in $files) { if (-not (Test-Path (Join-Path $here $f))) { throw "missing $f" } }
 
-# Locality check: the extension may only reach 127.0.0.1:1234.
+# Locality check: the extension may only reach 127.0.0.1:1893.
 $js = Get-Content (Join-Path $here 'extension.js') -Raw
 if ($js -match 'https?://(?!127\.0\.0\.1|\$\{HOST\})' -or $js -notmatch 'const HOST = "127\.0\.0\.1";' -or $js -match 'require\("(https|net|tls|child_process|dgram)"\)') { throw 'extension.js references a non-loopback URL or a forbidden module' }
 

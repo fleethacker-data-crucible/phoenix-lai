@@ -539,6 +539,8 @@ namespace Phoenix
                     _loadError = null;
                     _engine = ChatEngine.Load(path, ContextLength, _useGpu, delegate(string m) { Log.Text("  " + m); });
                     _loadedSig = sig;
+                    _gpuRecoverUntil = DateTime.MinValue;   // a model is up again: the API may load models after a GPU reset hold
+                    _lastApiSwap = DateTime.UtcNow;         // any load (API, console, dashboard) starts the swap cooldown
                     if (_workspace != null) _engine.RecallDir = Path.Combine(ProjectRootOf(_workspace) ?? _workspace.Root, ".phoenix", "recall");
                     Log.Text("loaded " + _engine.ModelName + " on " + _engine.Backend + " in " + ChatLog.Ms(sw.Elapsed.TotalSeconds) + " ms");
                     // The weights now live in VRAM: give the RAM the file upload used back to Windows.
@@ -918,6 +920,37 @@ namespace Phoenix
                 return;
             }
             if (path == "/api/pretype" && post) { StartPretype(body); SendJson(res, 200, "{}"); return; }
+            if (path == "/api/sampling" && post)
+            {
+                string model = SamplingModel();
+                if (model == null) { SendJson(res, 400, "{\"error\":\"No model loaded: load one first.\"}"); return; }
+                try
+                {
+                    ModelSampling s = body.ContainsKey("reset") && body["reset"] is bool && (bool)body["reset"]
+                        ? ModelSettings.Reset(model)
+                        : ModelSettings.SetAll(model, body.ContainsKey("values") ? body["values"] as Dictionary<string, object> : body);
+                    Log.Text("sampling for " + model + ": " + s + " (dashboard)");
+                    SendJson(res, 200, "{\"model\":" + Json.Quote(model) + ",\"default\":" + (ModelSettings.IsDefault(model) ? "true" : "false") + ",\"values\":" + s.ToJson() + "}");
+                }
+                catch (ArgumentException ex) { SendJson(res, 400, "{\"error\":" + Json.Quote(ex.Message) + "}"); }
+                return;
+            }
+            if (path == "/api/api-port" && post)
+            {
+                int p = (int)Json.GetNum(body, "port", 0);
+                try { string msg = SetApiPort(p); SendJson(res, 200, "{\"apiPort\":" + ApiPort + ",\"message\":" + Json.Quote(msg) + "}"); }
+                catch (Exception ex) { SendJson(res, 400, "{\"error\":" + Json.Quote(ex.Message) + "}"); }
+                return;
+            }
+            if (path == "/api/api-format" && post)
+            {
+                string f = Json.GetStr(body, "format", "");
+                if (!IsApiFormat(f)) { SendJson(res, 400, "{\"error\":\"format must be openai, anthropic or both\"}"); return; }
+                SetApiFormat(f);
+                Log.Text("API format set to " + ApiFormatName + " (dashboard)");
+                SendJson(res, 200, "{\"apiFormat\":" + Json.Quote(ApiFormat) + "}");
+                return;
+            }
             if (path == "/api/debug" && post)
             {
                 Dbg.Set(body != null && body.ContainsKey("on") && body["on"] is bool && (bool)body["on"]);

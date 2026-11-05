@@ -81,7 +81,7 @@ executable and shell tags all blocked), `client-qa.py` (run guard applies to pro
 |---|---|---|
 | Client page server (8790-8799) | `http://127.0.0.1:<port>/` | `Host` must be exactly `127.0.0.1:<port>` (blocks DNS rebinding); a sent `Origin` must be the same address (blocks other sites' scripts); `HEAD` answers status only; files served only from inside `html\` (`ServeFile` resolves the path and requires it to start with `html\`). |
 | Server dashboard (8765-8789) | `http://127.0.0.1:<port>/` | Same checks. Serves only the dashboard, the console and their `/api` calls; client and chat calls get 404. |
-| OpenAI API (1234) | `http://127.0.0.1:1234/` and `http://localhost:1234/` | `Host` must be `127.0.0.1:1234` or `localhost:1234`; `Origin`, if sent, must be the API's own address or a `vscode-webview://` / `vscode-file://` page; **`Origin: null` is refused** (downloaded HTML files and sandboxed frames send it); optional API key (`Authorization: Bearer`, console `apikey new|set|off`, stored in Credential Manager `PhoenixLAI.Server`, off by default because the VS Code extension sends none, never logged). |
+| OpenAI API (1893) | `http://127.0.0.1:1893/` and `http://localhost:1893/` | `Host` must be `127.0.0.1:1893` or `localhost:1893`; `Origin`, if sent, must be the API's own address or a `vscode-webview://` / `vscode-file://` page; **`Origin: null` is refused** (downloaded HTML files and sandboxed frames send it); optional API key (`Authorization: Bearer`, console `apikey new|set|off`, stored in Credential Manager `PhoenixLAI.Server`, off by default because the VS Code extension sends none, never logged). |
 
 `Process.Start` is used once, for the client's app window (§3). There is no listener on any other address, and the
 server makes no outgoing connection.
@@ -105,7 +105,7 @@ Only the client makes outgoing requests, and only to OpenAI `/v1` providers the 
 | TLS | TLS 1.2 (and 1.3 where Windows has it); never SSL3 / TLS 1.0. Certificates are checked by Windows. |
 | Proxy | Loopback goes direct; other hosts use the Windows system proxy. |
 | Keys | Stored in Windows Credential Manager (`PhoenixLAI.Connections`, user name = provider id) via the WinRT `PasswordVault`; never in `providers.json`, never sent back to the page (the field is cleared on save), sent only as `Authorization: Bearer` to their own provider. Looked up once and cached in memory; forgotten when changed or deleted. |
-| Built-in provider | The Phoenix Local Server's address is fixed (`http://localhost:1234/v1`) and cannot be changed or deleted. |
+| Built-in provider | The Phoenix Local Server's address is fixed (`http://localhost:1893/v1`) and cannot be changed or deleted. |
 
 Tests: `client-qa.py` (keys never in files or page; refused targets: `example.com`, private IPs typed as hosts in
 paths, `//evil.com` paths, `@` paths, `127.0.0.1.nip.io`).

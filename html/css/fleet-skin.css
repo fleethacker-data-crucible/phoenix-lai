@@ -1,0 +1,90 @@
+/* Fleet skin (hackathon): the shared Fleet look (navy and brass, Segoe UI, Cascadia Mono), opt-in with /skin fleet.
+   Every rule is scoped under html[data-skin="fleet"], so with the skin off (/skin phoenix) Phoenix looks exactly as before. On by default for the hackathon.
+   Linked last on chat.html, dashboard.html and console.html. Removing the skin = deleting this file and its <link>s.
+   Token values: Fleet Unified UI --fl-* (Night watch = dark, Chart room = light, Phoenix's .light switch picks). */
+
+/* ---------- Fleet tokens: Night watch (dark) ---------- */
+html[data-skin="fleet"] {
+  --fl-background: #071a26; --fl-sidebar: #0a2130; --fl-surface: #0d2636; --fl-card: #112d40; --fl-popover: #14334a;
+  --fl-muted: #183a52; --fl-border: #24465e; --fl-border-strong: #34597a; --fl-control-border: #5f8199;
+  --fl-foreground: #f4ead6; --fl-muted-foreground: #a9b4ba; --fl-accent: #c9a66b; --fl-accent-ink: #071a26;
+  --fl-success: #4fb386; --fl-warning: #e0a443; --fl-danger: #ef6a5a; --fl-info: #6aa7e0;
+  --fl-font-body: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --fl-font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  --fl-radius-control: 6px; --fl-radius-card: 10px; --fl-radius-dialog: 14px;
+  --fl-shadow: 0 12px 40px -10px rgb(0 0 0 / 0.55);
+
+  /* Phoenix variables -> Fleet tokens */
+  --bg: var(--fl-background); --side-bg: var(--fl-sidebar); --box: var(--fl-card); --settings-bg: var(--fl-surface);
+  --panel: rgba(13,38,54,.92); --panel-solid: var(--fl-surface); --code-bg: #05141e;
+  --line: var(--fl-border); --line-strong: var(--fl-border-strong);
+  --text: var(--fl-foreground); --soft: #d6ccb8; --dim: var(--fl-muted-foreground); --status-text: var(--fl-muted-foreground);
+  --ok: var(--fl-success); --err: var(--fl-danger);
+  --sans: var(--fl-font-body); --mono: var(--fl-font-mono); --r: var(--fl-radius-control);
+  /* The accent picker writes --accent inline; the skin wins while it is on. */
+  --accent: #c9a66b !important; --accent-rgb: 201,166,107 !important; --accent-2: #dcc496 !important; --you: var(--fl-accent);
+  --chat: var(--fl-font-body) !important;
+}
+
+/* ---------- Chart room (light) ---------- */
+html[data-skin="fleet"].light {
+  --fl-background: #fbfaf2; --fl-sidebar: #f3efe2; --fl-surface: #ffffff; --fl-card: #ffffff; --fl-popover: #ffffff;
+  --fl-muted: #efe9d9; --fl-border: #dcd3bd; --fl-border-strong: #c4b79a; --fl-control-border: #8c8370;
+  --fl-foreground: #132633; --fl-muted-foreground: #4f5d66; --fl-accent: #8a6b45; --fl-accent-ink: #fbfaf2;
+  --fl-success: #2f7d57; --fl-warning: #9a6412; --fl-danger: #b8382b; --fl-info: #1f5fa3;
+  --fl-shadow: 0 12px 40px -12px rgb(19 38 51 / 0.25);
+  --panel: rgba(255,255,255,.94); --code-bg: #f6f3e8; --soft: #2c3e4a;
+  --accent: #8a6b45 !important; --accent-rgb: 138,107,69 !important; --accent-2: #a88a62 !important; --you: var(--fl-accent);
+}
+
+/* ---------- Chat page: background, frame, hard-coded colours ---------- */
+html[data-skin="fleet"] #bg, html[data-skin="fleet"] #bgLogo { display: none !important; }   /* no grid or glow */
+html[data-skin="fleet"] body { background: var(--fl-background); color: var(--fl-foreground); font-family: var(--fl-font-body); }
+html[data-skin="fleet"] #side { background: var(--fl-sidebar) !important; backdrop-filter: none; -webkit-backdrop-filter: none;
+  border-right-color: var(--fl-border); border-top-color: var(--fl-border); }
+html[data-skin="fleet"] #main { border-top-color: var(--fl-border); }
+html[data-skin="fleet"] #sideHw, html[data-skin="fleet"] #topSpeed { color: var(--fl-muted-foreground); }
+html[data-skin="fleet"] .brand span { font-family: var(--fl-font-body); font-weight: 600; letter-spacing: .01em; }
+
+/* Status colours: green / red / blue / amber -> Fleet success / danger / info / warning */
+html[data-skin="fleet"] #providerList .sitem.st-up, html[data-skin="fleet"] #projList .sitem.on, html[data-skin="fleet"] #projList .sitem.on > svg,
+html[data-skin="fleet"] #modelMenu button.on, html[data-skin="fleet"] .ctests .ok, html[data-skin="fleet"] .work.ok .lbl,
+html[data-skin="fleet"] .code header .copy.done, html[data-skin="fleet"] .feats .feat.yes { color: var(--fl-success); }
+html[data-skin="fleet"] #providerList .sitem.st-up .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-up .cdot { background: var(--fl-success); }
+html[data-skin="fleet"] .work.ok .spin { border-color: var(--fl-success); background: var(--fl-success); }
+html[data-skin="fleet"] #providerList .sitem.st-down, html[data-skin="fleet"] #modelMenu button.big, html[data-skin="fleet"] .ctests .fail,
+html[data-skin="fleet"] #side .perr, html[data-skin="fleet"] .work.bad .lbl { color: var(--fl-danger); }
+html[data-skin="fleet"] #providerList .sitem.st-down .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-down .cdot { background: var(--fl-danger); }
+html[data-skin="fleet"] .work.bad .spin { border-color: var(--fl-danger); background: var(--fl-danger); }
+html[data-skin="fleet"] #side .sitem .del, html[data-skin="fleet"] #side .sitem .del svg { color: var(--fl-danger); }
+html[data-skin="fleet"] #providerList .sitem.st-busy { color: var(--fl-info); }
+html[data-skin="fleet"] #providerList .sitem.st-busy .cdot, html[data-skin="fleet"] #modelMenu .mgroup.st-busy .cdot { background: var(--fl-info); box-shadow: none; }
+html[data-skin="fleet"] .work .spin { border-top-color: var(--fl-accent); }
+html[data-skin="fleet"] .work.warn .spin { border-color: var(--fl-warning); background: var(--fl-warning); }
+html[data-skin="fleet"] .work.warn .lbl, html[data-skin="fleet"] .settings .note { color: var(--fl-warning); }
+html[data-skin="fleet"] .feats .feat.no, html[data-skin="fleet"] #modelMenu button.off { color: var(--fl-muted-foreground); }
+
+/* Controls: Fleet radii, 32 px targets, brass focus ring */
+html[data-skin="fleet"] button.primary { background: var(--fl-accent); border-color: var(--fl-accent); color: var(--fl-accent-ink); }
+html[data-skin="fleet"] .window { border-radius: var(--fl-radius-dialog); border-color: var(--fl-border-strong); box-shadow: var(--fl-shadow); background: var(--fl-surface); }
+html[data-skin="fleet"] .card, html[data-skin="fleet"] .code { border-radius: var(--fl-radius-card); }
+html[data-skin="fleet"] .snav button, html[data-skin="fleet"] .sitem { min-height: 32px; }
+html[data-skin="fleet"] #side .pnew { background: var(--fl-surface); border-color: var(--fl-control-border); }
+html[data-skin="fleet"] :focus-visible { outline: 2px solid var(--fl-accent); outline-offset: 2px; }
+html[data-skin="fleet"] ::selection { background: rgba(201,166,107,.4); color: var(--fl-foreground); }
+html[data-skin="fleet"] .settings .swatches { opacity: .4; pointer-events: none; }   /* the picker does nothing while the skin is on */
+
+/* Code: keep syntax colours, Fleet surface; light mode gets darker text */
+html[data-skin="fleet"] .code pre { color: #e6dcc6; }
+html[data-skin="fleet"].light .code pre { color: var(--fl-foreground); }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-skin="fleet"] * { transition-duration: 0s !important; animation-duration: 0s !important; }
+}
+
+/* ---------- Server pages (dashboard, console) ---------- */
+html[data-skin="fleet"] header.top { background: var(--fl-sidebar); border-bottom-color: var(--fl-border); min-height: 56px; }
+html[data-skin="fleet"] header.top a, html[data-skin="fleet"] header.top button { border-color: var(--fl-control-border); border-radius: var(--fl-radius-control); min-height: 32px; display: inline-flex; align-items: center; }
+html[data-skin="fleet"] .card { background: var(--fl-card); border-color: var(--fl-border); }
+html[data-skin="fleet"] .bar { background: var(--fl-muted); }
+html[data-skin="fleet"] .state.on i { box-shadow: none; }

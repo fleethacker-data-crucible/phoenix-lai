@@ -7,10 +7,11 @@ namespace Phoenix
 {
     public sealed class SamplerSettings
     {
-        public float Temperature = 0.7f;   // <= 0: greedy
-        public int TopK = 40;              // <= 0: disabled
+        // Defaults: Google's recommended Gemma 4 sampling (temperature 1.0, top_p 0.95, top_k 64), no repeat penalty.
+        public float Temperature = 1.0f;   // <= 0: greedy
+        public int TopK = 64;              // <= 0: disabled
         public float TopP = 0.95f;         // >= 1: disabled
-        public float RepeatPenalty = 1.1f; // 1: disabled
+        public float RepeatPenalty = 1.0f; // 1: disabled
         public int RepeatLastN = 64;
         public int Seed = -1;              // -1: random
 

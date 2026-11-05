@@ -22,10 +22,14 @@ namespace Phoenix
                               Fg = Color.FromArgb(248, 247, 252), Soft = Color.FromArgb(214, 213, 224), Dim = Color.FromArgb(160, 159, 172),
                               Accent = Color.FromArgb(232, 193, 90), Ok = Color.FromArgb(76, 175, 80), Err = Color.FromArgb(224, 85, 85),
                               Track = Color.FromArgb(44, 44, 48);
-        const int W = 340, Pad = 14, Radius = 4;   // every corner: the panel, cards, buttons and bars
+        const int W = 340, Pad = 14, Radius = 4;   // layout units (every corner: the panel, cards, buttons and bars)
+        // Everything is laid out in the units above and drawn S times larger (shapes, text, spacing, button hit areas).
+        const float S = 1.3f;
+        static int Px(int v) { return (int)Math.Round(v * S); }
 
         readonly PrivateFontCollection _fonts = new PrivateFontCollection();
-        readonly Font _title, _label, _body, _big, _mono, _btn;
+        // Exo 2 for headings (title, card labels, row names, buttons); Syne Mono for every value
+        readonly Font _title, _label, _key, _btn, _body, _big, _mono, _small;
         readonly Image _icon;
         readonly Timer _timer = new Timer();
         Dictionary<string, object> _s;   // the last /api/server-status, null = server stopped
@@ -47,20 +51,23 @@ namespace Phoenix
             DoubleBuffered = true;
             Text = "Phoenix Server";
             string fonts = Path.Combine(root, "html", "fonts");
-            // Exo 2 throughout, in its light weights: Light for all text, Regular for the title
-            string exo = Path.Combine(fonts, "Exo2-Variable.ttf");
-            FontFamily light = Family(exo, "Exo 2 Light", "Segoe UI Light"), regular = Family(exo, "Exo 2", "Segoe UI");
+            // Headings in Exo 2 (Regular for the title, Light for the rest); values in Syne Mono
+            AddFont(Path.Combine(fonts, "Exo2-Variable.ttf"));
+            AddFont(Path.Combine(fonts, "SyneMono-Regular.ttf"));
+            FontFamily light = Family("Exo 2 Light", "Segoe UI Light"), regular = Family("Exo 2", "Segoe UI"), mono = Family("Syne Mono", "Consolas");
             _title = new Font(regular, 12.5f, FontStyle.Regular);
             _label = new Font(light, 7.5f, FontStyle.Regular);
-            _body = new Font(light, 9f, FontStyle.Regular);
+            _key = new Font(light, 9f, FontStyle.Regular);
             _btn = new Font(light, 9f, FontStyle.Regular);
-            _big = new Font(light, 16f, FontStyle.Regular);
-            _mono = new Font(light, 9f, FontStyle.Regular);
+            _body = new Font(mono, 8.5f, FontStyle.Regular);
+            _big = new Font(mono, 15f, FontStyle.Regular);
+            _mono = new Font(mono, 8.5f, FontStyle.Regular);
+            _small = new Font(mono, 7f, FontStyle.Regular);
             try { _icon = Image.FromFile(Path.Combine(root, "html", "assets", "toolbar_icon.png")); } catch { }
             foreach (string[] b in new string[][] { new[] { "power", "Stop" }, new[] { "restart", "Restart" }, new[] { "console", "Console" },
                                                     new[] { "dashboard", "Dashboard" }, new[] { "exit", "Exit" } })
                 _btns.Add(new Btn { Id = b[0], Label = b[1], Danger = b[0] == "exit" });
-            ClientSize = new Size(W, 432);
+            ClientSize = new Size(Px(W), Px(432));
             _timer.Interval = 1000;
             _timer.Tick += delegate { Poll(); };
             Deactivate += delegate { Hide(); };
@@ -68,16 +75,13 @@ namespace Phoenix
             KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Escape) Hide(); };
         }
 
-        // One weight of the bundled font file (never an installed or downloaded font): a variable font adds one family
-        // per named weight ("Exo 2", "Exo 2 Light", "Exo 2 Thin", ...).
-        FontFamily Family(string file, string name, string fallback)
+        // The bundled font files (never an installed or downloaded font): a variable font adds one family per named
+        // weight ("Exo 2", "Exo 2 Light", "Exo 2 Thin", ...).
+        void AddFont(string file) { try { _fonts.AddFontFile(file); } catch { } }
+
+        FontFamily Family(string name, string fallback)
         {
-            try
-            {
-                if (_fonts.Families.Length == 0) _fonts.AddFontFile(file);
-                foreach (FontFamily f in _fonts.Families) if (f.Name == name) return f;
-            }
-            catch { }
+            try { foreach (FontFamily f in _fonts.Families) if (f.Name == name) return f; } catch { }
             return new FontFamily(fallback);
         }
 
@@ -91,7 +95,7 @@ namespace Phoenix
         {
             Poll();
             Rectangle wa = Screen.FromPoint(cursor).WorkingArea;
-            int x = Math.Max(wa.Left + 8, Math.Min(cursor.X - W / 2, wa.Right - W - 8));
+            int x = Math.Max(wa.Left + 8, Math.Min(cursor.X - Width / 2, wa.Right - Width - 8));
             int y = cursor.Y > wa.Top + wa.Height / 2 ? wa.Bottom - Height - 8 : wa.Top + 8;   // above a bottom taskbar, below a top one
             Location = new Point(x, y);
             using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), Radius)) Region = new Region(p);
@@ -120,7 +124,8 @@ namespace Phoenix
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             CultureInfo ic = CultureInfo.InvariantCulture;
             using (Pen border = new Pen(Color.FromArgb(58, 58, 66)))
-            using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), Radius)) g.DrawPath(border, p);
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), Px(Radius))) g.DrawPath(border, p);
+            g.ScaleTransform(S, S);   // from here on: layout units
 
             bool on = _s != null;
             int y = Pad;
@@ -135,7 +140,7 @@ namespace Phoenix
             using (SolidBrush dot = new SolidBrush(on ? Ok : Err)) g.FillEllipse(dot, sx - 12, y + 9, 8, 8);
             y += 28;
             string ver = WebServer.AppVersion(_root);
-            Str(g, (ver.Length > 0 ? "v" + ver : "") + (on ? "" : (ver.Length > 0 ? " · " : "") + "the API is closed · Start opens it"), _label, Dim, Pad, y);
+            Str(g, (ver.Length > 0 ? "v" + ver : "") + (on ? "" : (ver.Length > 0 ? " · " : "") + "the API is closed · Start opens it"), _small, Dim, Pad, y);
             y += 20;
 
             // four tiles: GPU load (with its graph line), VRAM, KV cache, clients
@@ -155,7 +160,8 @@ namespace Phoenix
             {
                 double used = Json.GetNum(v, "used", 0), budget = Json.GetNum(v, "budget", 1);
                 Str(g, (used / 1073741824).ToString("F1", ic) + " GB", _big, Fg, vrR.X + 10, vrR.Y + 20);
-                Str(g, "of " + (budget / 1073741824).ToString("F1", ic), _label, Dim, vrR.Right - 44, vrR.Y + 28);
+                string of = "of " + (budget / 1073741824).ToString("F1", ic);
+                Str(g, of, _small, Dim, vrR.Right - 10 - g.MeasureString(of, _small).Width, vrR.Y + 28);
                 Bar(g, new Rectangle(vrR.X + 10, vrR.Bottom - 12, vrR.Width - 20, 4), used / budget);
             }
             else Str(g, "–", _big, Dim, vrR.X + 10, vrR.Y + 20);
@@ -165,7 +171,8 @@ namespace Phoenix
             {
                 double kv = Json.GetNum(_s, "kvPct", 0);
                 Str(g, kv.ToString(kv < 10 ? "F1" : "F0", ic) + "%", _big, Fg, kvR.X + 10, kvR.Y + 20);
-                Str(g, ((long)Json.GetNum(_s, "kvUsed", 0)).ToString("N0", ic) + " / " + ((long)Json.GetNum(_s, "context", 0)).ToString("N0", ic), _label, Dim, kvR.Right - 10 - g.MeasureString(((long)Json.GetNum(_s, "kvUsed", 0)).ToString("N0", ic) + " / " + ((long)Json.GetNum(_s, "context", 0)).ToString("N0", ic), _label).Width, kvR.Y + 28);
+                string kvt = Kilo((long)Json.GetNum(_s, "kvUsed", 0)) + " / " + Kilo((long)Json.GetNum(_s, "context", 0));
+                Str(g, Fit(g, kvt, _small, kvR.Width - 76), _small, Dim, kvR.Right - 10 - g.MeasureString(Fit(g, kvt, _small, kvR.Width - 76), _small).Width, kvR.Y + 28);
                 Bar(g, new Rectangle(kvR.X + 10, kvR.Bottom - 12, kvR.Width - 20, 4), kv / 100);
             }
             else Str(g, "–", _big, Dim, kvR.X + 10, kvR.Y + 20);
@@ -182,7 +189,7 @@ namespace Phoenix
                     if (c.ContainsKey("connected") && c["connected"] is bool && (bool)c["connected"]) connected++;
                 }
             string cl = connected + " connected · " + total + " seen in the last hour";
-            Str(g, cl, _body, Fg, clR.X + 10, clR.Y + 21);
+            Str(g, Fit(g, cl, _body, clR.Width - 20), _body, Fg, clR.X + 10, clR.Y + 21);
             y += 44 + 10;
 
             // API, video card, loaded model and uptime, A-Z
@@ -192,7 +199,7 @@ namespace Phoenix
             bool key = on && _s.ContainsKey("apiKey") && _s["apiKey"] is bool && (bool)_s["apiKey"];
             string gpuName = on ? Json.GetStr(_s, "gpuName", "") : "";
             string model = on ? Json.GetStr(_s, "model", null) : null;   // the model the clients last chose
-            KeyVal(g, "api", api != null ? api + (key ? " · key required" : "") : on ? "port 1234 busy" : "closed", infoR.X + 10, infoR.Y + 9, infoR.Width - 20);
+            KeyVal(g, "api", api != null ? api + (key ? " · key required" : "") : on ? "port " + WebServer.ApiPort + " busy" : "closed", infoR.X + 10, infoR.Y + 9, infoR.Width - 20);
             KeyVal(g, "gpu", gpuName.Length > 0 ? gpuName : "–", infoR.X + 10, infoR.Y + 31, infoR.Width - 20);
             KeyVal(g, "model", model != null ? model.Replace(".gguf", "") : on ? "none loaded" : "–", infoR.X + 10, infoR.Y + 53, infoR.Width - 20);
             KeyVal(g, "uptime", on ? Up((long)Json.GetNum(_s, "uptime", 0)) : "–", infoR.X + 10, infoR.Y + 75, infoR.Width - 20);
@@ -208,8 +215,21 @@ namespace Phoenix
                 b.Enabled = on || b.Id == "power" || b.Id == "exit";
                 DrawBtn(g, b);
             }
-            int needed = y + 2 * bh + 8 + Pad;
-            if (ClientSize.Height != needed) { ClientSize = new Size(W, needed); using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), Radius)) Region = new Region(p); }
+            int needed = Px(y + 2 * bh + 8 + Pad);
+            if (ClientSize.Height != needed || ClientSize.Width != Px(W))
+            {
+                ClientSize = new Size(Px(W), needed);
+                using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), Px(Radius))) Region = new Region(p);
+                if (Visible) { Rectangle wa = Screen.FromControl(this).WorkingArea; if (Bottom > wa.Bottom - 8) Top = wa.Bottom - 8 - Height; }   // grew past the taskbar
+            }
+        }
+
+        // Token counts short enough for a half-width tile in the monospaced font: 840, 5.5k, 131k.
+        static string Kilo(long n)
+        {
+            CultureInfo ic = CultureInfo.InvariantCulture;
+            if (n < 1000) return n.ToString(ic);
+            return n < 10000 ? (n / 1000.0).ToString("0.#", ic) + "k" : (n / 1000).ToString(ic) + "k";
         }
 
         static string Up(long s) { long h = s / 3600, m = s % 3600 / 60; return (h > 0 ? h + "h " : "") + m + "m " + (s % 60) + "s"; }
@@ -233,7 +253,7 @@ namespace Phoenix
 
         void KeyVal(Graphics g, string k, string v, int x, int y, int w)
         {
-            Str(g, k, _body, Dim, x, y);
+            Str(g, k, _key, Dim, x, y);
             Str(g, Fit(g, v, _mono, w - 56), _mono, Fg, x + 56, y + 1);
         }
 
@@ -300,7 +320,8 @@ namespace Phoenix
         protected override void OnMouseMove(MouseEventArgs e)
         {
             Btn h = null;
-            foreach (Btn b in _btns) if (b.R.Contains(e.Location) && b.Enabled) h = b;
+            Point at = new Point((int)(e.X / S), (int)(e.Y / S));   // button rectangles are in layout units
+            foreach (Btn b in _btns) if (b.R.Contains(at) && b.Enabled) h = b;
             if (h != _hot) { _hot = h; Cursor = h != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
         }
 

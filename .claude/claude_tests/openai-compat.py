@@ -1,11 +1,11 @@
 """OpenAI /v1 compatibility suite for the Phoenix server, driven by the official OpenAI Python SDK (dev machine only).
    python .claude/claude_tests/openai-compat.py [base_url] [model]
-Default: http://localhost:1234/v1, gemma-4-e2b_q4_0-it. Prints one PASS/FAIL line per check and a summary; exit 1 on failure.
+Default: http://localhost:1893/v1, gemma-4-e2b_q4_0-it. Prints one PASS/FAIL line per check and a summary; exit 1 on failure.
 """
 import base64, json, struct, sys, time, threading
 from openai import OpenAI, NotFoundError, BadRequestError
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:1234/v1"
+BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:1893/v1"
 MODEL = sys.argv[2] if len(sys.argv) > 2 else "gemma-4-e2b_q4_0-it"
 c = OpenAI(base_url=BASE, api_key="sk-any-key-works", timeout=600, max_retries=0)
 results = []
@@ -185,7 +185,7 @@ def t_queued_stream():
     # A stream that has to wait behind another request answers at once (headers + keep-alive), then streams normally.
     import http.client
     def open_stream(prompt, tokens):
-        h = http.client.HTTPConnection("127.0.0.1", 1234, timeout=600)
+        h = http.client.HTTPConnection("127.0.0.1", 1893, timeout=600)
         h.request("POST", "/v1/chat/completions", json.dumps({"model": MODEL, "stream": True, "max_tokens": tokens, "messages": msg(prompt)}), {"Content-Type": "application/json"})
         return h
     a = open_stream("Write 400 words about mountains.", 500)

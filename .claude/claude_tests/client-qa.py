@@ -1,6 +1,6 @@
 """Phoenix Client providers QA (dev machine): providers, API keys, model lists, connection tests, network rules.
    python .claude/claude_tests/client-qa.py [client_port] [server_chat_port]
-Needs run-phoenix-server.ps1 (API on 1234, console on server_chat_port, default 8765) and run-phoenix-client.ps1 (8790).
+Needs run-phoenix-server.ps1 (API on 1893, console on server_chat_port, default 8765) and run-phoenix-client.ps1 (8790).
 Turns the server's API key on (console: apikey set), adds a provider for it with the key, and checks: the key reaches
 Windows Credential Manager and never the file or the page; the model list comes from the provider's API; the test runs;
 a wrong / cleared key gets 401; switching provider changes the model list; an internet (https) provider is accepted and
@@ -12,7 +12,7 @@ CP = int(sys.argv[1]) if len(sys.argv) > 1 else 8790
 SP = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
 KEY = "phx-qa-" + os.urandom(9).hex()
 BASE = f"http://127.0.0.1:{CP}"
-PHX = "http://127.0.0.1:1234/v1"
+PHX = "http://127.0.0.1:1893/v1"
 STORE = os.path.join(os.environ["LOCALAPPDATA"], "LocalLLMStudio", "providers.json")
 VAULT_PS = os.path.join(os.path.dirname(__file__), "vault-read.ps1")
 results, made = [], []
@@ -85,7 +85,7 @@ def t_wrong_key():
 def t_clear_key():
     s, j = save(id=st["id"], clearKey=True); assert not j["provider"]["hasKey"] and vault(st["id"]) is None; return "key removed from Credential Manager"
 def t_edit_keeps_key():
-    save(id=st["id"], key=KEY); s, j = save(id=st["id"], name="QA Phoenix renamed", url="http://localhost:1234/v1")
+    save(id=st["id"], key=KEY); s, j = save(id=st["id"], name="QA Phoenix renamed", url="http://localhost:1893/v1")
     assert j["provider"]["hasKey"] and vault(st["id"]) == KEY and j["provider"]["name"] == "QA Phoenix renamed"; return "edit without a key keeps it"
 def t_internet():
     s, j = api("/client/provider-models", {"url": "https://api.openai.com/v1"})
@@ -98,7 +98,7 @@ def t_redirect():
     assert s == 400 and "redirect" in j["error"].lower(), j; return "not followed: " + j["error"][:70]
 def t_bad_urls():
     out = []
-    for u in ["ftp://example.com/v1", "file:///C:/Windows", "http://user:pass@127.0.0.1:1234/v1", "not a url", "javascript:alert(1)"]:
+    for u in ["ftp://example.com/v1", "file:///C:/Windows", "http://user:pass@127.0.0.1:1893/v1", "not a url", "javascript:alert(1)"]:
         s, j = save(name="bad", url=u); assert s == 400, (u, s, j); out.append(u.split(":")[0])
     return "refused: " + ", ".join(out)
 def t_phoenix_stays():

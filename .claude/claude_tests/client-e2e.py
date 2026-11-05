@@ -54,7 +54,7 @@ def t_server_no_chat():
     return "server: chat page and chat API gone, dashboard there"
 def t_models_from_provider():
     s, j = api("/api/models"); assert s == 200 and j["models"], j
-    v1 = json.loads(urllib.request.urlopen("http://127.0.0.1:1234/v1/models").read())
+    v1 = json.loads(urllib.request.urlopen("http://127.0.0.1:1893/v1/models").read())
     assert sorted(m["name"] for m in j["models"]) == sorted(m["id"] for m in v1["data"]), (j["models"], v1)
     return f"{len(j['models'])} models, same as the provider's /v1/models; provider {j['provider']['name']}"
 def t_info():

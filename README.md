@@ -10,7 +10,7 @@ It is two programs that work alone or together:
 | | **Phoenix server** | **Phoenix Client** |
 |---|---|---|
 | Start | `Phoenix_LAI_Server.lnk` | `Phoenix_Client.lnk` |
-| What it does | Runs Gemma 4 models on your GPU and serves them as an OpenAI-compatible API on `http://localhost:1234/v1` | The chat app: talks to any OpenAI `/v1` provider, with projects, file editing, docs search, skills and code checks |
+| What it does | Runs Gemma 4 models on your GPU and serves them as an OpenAI-compatible API on `http://localhost:1893/v1` | The chat app: talks to any OpenAI `/v1` provider, with projects, file editing, docs search, skills and code checks |
 | Lives in | The notification area (tray icon, dashboard, console) | A Chrome (or Edge) app window |
 | Needs the other? | No: any OpenAI client can use it (VS Code agents, scripts, the OpenAI SDK) | No: it can use LM Studio, Ollama, a LAN box or a cloud API; the Phoenix server is just the built-in provider |
 
@@ -46,7 +46,7 @@ The folder can live anywhere: the shortcuts find it from their own location.
 
 ## The Phoenix server
 
-- **OpenAI-compatible API** on `http://localhost:1234/v1` (the same port and paths as LM Studio):
+- **OpenAI-compatible API** on `http://localhost:1893/v1` (the same paths as LM Studio, on its own port so both can run):
   `GET /v1/models`, `POST /v1/chat/completions` (streaming, `n`, `stop`, `seed`, JSON mode and schema, tool calling,
   image input, `logprobs`), `POST /v1/completions` (with `suffix` for code fill-in), `POST /v1/embeddings`.
 - **Only models that fit** in the memory free right now are listed; a request for a model that does not fit, or an
@@ -65,7 +65,7 @@ The folder can live anywhere: the shortcuts find it from their own location.
 ## The Phoenix Client
 
 ### Providers
-- The **Phoenix Local Server** is built in (`http://localhost:1234/v1`). Add others with the **+** under Providers:
+- The **Phoenix Local Server** is built in (`http://localhost:1893/v1`). Add others with the **+** under Providers:
   name, base URL, optional API key (saved in Windows Credential Manager, never in a file).
 - Each provider shows its state live: **green** online, **red** offline, **blue** sending or receiving.
 - **Test** checks 18 OpenAI features (streaming, system messages, sampling, JSON, tools, image input, embeddings…) and

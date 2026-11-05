@@ -7,7 +7,7 @@ Phoenix LAI is two separate Windows programs plus a VS Code extension:
 
 | Program | Started by | What it is |
 |---|---|---|
-| **Phoenix server** | `Phoenix_LAI_Server.lnk` | Runs Gemma 4 models on the GPU (Vulkan) and serves them as an OpenAI-compatible API on `http://localhost:1234/v1`. Tray icon, dashboard and console. Knows nothing about the client. |
+| **Phoenix server** | `Phoenix_LAI_Server.lnk` | Runs Gemma 4 models on the GPU (Vulkan) and serves them as an OpenAI-compatible API on `http://localhost:1893/v1`. Tray icon, dashboard and console. Knows nothing about the client. |
 | **Phoenix Client** | `Phoenix_Client.lnk` | The chat app, shown in a Chrome (or Edge) app window. An OpenAI `/v1` client for any provider (the Phoenix server is one of them), with projects and file tools, docs search, skills, code checks and chat history. |
 | **VS Code extension** | installed `.vsix` | Shows the Phoenix Client's chat page in a VS Code side panel, and gives inline code completion from the server. |
 
@@ -15,7 +15,7 @@ Phoenix LAI is two separate Windows programs plus a VS Code extension:
  ┌───────────────────────────────┐          ┌──────────────────────────────────────┐
  │ PHOENIX SERVER                │   /v1    │ PHOENIX CLIENT                       │
  │ models on the GPU (Vulkan)    │◄─────────┤ chat window (Chrome --app)           │
- │ localhost:1234/v1   (API)     │          │ 127.0.0.1:8790-8799  (its own page)  │
+ │ localhost:1893/v1   (API)     │          │ 127.0.0.1:8790-8799  (its own page)  │
  │ 127.0.0.1:8765-8789 (dashboard│          │ talks /v1 to any provider:           │
  │   and console pages only)     │          │   Phoenix Local Server (built in),   │
  │ tray icon                     │          │   LM Studio, Ollama, LAN, cloud      │
@@ -86,8 +86,8 @@ There is no all-in-one mode: the server and the client are always separate proce
    - creates `Workspace.ProjectsRoot` (`%USERPROFILE%\Phoenix_Projects`) if missing;
    - opens the docs index (`Rag`, with the local embedding model from `models\`, used for `/v1/embeddings`) and
      rebuilds it in the background if it is missing or outdated;
-   - **starts the OpenAI API** (`StartApi`, `src\WebServer.OpenAi.cs`) on `http://127.0.0.1:1234/` and
-     `http://localhost:1234/`. If port 1234 is taken, the server runs without the API and says so.
+   - **starts the OpenAI API** (`StartApi`, `src\WebServer.OpenAi.cs`) on `http://127.0.0.1:1893/` and
+     `http://localhost:1893/`. If port 1893 is taken, the server runs without the API and says so.
 4. **Tray** (`BuildTray`): a notification-area icon. A click opens `TrayPanel` (`src\TrayPanel.cs`), a dark mini
    dashboard updated every second (state, GPU load graph, VRAM, KV cache, connected clients, API address, GPU, model,
    uptime) with the buttons **Start/Stop, Restart, Console, Dashboard, Exit**. Console and Dashboard open
@@ -96,8 +96,8 @@ There is no all-in-one mode: the server and the client are always separate proce
 
 ### 2.2 The OpenAI API (`src\WebServer.OpenAi.cs`)
 
-Every request first passes the request checks ([SECURITY.md](SECURITY.md) §4): `Host` must be `127.0.0.1:1234` or
-`localhost:1234`, `Origin` (if sent) must be the API's own address or a VS Code webview, and the optional API key must
+Every request first passes the request checks ([SECURITY.md](SECURITY.md) §4): `Host` must be `127.0.0.1:1893` or
+`localhost:1893`, `Origin` (if sent) must be the API's own address or a VS Code webview, and the optional API key must
 match.
 
 | Endpoint | What it does |
@@ -199,7 +199,7 @@ For each `.gguf` in `models\` that is a chat model (not an embedding model or a 
 - **Store:** `%LOCALAPPDATA%\LocalLLMStudio\providers.json` (id, name, base URL, model, tested features; never a key)
   and `active-provider.txt`. API keys are in Windows Credential Manager (`CredStore.cs`, resource
   `PhoenixLAI.Connections`), never in a file or sent back to the page.
-- **Phoenix Local Server** is built in: first in the list, `http://localhost:1234/v1`, cannot be deleted, renamed or
+- **Phoenix Local Server** is built in: first in the list, `http://localhost:1893/v1`, cannot be deleted, renamed or
   re-pointed (only its model and key change).
 - **Outgoing requests:** only `Providers.Outgoing`, through `CheckTarget` (http/https only, no `user:password` in the
   URL), never following redirects, TLS 1.2+, system proxy for non-loopback hosts. See [SECURITY.md](SECURITY.md) §5.
@@ -316,7 +316,7 @@ Dropped in the client because they need the server's KV cache: Instant Recall, a
 Plain JavaScript, VS Code API and Node's `http` only, no npm. `build.ps1` packs `vscode-ext\phoenixlai-<ver>.vsix`.
 - **Side panel:** an iframe of the Phoenix Client's `vscode.html` (`127.0.0.1:8790-8799`); it connects the client to
   the open VS Code folder when that folder is inside `Phoenix_Projects`.
-- **Inline completion:** `POST /v1/completions` with `suffix` to the server on `127.0.0.1:1234` (model `phoenixlai`).
+- **Inline completion:** `POST /v1/completions` with `suffix` to the server on `127.0.0.1:1893` (model `phoenixlai`).
 
 ---
 

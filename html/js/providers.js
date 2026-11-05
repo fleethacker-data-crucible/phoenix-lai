@@ -3,7 +3,7 @@
 // key goes straight into Windows Credential Manager when saved and never comes back to the page. Clicking a provider
 // makes it the active one: the model picker then lists its models (from its own /models), and chats go to it.
 (function () {
-  if (!$('providerList')) return;   // vscode.html: no providers panel
+  if (!$('providerList')) return;   // chat.html: the left panel; vscode.html: Settings > providers
   const EDIT_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
   let providers = [], active = null, editing = null;
 
@@ -72,11 +72,26 @@
   };
   document.addEventListener('click', e => { if (!e.target.closest('.dd')) $('pModelMenu').classList.remove('show'); });
   $('pModelMenu').addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); $('pModelMenu').classList.remove('show'); $('pModelBtn').focus(); } });
-  function form() { return { id: editing ? editing.id : undefined, name: $('pName').value.trim(), url: $('pUrl').value.trim(), model: $('pModel').value }; }
+  // API format: OpenAI /v1 (chat/completions) or Anthropic /v1 (messages). Both list models at /models.
+  const FORMATS = [{ value: 'openai', label: 'OpenAI /v1' }, { value: 'anthropic', label: 'Anthropic /v1' }];
+  function format() { const r = $('pFormat').querySelector('input:checked'); return r ? r.value : 'openai'; }
+  function showFormat(f, fixed) {
+    radios('pFormat', FORMATS, f, showFormatHints);
+    $('pFormat').querySelectorAll('input').forEach(i => { i.disabled = !!fixed; });
+    showFormatHints(f);
+  }
+  function showFormatHints(f) {
+    const anth = f === 'anthropic';
+    $('pUrl').placeholder = anth ? "the provider's base URL, ending in /v1" : 'http://localhost:1893/v1';   // html\ may not name outside hosts
+    $('pUrlHint').textContent = "where the provider's /models and " + (anth ? '/messages' : '/chat/completions') + ' live · this PC, the LAN or the internet';
+    $('pFormatHint').textContent = anth ? 'key sent as x-api-key, with anthropic-version ' + '2023-06-01' : 'key sent as Authorization: Bearer';
+  }
+  function form() { return { id: editing ? editing.id : undefined, name: $('pName').value.trim(), url: $('pUrl').value.trim(), model: $('pModel').value, format: format() }; }
   function openProvider(p) {
     editing = p;
     $('pName').value = p ? p.name : '';
     $('pUrl').value = p ? p.url : '';
+    showFormat(p && p.format ? p.format : 'openai', p && p.phoenix);
     $('pKey').value = '';
     $('pKey').placeholder = p && p.hasKey ? '•••••••• stored in Credential Manager (paste a new key to replace it)' : 'paste the key (optional)';
     $('pClear').checked = false; $('pClearRow').style.display = p && p.hasKey ? '' : 'none';
@@ -90,7 +105,7 @@
     drawFeatures(p ? p.features : null, p && p.testedAt ? 'from the test on ' + p.testedAt : null);
     fillModels([], p ? p.model : '');
     $('pModelNote').textContent = "asks the provider's /models with the URL and key above";
-    $('pTests').innerHTML = '<span class="hint">Runs the OpenAI /v1 calls the chat uses: models, chat, streaming, embeddings.</span>';
+    $('pTests').innerHTML = '<span class="hint">Runs the /v1 calls the chat uses: models, chat, streaming (OpenAI: also embeddings and options; Anthropic: system prompt and pictures).</span>';
     $('provModal').classList.add('show');
     setTimeout(() => (p ? (p.phoenix ? $('pModelBtn') : $('pKey')) : $('pName')).focus(), 50);
     if (p) loadModels(true);
@@ -113,7 +128,7 @@
     if (!f.url) { $('pModelNote').textContent = 'Give the base URL first.'; return; }
     $('pModelNote').textContent = 'Asking ' + f.url + '/models…';
     try {
-      const j = await api('/client/provider-models', { id: f.id, url: f.url, key: key || undefined });
+      const j = await api('/client/provider-models', { id: f.id, url: f.url, format: f.format, key: key || undefined });
       fillModels(j.models, f.model || (editing && editing.model) || j.models[0] || '');
       $('pModelNote').textContent = j.models.length + ' model' + (j.models.length === 1 ? '' : 's') + ' from the provider';
     } catch (e) { $('pModelNote').textContent = quiet ? 'Could not list the models: ' + e.message : 'Could not list the models: ' + e.message; }
@@ -129,7 +144,7 @@
     $('pTests').innerHTML = '<span class="hint">Testing ' + esc(f.url) + '…</span>';
     $('pTest').disabled = true;
     try {
-      const j = await api('/client/provider-test', { id: f.id, url: f.url, model: f.model, key: key || undefined });
+      const j = await api('/client/provider-test', { id: f.id, url: f.url, model: f.model, format: f.format, key: key || undefined });
       const mark = { ok: '✓', warn: '!', fail: '✗', na: '–' };
       $('pTests').innerHTML = j.results.map(r => '<div class="row"><span class="' + r.state + '">' + mark[r.state] + '</span><span>' + esc(r.name) + '</span><span class="ms">' + r.ms + ' ms</span><span class="d">' + esc(r.detail) + '</span></div>').join('') +
         (j.info || []).map(s => '<details class="pinfo"' + (s.title === 'Connection' || s.title.startsWith('GET /models (') ? ' open' : '') + '><summary>' + esc(s.title) + '</summary>' +

@@ -129,7 +129,7 @@ namespace Phoenix
         static bool ClientOnlyPath(string path)
         {
             if (path == "/api/models" || path == "/api/load" || path == "/api/unload" || path == "/api/gpu" || path == "/api/vram" ||
-                path == "/api/debug" || path == "/api/server-status" || path == "/api/console" || path == "/api/bye" || path == "/api/info" || path == "/api/device")
+                path == "/api/debug" || path == "/api/api-format" || path == "/api/api-port" || path == "/api/sampling" || path == "/api/server-status" || path == "/api/console" || path == "/api/bye" || path == "/api/info" || path == "/api/device")
                 return false;
             return path.StartsWith("/api/");
         }

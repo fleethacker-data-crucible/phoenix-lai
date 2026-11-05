@@ -73,7 +73,7 @@ It checks:
 | PowerShell **language mode** | Must be `FullLanguage`. Under AppLocker/WDAC it is `ConstrainedLanguage`, and Phoenix cannot compile itself at all. |
 | Execution policy | `-ExecutionPolicy Bypass` on the command line normally overrides it. A `MachinePolicy` set by IT does not. |
 | C# compiler test | Phoenix compiles its own C# at every start (`csc.exe` from .NET Framework 4.8). Security software sometimes blocks it. |
-| Ports 127.0.0.1:8765 and :1234 | Phoenix's window and its API listen there (this computer only). |
+| Ports 127.0.0.1:8765 and :1893 | Phoenix's window and its API listen there (this computer only). |
 | Chrome / Edge | Phoenix opens its window in one of them. |
 | `Phoenix_Projects`, `.phoenix`, `LocalLLMStudio` folders writable | Where projects, chats and settings live. |
 | Battery, power plan, GPU timeout (TDR) setting | Laptop GPU speed, and how long Windows lets one GPU job run (default 2 s). |
