@@ -1,4 +1,4 @@
-# Phoenix LAI server: runs the local models and serves them as an OpenAI-compatible API on http://localhost:1234/v1.
+# Phoenix LAI server: runs the local models and serves them as an OpenAI-compatible API on http://localhost:1893/v1.
 # No chat window: it sits in the notification area (right-click: Start, Stop, Restart, Console, Dashboard, Exit).
 # Windows PowerShell 5.1 only (same checks and in-memory compile as run.ps1).
 #   powershell.exe -NoProfile -STA -WindowStyle Hidden -File src\run-phoenix-server.ps1

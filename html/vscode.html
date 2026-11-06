@@ -1,5 +1,8 @@
 <!doctype html>
-<!-- The chat as shown in VS Code (Phoenix extension): same page as chat.html, VS Code's theme. Keep the two in step. -->
+<!-- The Phoenix Client as shown in VS Code (Phoenix extension), laid out like VS Code's own Chat view: a view-title bar
+     (new chat, history, settings), the conversation, and the input box with mode, model picker and send below the text.
+     Same client as chat.html, with the same scripts: providers (base URL, API format, key, test), the model picker across
+     providers, chat history, skills and settings. Colours and fonts come from VS Code's theme. Keep the two in step. -->
 <html lang="en" class="no-banner vscode">
 <head>
 <meta charset="utf-8">
@@ -13,25 +16,44 @@
 <body>
 <div id="banner"><span>LOCAL DEMO</span></div>
 <canvas id="bg"></canvas><canvas id="bgLogo"></canvas>
+
+<header id="vhead">
+  <span class="vtitle" id="vtitle">Untitled</span><span class="grow"></span>
+  <button id="vhHistory" title="Past chats" aria-label="Past chats"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/></svg></button>
+  <button id="vhNew" title="New chat" aria-label="New chat"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8.2A5.5 5.5 0 1 1 11 3.6"/><path d="M2.6 13.6 3.4 11"/><path d="M12.2 2v4M10.2 4h4"/></svg></button>
+  <button id="vhSettings" title="Settings (providers: base URL, API format, key, test)" aria-label="Settings"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M6.9 1.8h2.2l.35 1.7 1.2.7 1.65-.55 1.1 1.9-1.3 1.15v1.4l1.3 1.15-1.1 1.9-1.65-.55-1.2.7-.35 1.7H6.9l-.35-1.7-1.2-.7-1.65.55-1.1-1.9 1.3-1.15V7.3L2.6 6.15l1.1-1.9 1.65.55 1.2-.7z"/></svg></button>
+</header>
+<!-- brand line under the title bar while a chat is empty, as Claude Code shows its own -->
+<div id="vbrand"><img src="assets/toolbar_icon.png" alt=""><span>Phoenix</span></div>
+
 <div class="wrap">
   <div id="chat">
   </div>
-
 </div>
 
-<div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div><div class="pbar" id="pbar"><button id="pbNew" title="New chat" aria-label="New chat"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button id="pbCmd" title="Commands (/help, /model, /recall, ...)" aria-label="Commands"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M10.5 2.5 5.5 13.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><div class="mpick"><button id="pbModel" class="chip" title="Model (click to change)"></button><div id="modelMenu"></div></div><span id="pbCtx" class="ctx" title="Context used by this chat"></span><span class="grow"></span><button id="pbMode" class="mode" title="Auto: file actions run without asking · Accept: approve each one"></button><button id="pbSettings" title="Settings" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M6.9 1.8h2.2l.35 1.7 1.2.7 1.65-.55 1.1 1.9-1.3 1.15v1.4l1.3 1.15-1.1 1.9-1.65-.55-1.2.7-.35 1.7H6.9l-.35-1.7-1.2-.7-1.65.55-1.1-1.9 1.3-1.15V7.3L2.6 6.15l1.1-1.9 1.65.55 1.2-.7z"/></svg></button><button id="pbSend" class="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+<div class="promptline" id="promptLine"><span class="chev">›</span><div class="typebox"><div id="cmds"></div><div id="mirror"></div><textarea id="input" rows="1" spellcheck="false" autofocus aria-label="Message"></textarea></div><div class="pbar" id="pbar"><button id="pbAdd" class="ib" title="Attach pictures" aria-label="Attach pictures"><svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button id="pbCmd" class="ib box" title="Commands (/help, /model, /recall, ...)" aria-label="Commands"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M9.6 5 6.4 11" stroke-linecap="round"/></svg></button><div class="mpick"><button id="modelPick" class="pill" title="Pick model"><span id="topModel">Select model</span></button><div id="modelMenu"></div></div><span id="pbSep" class="sep"></span><span id="pbFileSlot"></span><span class="grow"></span><span id="pbCtx" class="ctx" title="Context used by this chat"></span><button id="pbMode" class="mode" title="Auto: file actions run without asking · Accept: approve each one"></button><button id="pbSend" class="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="13" height="13"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
 <div id="files"></div>
+
+<!-- Chat history: VS Code's "Show Chats" list, as a full-panel view -->
+<div class="modal" id="histModal">
+  <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="histTitle">
+    <header><h2 id="histTitle">CHATS</h2><button class="x" id="closeHist" title="Close (Esc)">✕</button></header>
+    <div class="body"><div id="recentList" class="vlist recents"></div></div>
+  </div>
+</div>
+
 <div class="modal" id="settingsModal">
   <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-    <header><h2 id="settingsTitle"><span class="chev">›</span> SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
-    <nav class="cats" id="settingsCats">
-      <button data-cat="catProv">providers</button><button data-cat="catDocs">docs</button><button data-cat="catLook">appearance</button><button data-cat="catApp">app</button>
-    </nav>
+    <header><h2 id="settingsTitle">SETTINGS</h2><button class="x" id="closeSettings" title="Close (Esc)">✕</button></header>
     <div class="body" id="settingsBody">
-      <section id="catProv">
-        <div class="section pgroup">providers<button id="newProvider" title="Add an OpenAI /v1 provider"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
-        <div id="providerList" class="slist providers"></div>
-        <span class="hint">the Phoenix Client's providers · click one to use it, the pencil edits it · the model chip lists every provider's models</span>
+      <section id="catProviders">
+        <div class="section vsec">providers<button id="newProvider" class="vadd" title="Add a provider (OpenAI /v1 or Anthropic /v1)">+ add</button></div>
+        <div id="providerList" class="vlist providers"></div>
+        <span class="hint">Click a provider to use it · the pencil edits its base URL, API format, key and model, and tests the connection.</span>
+      </section>
+      <section id="catSkills">
+        <div class="section vsec">skills<span><button id="navSkills" class="vadd">builder</button><button id="newSkill" class="vadd" title="New skill">+ new</button></span></div>
+        <div id="skillList" class="vlist skills"></div>
       </section>
       <section id="catDocs">
         <div class="section">docs</div>
@@ -46,11 +68,6 @@
       <section id="catApp">
         <div class="section">app</div>
         <div class="field">browser<div class="radios" id="sBrowser"></div><span class="hint" id="browserNote"></span></div>
-        <!-- CPU mode (off): <div class="field" style="margin-top:10px">device<div class="radios" id="sDevice"></div><span class="hint">where the model runs · CPU is much slower · switching reloads the model</span></div> -->
-        <!-- The Phoenix server's GPU settings belong to the server; answer while I type needs its local cache:
-        <div class="field" style="margin-top:10px">dev: GPU<div class="radios" id="sGpu"></div><span class="hint" id="gpuNote"></span></div>
-        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sGpuSafe"><span class="sw"></span>dev: safe GPU kernels<span class="hint"> · plain kernels without the subgroup and integer-dot fast paths, for a card whose answers come out as garbage</span></label>
-        <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sPretype"><span class="sw"></span>answer while I type<span class="hint"> · reads your message and drafts during typing pauses, so replies start sooner</span></label> -->
         <label class="toggle" style="margin-top:8px"><input type="checkbox" id="sTypeEffect"><span class="sw"></span>typing effect<span class="hint"> · the reply types itself out, with the odd backspaced typo (display only)</span></label>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="sBanner"><span class="sw"></span>status banner (LOCAL DEMO)</label>
       </section>
@@ -67,23 +84,7 @@
         <div class="section">system prompt</div>
         <label class="field"><textarea id="mSystem" spellcheck="false"></textarea><span class="hint">sent with every message to this model · RULES.md files are added on top</span></label>
       </section>
-      <section>
-        <div class="section">memory</div>
-        <div class="grid2">
-          <label class="field">context<input id="mContext" type="text" inputmode="numeric" placeholder="auto"><span class="hint">tokens, empty = auto (largest that fits free VRAM / RAM) · reloads the model</span></label>
-          <div class="field">kv cache<div class="radios" id="mKv"></div><span class="hint" id="mKvHint"></span></div>
-        </div>
-      </section>
-      <section>
-        <div class="section">generation</div>
-        <div class="grid2">
-          <label class="field">max reply<input id="mMax" type="number" min="1"><span class="hint">tokens</span></label>
-          <label class="field">temperature<input id="mTemp" type="number" step="0.05" min="0" max="2"><span class="hint">0 = predictable · 2 = wild</span></label>
-          <label class="field">top k<input id="mTopK" type="number" min="0"><span class="hint">0 = off</span></label>
-          <label class="field">top p<input id="mTopP" type="number" step="0.01" min="0" max="1"><span class="hint">1 = off</span></label>
-          <label class="field">repeat penalty<input id="mRepeat" type="number" step="0.01" min="1" max="2"><span class="hint">1 = off</span></label>
-        </div>
-      </section>
+      <p class="hint">Sampling, reply length and context are the provider's settings, not the client's: for local models, set them in the Phoenix server's dashboard or console (<code>sampling</code>).</p>
       <div class="note" id="mNote"></div>
     </div>
     <footer><span class="keys">Enter save · Esc close</span><button id="mReset">defaults</button><button class="primary" id="mSave">save</button></footer>
@@ -92,11 +93,12 @@
 
 <div class="modal" id="provModal">
   <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
-    <header><h2 id="provTitle">OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+    <header><h2 id="provTitle">PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
-        <label class="field" style="margin-top:10px">base url<input id="pUrl" type="text" spellcheck="false" placeholder="http://localhost:1234/v1"><span class="hint">where the provider's /models and /chat/completions live · this PC, the LAN or the internet</span></label>
+        <label class="field" style="margin-top:10px">base url<input id="pUrl" type="text" spellcheck="false" placeholder="http://localhost:1893/v1"><span class="hint" id="pUrlHint">where the provider's /models and /chat/completions live · this PC, the LAN or the internet</span></label>
+        <div class="field" style="margin-top:10px">api format<div class="radios" id="pFormat"></div><span class="hint" id="pFormatHint"></span></div>
       </section>
       <section>
         <div class="section">api key</div>
@@ -117,10 +119,10 @@
       </section>
       <section>
         <div class="section">test</div>
-        <div id="pTests" class="ctests"><span class="hint">Runs the OpenAI /v1 calls the chat uses: models, chat, streaming, embeddings.</span></div>
+        <div id="pTests" class="ctests"><span class="hint">Runs the /v1 calls the chat uses.</span></div>
       </section>
     </div>
-    <footer><span class="keys">Enter save · Esc close</span><button id="pDelete">delete</button><button id="pTest">test</button><button class="primary" id="pSave">save</button></footer>
+    <footer><span class="keys">Enter save · Esc close</span><button id="pDelete">delete</button><button id="pTest">test connection</button><button class="primary" id="pSave">save</button></footer>
   </div>
 </div>
 
@@ -137,6 +139,7 @@
 <script src="js/markdown.js"></script>
 <script src="js/modal.js"></script>
 <script src="js/chat.js"></script>
+<script src="js/skills.js"></script>
 <script src="js/providers.js"></script>
 <script src="js/vscode-ui.js"></script>
 </body>

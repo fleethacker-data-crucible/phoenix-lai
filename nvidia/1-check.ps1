@@ -98,7 +98,7 @@ try {
 } catch { Problem "C# compiler blocked: $($_.Exception.Message)  (Phoenix needs csc.exe from .NET Framework; AppLocker or antivirus may block it)" }
 
 Section 'Loopback ports (Phoenix serves its own window on 127.0.0.1)'
-foreach ($port in 8780, 8790, 1234) {   # first server, client and API ports (edge-ops PORTS.md)
+foreach ($port in 8780, 8790, 1893) {   # first server, client and API ports (edge-ops PORTS.md)
     $l = New-Object System.Net.HttpListener
     $l.Prefixes.Add("http://127.0.0.1:$port/")
     try { $l.Start(); Say "127.0.0.1:${port}: free and usable"; $l.Stop() }

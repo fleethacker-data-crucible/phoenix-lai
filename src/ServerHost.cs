@@ -1,5 +1,5 @@
 // Phoenix LAI server (run-phoenix-server.ps1): runs the models and serves them as an OpenAI-compatible API on
-// localhost port 1234 (/v1), with no chat window. It lives in the notification area (system tray) until Exit; a click on
+// localhost port 1893 (/v1), with no chat window. It lives in the notification area (system tray) until Exit; a click on
 // the icon opens a mini dashboard (TrayPanel) with live status and these buttons:
 //   Start / Stop / Restart   the server (Restart reloads the model that was loaded)
 //   Console                  a command console for statistics, tests and debugging (Phoenix commands only, never a shell)
@@ -53,7 +53,7 @@ namespace Phoenix
             }
         }
 
-        // Starts the listeners (dashboard port 8780-8789, OpenAI API on 1234) and, if given, loads a model in the background.
+        // Starts the listeners (dashboard port 8780-8789, OpenAI API on 1893) and, if given, loads a model in the background.
         public static void Start(string modelPath)
         {
             lock (_gate)
@@ -64,14 +64,14 @@ namespace Phoenix
                 s.ServerMode = true;
                 _server = s;
                 StartedUtc = DateTime.UtcNow;
-                s.Log.Text("server mode: OpenAI API " + (s.ApiUrl ?? "NOT available (port 1234 in use)") + ", dashboard " + s.BaseUrl + "dashboard.html");
+                s.Log.Text("server mode: OpenAI API " + (s.ApiUrl ?? "NOT available (port " + WebServer.ApiPort + " in use)") + ", dashboard " + s.BaseUrl + "dashboard.html");
                 if (!string.IsNullOrEmpty(modelPath))
                 {
                     string m = modelPath;
                     ThreadPool.QueueUserWorkItem(delegate { try { s.LoadModel(m); } catch { } });
                 }
             }
-            Notify("Phoenix server started", "OpenAI API on " + (Current != null && Current.ApiUrl != null ? Current.ApiUrl : "(port 1234 busy)"));
+            Notify("Phoenix server started", "OpenAI API on " + (Current != null && Current.ApiUrl != null ? Current.ApiUrl : "(port " + WebServer.ApiPort + " busy)"));
         }
 
         // Stops listening and frees the model (VRAM). Returns the loaded model's path, for Restart.

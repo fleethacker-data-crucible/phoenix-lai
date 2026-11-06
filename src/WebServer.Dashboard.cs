@@ -138,7 +138,10 @@ namespace Phoenix
               .Append(e != null && e.ContextLength > 0 ? Math.Round(100.0 * e.UsedTokens / e.ContextLength, 1).ToString(ic) : "0");
             sb.Append(",\"device\":").Append(_useGpu ? "\"gpu\"" : "\"cpu\"");
             sb.Append(",\"loading\":").Append(_loading != null ? Json.Quote(_loading) : "null").Append(",\"loadError\":").Append(_loadError != null ? Json.Quote(_loadError) : "null");
-            sb.Append(",\"apiKey\":").Append(ApiKeyRequired ? "true" : "false");
+            sb.Append(",\"apiKey\":").Append(ApiKeyRequired ? "true" : "false").Append(",\"apiFormat\":").Append(Json.Quote(ApiFormat)).Append(",\"apiPort\":").Append(ApiPort);
+            string smodel = SamplingModel();
+            sb.Append(",\"sampling\":").Append(smodel == null ? "null" : "{\"model\":" + Json.Quote(smodel) + ",\"default\":" + (ModelSettings.IsDefault(smodel) ? "true" : "false") +
+                ",\"values\":" + ModelSettings.For(smodel).ToJson() + "}");
             sb.Append(",\"debug\":").Append(Dbg.On ? "true" : "false").Append(",\"rag\":").Append(Rag.StatusJson());
             string state = _loading != null ? "loading" : a.State;
             sb.Append(",\"activity\":{\"state\":").Append(Json.Quote(state)).Append(",\"source\":").Append(Json.Quote(_loading != null ? "model load" : a.Source))
@@ -259,6 +262,9 @@ namespace Phoenix
             { "vram", "video memory by program" },
             { "debug on|off", "step-by-step debug lines in the session log" },
             { "apikey [new|set <key>|off]", "require an API key on /v1 (kept in Windows Credential Manager)" },
+            { "apiformat [openai|anthropic|both]", "which API format /v1 hosts: OpenAI (chat/completions), Anthropic (messages) or both" },
+            { "sampling [<key> <value>|reset]", "the loaded model's generation settings (temperature, top_k, top_p, repeat_penalty, max_tokens); default Gemma 4's" },
+            { "apiport [port]", "the port the /v1 API serves on (default " + DefaultApiPort + "); changes it now and saves it" },
             { "log [n]", "the last n lines of the session log (default 30)" },
             { "gc", "free unused memory back to Windows" },
             { "restart", "restart the server (reloads the model)" },
@@ -294,13 +300,14 @@ namespace Phoenix
                     ulong used = 0, budget = 0; bool v = e != null && e.Vram(out used, out budget);
                     return "version   " + Version() + "\n" +
                            "uptime    " + ((int)up.TotalHours).ToString(ic) + "h " + up.Minutes + "m " + up.Seconds + "s\n" +
-                           "api       " + (ApiUrl ?? "not listening (port 1234 in use)") + "\n" +
+                           "api       " + (ApiUrl ?? "not listening (port " + ApiPort + " in use)") + "\n" +
                            "model     " + (e != null ? Path.GetFileName(e.ModelPath) + " on " + e.Backend + ", context " + e.ContextLength : _loading != null ? "loading " + _loading : "none") + "\n" +
                            "device    " + (_useGpu ? "GPU" : "CPU") + "\n" +
                            (v ? "vram      " + Gb((long)used) + " used of " + Gb((long)budget) + "\n" : "") +
                            "memory    " + Gb(me.WorkingSet64) + " working set, " + Gb(me.PrivateMemorySize64) + " private\n" +
                            "requests  " + _totalRequests + " done, " + _totalTokens + " tokens generated, " + Thread.VolatileRead(ref _activeRequests) + " in flight\n" +
                            "api key   " + (ApiKeyRequired ? "required" : "not required") + "\n" +
+                           "format    " + ApiFormatName + "\n" +
                            "debug     " + (Dbg.On ? "on" : "off");
                 }
                 case "clients":
@@ -419,6 +426,46 @@ namespace Phoenix
                         return "API key set." + note;
                     }
                     return "Usage: apikey | apikey new | apikey set <key> | apikey off";
+                }
+                case "apiformat":
+                {
+                    string f = arg.ToLowerInvariant();
+                    const string what = "\n  openai     /v1/chat/completions, /v1/completions (OpenAI SDKs, VS Code extensions, the Phoenix client)\n  anthropic  /v1/messages (Anthropic SDKs: base URL = the api address without /v1)\n  both       all of them\n/v1/embeddings stays on in every format (docs search).";
+                    if (f == "") return "API format: " + ApiFormatName + "." + what;
+                    if (!IsApiFormat(f)) return "Usage: apiformat openai | anthropic | both";
+                    SetApiFormat(f);
+                    Log.Text("API format set to " + ApiFormatName);
+                    return "API format: " + ApiFormatName + " (in effect now)." + (f == "anthropic" ? "\nThe Phoenix client talks OpenAI /v1: it cannot chat through this server until the format is openai or both." : "");
+                }
+                case "sampling":
+                {
+                    string model = SamplingModel();
+                    if (model == null) return "No model loaded: load one first (load <name>), then set its sampling.";
+                    string[] a = arg.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    try
+                    {
+                        if (a.Length == 0)
+                            return model + ": " + ModelSettings.For(model) + (ModelSettings.IsDefault(model) ? " (Gemma 4 defaults)" : "") +
+                                   "\nChange: sampling <key> <value> (keys: " + string.Join(", ", ModelSettings.Keys) + ") · sampling reset = Gemma 4 defaults." +
+                                   "\nThese apply when a request leaves the value out; a value a client sends still wins.";
+                        if (a.Length == 1 && a[0].ToLowerInvariant() == "reset")
+                        { ModelSampling r = ModelSettings.Reset(model); Log.Text("sampling for " + model + " reset to Gemma 4 defaults"); return model + ": " + r + " (Gemma 4 defaults, saved)."; }
+                        double v;
+                        if (a.Length != 2 || !double.TryParse(a[1], NumberStyles.Float, ic, out v)) return "Usage: sampling | sampling <key> <value> | sampling reset";
+                        ModelSampling s = ModelSettings.Set(model, a[0].ToLowerInvariant(), v);
+                        Log.Text("sampling for " + model + ": " + s);
+                        return model + ": " + s + " (saved).";
+                    }
+                    catch (ArgumentException ex) { return "Not changed: " + ex.Message; }
+                }
+                case "apiport":
+                {
+                    if (arg == "") return "API port: " + ApiPort + (ApiUrl != null ? " (" + ApiUrl + ")" : " (not listening: the port is in use)") +
+                        ". Change it with apiport <port>; default " + DefaultApiPort + ".";
+                    int p;
+                    if (!int.TryParse(arg, NumberStyles.None, ic, out p)) return "Usage: apiport <port>, a number from 1024 to 65535.";
+                    try { return SetApiPort(p); }
+                    catch (Exception ex) { return "Not changed: " + ex.Message; }
                 }
                 case "restart":
                     if (!ServerMode) return "restart works in server mode (run-phoenix-server.ps1).";

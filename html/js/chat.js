@@ -3,18 +3,21 @@ const $ = id => document.getElementById(id);
 const chatEl = $('chat'), input = $('input'), promptLine = $('promptLine');
 const mirror = $('mirror');
 let history = [], info = {}, controller = null, filesAt = '.';
-const settings = { pretype: true, typeEffect: true };
+const settings = { pretype: true, typeEffect: true };   // skin omitted: Phoenix is the default (/skin fleet turns the Fleet skin on)
 try { Object.assign(settings, JSON.parse(localStorage.getItem('phoenix.settings') || '{}')); } catch (e) {}
 const save = () => { try { localStorage.setItem('phoenix.settings', JSON.stringify(settings)); } catch (e) {} };
-// Each model's defaults come from the server (/api/models "defaults": Google's Gemma 4 sampling, reply limit and system
-// prompt by model size); this is the fallback until the list arrives. An empty system prompt = the server's default.
-const BASE_DEFAULTS = { temperature: 1.0, top_k: 64, top_p: 0.95, repeat_penalty: 1.0, max_tokens: 4096, system: '', context: 0, kv: 'q8' };
-const MODEL_KEYS = ['temperature', 'top_k', 'top_p', 'repeat_penalty', 'max_tokens', 'system'];
-// One-time move to per-model defaults: drop the old global sampling values and saved copies of the old defaults.
-if (settings.defaultsV !== 2) {
-  MODEL_KEYS.forEach(k => delete settings[k]);
-  Object.values(settings.models || {}).forEach(c => MODEL_KEYS.forEach(k => delete c[k]));
-  settings.defaultsV = 2; save();
+// The client is a plain /v1 client: the only per-model setting it keeps is the system prompt (part of the messages).
+// Sampling, reply limit, context and KV cache belong to the provider (the Phoenix server keeps its own per model,
+// Gemma 4's recommended values by default), so cloud models get no fields they may refuse. Each model's default system
+// prompt comes from /api/models "defaults"; an empty one = none.
+const BASE_DEFAULTS = { system: '' };
+const MODEL_KEYS = ['system'];
+const OLD_MODEL_KEYS = ['temperature', 'top_k', 'top_p', 'repeat_penalty', 'max_tokens', 'context', 'kv'];
+// One-time clean-up: drop the sampling, reply-limit, context and KV values earlier versions saved in the client.
+if (settings.defaultsV !== 3) {
+  OLD_MODEL_KEYS.forEach(k => delete settings[k]);
+  Object.values(settings.models || {}).forEach(c => OLD_MODEL_KEYS.forEach(k => delete c[k]));
+  settings.defaultsV = 3; save();
 }
 function modelDefaults(name) { const m = chatModels.find(x => x.name === name); return Object.assign({}, BASE_DEFAULTS, m && m.defaults); }
 // Settings per model, kept under settings.models by file name: only what differs from that model's defaults.
@@ -340,7 +343,7 @@ if ($('recentList')) {
     }
     if (it.dataset.id !== chatId) openChat(it.dataset.id);
   });
-  $('projList').addEventListener('click', async e => {
+  if ($('projList')) $('projList').addEventListener('click', async e => {   // vscode.html: no projects list (VS Code's folder is the project)
     const it = e.target.closest('.sitem'); if (!it || controller) return;
     if (e.target.closest('.del')) {
       if (!confirm('Remove the project "' + it.dataset.p + '"?\n\nIts folder is moved to Phoenix_Projects\\.llm-backup, not erased.')) return;
@@ -353,7 +356,7 @@ if ($('recentList')) {
     await setFolder(active ? 'close' : it.dataset.p);
     newChat(); await loadSidebar();
   });
-  $('newProject').onclick = newProjectBox;
+  if ($('newProject')) $('newProject').onclick = newProjectBox;
   loadSidebar();
 }
 window.addEventListener('pagehide', saveChat);
@@ -460,7 +463,7 @@ async function reindex() {
   refresh();
 }
 // Slash commands, A-Z. `use` is the full syntax shown by /help; `arg` = takes arguments (completion leaves a space).
-// Model, sampling, docs and browser settings live in the /settings window.
+// Model, docs and browser settings live in the /settings window (sampling is the provider's, not the client's).
 // The last 10 connected folders (kept by the server), offered when you type "/folder ".
 let recentFolders = [];
 async function loadRecentFolders() { try { recentFolders = (await api('/api/recent-folders')).folders; } catch (e) {} }
@@ -483,12 +486,11 @@ async function loadModelList() {
   } catch (e) {}
 }
 loadModelList();
-async function loadModel(name, ctx, provider) {
-  systemLine('Loading ' + name + (ctx ? ', context ' + ctx : '') + '…');
+async function loadModel(name, provider) {
+  systemLine('Loading ' + name + '…');
   setTimeout(refresh, 300);
   const t0 = performance.now();
-  const cfg = ms(name);
-  try { info = await api('/api/load', { name, context: ctx === undefined ? cfg.context : ctx, kv: cfg.kv, provider }); }
+  try { info = await api('/api/load', { name, provider }); }   // picks the provider's model; nothing model-specific is sent
   catch (e) { systemLine('Could not load: ' + e.message); return false; }
   systemLine('Loaded ' + fileLabel(info.file || name) + ' on ' + info.backend + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s, context ' + Number(info.context).toLocaleString() + (info.contextAuto ? ' (auto)' : '') + '.');
   if (info.memWarning) systemLine('⚠ ' + info.memWarning);
@@ -572,6 +574,16 @@ const COMMANDS = [
   { name: '/provider', use: '/provider <name>', desc: 'switch to another OpenAI /v1 provider (Providers in the left panel; + adds one)', arg: true,
     options: () => (window.providerNames ? window.providerNames() : []).map(n => ({ value: n, desc: '' })),
     run: async arg => { if (window.useProviderNamed) await window.useProviderNamed(arg); } },
+  { name: '/skin', use: '/skin phoenix|fleet', desc: 'the look: Phoenix (default) or the shared FleetHacker Fleet skin', arg: true,
+    options: () => SKINS.map(k => ({ value: k.id, desc: k.desc + ((settings.skin || 'phoenix') === k.id ? ' (current)' : '') })),
+    run: arg => {
+      const v = (arg || '').trim().toLowerCase();
+      if (!SKINS.some(k => k.id === v)) { systemLine('Skin: ' + (settings.skin || 'phoenix') + '. Use /skin phoenix or /skin fleet.'); return; }
+      settings.skin = v; save(); applyLook();
+      const picked = document.querySelector('#sSkin input[value="' + v + '"]');
+      if (picked) picked.checked = true;
+      systemLine(v === 'fleet' ? 'Fleet skin on: navy and brass, Segoe UI. The accent and chat font are fixed while it is on; /skin phoenix switches back.' : 'Phoenix look on.');
+    } },
   { name: '/skills', use: '/skills [name]', desc: 'open the Skill Builder (a skill is called in chat with /<skill-name>)', arg: true,
     options: () => (window.skillNames ? window.skillNames() : []).map(n => ({ value: n, desc: 'edit' })),
     run: arg => {   // no name: the builder as it was (or the first skill)
@@ -580,14 +592,6 @@ const COMMANDS = [
     } },
   { name: '/settings', use: '/settings', desc: 'model, context, sampling, system prompt, docs and browser', run: () => openSettings() },
   { name: '/quit', use: '/quit', desc: 'end this client session without stopping the model server', run: () => endSession() },
-  { name: '/skin', use: '/skin phoenix|fleet', desc: 'the look: Phoenix (default) or the shared FleetHacker Fleet skin', arg: true,
-    options: () => SKINS.map(k => ({ value: k.id, desc: k.desc + ((settings.skin || 'phoenix') === k.id ? ' (current)' : '') })),
-    run: arg => {
-      const v = (arg || '').trim().toLowerCase();
-      if (!SKINS.some(k => k.id === v)) { systemLine('Skin: ' + (settings.skin || 'phoenix') + '. Use /skin phoenix or /skin fleet.'); return; }
-      settings.skin = v; save(); applyLook();
-      systemLine(v === 'fleet' ? 'Fleet skin on: navy and brass, Segoe UI. The accent and chat font are fixed while it is on; /skin phoenix switches back.' : 'Phoenix look on.');
-    } }
 ];
 
 async function command(text) {
@@ -844,8 +848,7 @@ async function send() {
   let appended = false, t0 = performance.now(), firstAt = 0, wrote = false, prog = null;
   const edited = [];   // files the model wrote or edited this turn (vscode.html checks them for errors)
   try {
-    const body = { messages, temperature: cfg.temperature, top_k: cfg.top_k, top_p: cfg.top_p,
-                   repeat_penalty: cfg.repeat_penalty, max_tokens: cfg.max_tokens };
+    const body = { messages };   // no sampling or reply limit: the provider's own settings apply
     const res = await fetch('/api/chat?page=' + PAGE_ID, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '';
@@ -1320,7 +1323,7 @@ function pickFromModelMenu(e, modelMenu) {
     const b = e.target.closest('button'); if (!b || b.classList.contains('off')) return; modelMenu.classList.remove('show');
     if (e.target.closest('.mgear')) { openModelSettings(b.dataset.m); return; }
     const otherProvider = b.dataset.p && info.provider && b.dataset.p !== info.provider.id;
-    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, undefined, b.dataset.p).then(() => window.providersChanged && window.providersChanged());
+    if ((b.dataset.m !== info.file || otherProvider) && !controller) loadModel(b.dataset.m, b.dataset.p).then(() => window.providersChanged && window.providersChanged());
 }
 if ($('modelMenu')) {
   const modelMenu = $('modelMenu');
@@ -1333,6 +1336,8 @@ if ($('side')) {
   $('navNew').onclick = () => newChat();
   if ($('navQuit')) $('navQuit').onclick = () => endSession();
   $('navSettings').onclick = () => openSettings();
+}
+if ($('modelPick')) {
   $('modelPick').onclick = e => {
     e.stopPropagation();
     if ($('modelPick').classList.contains('dis')) return;   // no provider online
@@ -1345,22 +1350,12 @@ function syncComposer() { if (promptLine.offsetHeight) chatEl.style.setProperty(
 new ResizeObserver(syncComposer).observe(promptLine);
 syncComposer();
 
-// Per-model settings window (gear next to a model in the drop-down): context, KV cache, sampling, reply limit and
-// system prompt for that one model, saved in settings.models[name].
+// Per-model window (gear next to a model in the drop-down): the system prompt for that one model, saved in
+// settings.models[name]. Nothing else: sampling, reply limit and context are the provider's.
 const GEAR_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
 let mmName = null;
 function fillModelSettings(c) {
-  const m = chatModels.find(x => x.name === mmName), quant = (m ? m.kvq !== false : true) && info.device !== 'cpu';
-  $('mContext').value = c.context ? c.context : '';
-  $('mContext').placeholder = 'auto' + (mmName === info.file && info.contextAuto && info.context ? ' (now ' + info.context.toLocaleString() + ')' : '');
-  // Only the cache types this model and engine support: q8 / q4 need a GPU and a model that keeps them accurate.
-  const kvs = quant ? [{ value: 'q8', label: 'q8 (default)' }, { value: 'q4', label: 'q4' }, { value: 'f16', label: 'f16' }]
-                    : [{ value: 'f16', label: info.device === 'cpu' ? 'f32' : 'f16' }];
-  radios('mKv', kvs, quant ? c.kv : 'f16');
-  $('mKvHint').textContent = quant ? 'memory per context token on the GPU: q8 = half of f16, q4 = a quarter · reloads the model'
-    : info.device === 'cpu' ? 'CPU mode keeps the cache in f32' : 'this model keeps an f16 cache (q8 / q4 lose accuracy on it)';
-  $('mMax').value = c.max_tokens; $('mTemp').value = c.temperature; $('mTopK').value = c.top_k; $('mTopP').value = c.top_p;
-  $('mRepeat').value = c.repeat_penalty; $('mSystem').value = c.system;
+  $('mSystem').value = c.system;
   requestAnimationFrame(fitSystem);
   $('mNote').textContent = '';
 }
@@ -1376,22 +1371,14 @@ function openModelSettings(name) {
 function closeModelSettings() { Modal.close($('modelModal')); }
 $('closeModel').onclick = closeModelSettings;
 $('mReset').onclick = () => { const all = settings.models || {}, keep = all[mmName]; delete all[mmName]; fillModelSettings(ms(mmName)); if (keep) all[mmName] = keep; };   // shown only; saved with save
-$('mSave').onclick = async () => {
-  const num = (id, min, max, isInt) => { const v = Number($(id).value); return isFinite(v) && v >= min && v <= max && (!isInt || v === Math.floor(v)) ? v : null; };
-  const ctxText = $('mContext').value.trim().toLowerCase();
-  const c = { max_tokens: num('mMax', 1, 32768, true), temperature: num('mTemp', 0, 2), top_k: num('mTopK', 0, 1000, true), top_p: num('mTopP', 0, 1),
-              repeat_penalty: num('mRepeat', 1, 2), context: ctxText === '' || ctxText === 'auto' || ctxText === '0' ? 0 : num('mContext', 256, 131072, true) };
-  const bad = Object.keys(c).filter(k => c[k] === null);
-  if (bad.length) { $('mNote').textContent = 'Check: ' + bad.join(', ').replace(/_/g, ' ') + '.'; return; }
-  const kvIn = $('mKv').querySelector('input:checked'), before = ms(mmName);
-  c.kv = kvIn && $('mKv').querySelector('input[value=q8]') ? kvIn.value : before.kv;   // only f16 offered: keep the preference
-  c.system = $('mSystem').value;
+$('mSave').onclick = () => {
+  const c = { system: $('mSystem').value };
   const def = modelDefaults(mmName);
-  MODEL_KEYS.forEach(k => { if (c[k] === def[k] || (k === 'system' && c[k].trim() === String(def[k]).trim())) delete c[k]; });   // defaults stay live
-  settings.models = settings.models || {}; settings.models[mmName] = c; save();
+  if (c.system.trim() === String(def.system).trim()) delete c.system;   // the default stays live
+  settings.models = settings.models || {};
+  if (Object.keys(c).length) settings.models[mmName] = c; else delete settings.models[mmName];
+  save();
   closeModelSettings();
-  // The loaded model picks up a new context or KV cache only on a reload.
-  if (mmName === info.file && (c.context !== before.context || c.kv !== before.kv) && !controller) await loadModel(mmName);
 };
 $('modelModal').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); $('mSave').click(); }

@@ -626,12 +626,23 @@ namespace Phoenix
             return Run(prompt, settings, maxTokens, onText, cancel, true);
         }
 
-        // Stash: one saved cache for a long conversation, so a short unrelated request in between (an editor's code
-        // completions, chat titles, summaries) does not cost the next turn a full re-read. VS Code's agent prompt is
-        // ~9k tokens, ~50 s to read on Gemma 12B, and each completion wiped it (2026-10-16). Gemma GPU (fp16 cache) only.
-        public static int StashMinTokens = 2048;
-        KvSnapshot _stash;
-        List<int> _stashIds;
+        // Stash: saved caches of other conversations, so a request in between (an editor's code completions, chat
+        // titles, summaries) does not cost the next turn a full re-read. VS Code's agent prompt is ~9k tokens, ~50 s to
+        // read on Gemma 12B, and each completion wiped it (2026-10-16). Several slots (LRU, RAM budget): API clients that
+        // take turns with a few long system prompts (Bridge Warden's agents, 2026-10-26) re-read the whole prompt on every
+        // switch with only one. Gemma GPU (fp16 cache) only. Env: PHOENIX_STASH_SLOTS, PHOENIX_STASH_MB, PHOENIX_STASH_MIN.
+        public static int StashMinTokens = EnvInt("PHOENIX_STASH_MIN", 768);
+        public static int StashSlots = EnvInt("PHOENIX_STASH_SLOTS", 12);
+        public static long StashBudget = (long)EnvInt("PHOENIX_STASH_MB", 4096) << 20;
+        sealed class Stash { public KvSnapshot Snap; public List<int> Ids; }
+        readonly List<Stash> _stashes = new List<Stash>();   // least recently used first
+
+        static int EnvInt(string name, int dflt)
+        {
+            int v;
+            string s = Environment.GetEnvironmentVariable(name);
+            return s != null && int.TryParse(s.Trim(), out v) && v >= 0 ? v : dflt;
+        }
 
         static int Common(List<int> a, List<int> b)
         {
@@ -642,34 +653,48 @@ namespace Phoenix
 
         void StashSwap(List<int> prompt)
         {
-            if (!_model.CanRecall) return;
+            if (!_model.CanRecall || StashSlots == 0) return;
             int cur = Common(_fed, prompt);
-            int stashed = _stash != null ? Common(_stashIds, prompt) : 0;
+            Stash best = null; int bestN = 0;
+            foreach (Stash s in _stashes)
+            {
+                int n = Common(s.Ids, prompt);
+                if (n > bestN) { bestN = n; best = s; }
+            }
+            bool restore = best != null && bestN >= StashMinTokens && bestN > cur + 256;
             bool curLong = _fed.Count >= StashMinTokens && cur < _fed.Count / 2;   // about to throw away a long cache
             try
             {
-                if (_stash != null && stashed >= StashMinTokens && stashed > cur + 256)
+                if (curLong)
                 {
-                    // the stashed conversation continues: put it back (and stash what it replaces if that is long too)
-                    KvSnapshot keep = curLong ? _model.CaptureKv(0, _fed.Count) : null;
-                    List<int> keepIds = keep != null ? new List<int>(_fed) : null;
-                    Dbg.Msg("engine", "stash: restoring the saved conversation cache (" + _stashIds.Count + " tokens)");
-                    _model.SpliceKv(_stash, 0);
-                    _fed.Clear();
-                    _fed.AddRange(_stashIds);
-                    _stash = keep; _stashIds = keepIds;
+                    // older copies of this same conversation are superseded by the current one
+                    _stashes.RemoveAll(delegate(Stash s) { return s != best && Common(s.Ids, _fed) >= StashMinTokens; });
+                    Stash keep = new Stash();
+                    keep.Snap = _model.CaptureKv(0, _fed.Count);
+                    keep.Ids = new List<int>(_fed);
+                    _stashes.Add(keep);
+                    Dbg.Msg("engine", "stash: saved the conversation cache (" + _fed.Count + " tokens, " + (keep.Snap.Bytes >> 20) + " MB) before a different prompt");
                 }
-                else if (curLong)
+                if (restore)
                 {
-                    _stash = _model.CaptureKv(0, _fed.Count);
-                    Dbg.Msg("engine", "stash: saved the conversation cache (" + _fed.Count + " tokens, " + (_stash.Bytes >> 20) + " MB) before a different prompt");
-                    _stashIds = new List<int>(_fed);
+                    Dbg.Msg("engine", "stash: restoring a saved conversation cache (" + best.Ids.Count + " tokens, " + bestN + " match)");
+                    _model.SpliceKv(best.Snap, 0);
+                    _fed.Clear();
+                    _fed.AddRange(best.Ids);
+                    _stashes.Remove(best);   // it is the live cache now
+                }
+                long bytes = 0;
+                foreach (Stash s in _stashes) bytes += s.Snap.Bytes;
+                while (_stashes.Count > 0 && (_stashes.Count > StashSlots || bytes > StashBudget))
+                {
+                    bytes -= _stashes[0].Snap.Bytes;
+                    _stashes.RemoveAt(0);
                 }
             }
             catch (Exception)
             {
                 // e.g. not enough memory for the snapshot: fall back to re-reading
-                _stash = null; _stashIds = null;
+                _stashes.Clear();
                 _fed.Clear(); _model.Reset();
             }
         }

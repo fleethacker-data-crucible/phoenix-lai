@@ -82,23 +82,7 @@
         <div class="section">system prompt</div>
         <label class="field"><textarea id="mSystem" spellcheck="false"></textarea><span class="hint">sent with every message to this model · RULES.md files are added on top</span></label>
       </section>
-      <section>
-        <div class="section">memory</div>
-        <div class="grid2">
-          <label class="field">context<input id="mContext" type="text" inputmode="numeric" placeholder="auto"><span class="hint">tokens, empty = auto (largest that fits free VRAM / RAM) · reloads the model</span></label>
-          <div class="field">kv cache<div class="radios" id="mKv"></div><span class="hint" id="mKvHint"></span></div>
-        </div>
-      </section>
-      <section>
-        <div class="section">generation</div>
-        <div class="grid2">
-          <label class="field">max reply<input id="mMax" type="number" min="1"><span class="hint">tokens</span></label>
-          <label class="field">temperature<input id="mTemp" type="number" step="0.05" min="0" max="2"><span class="hint">0 = predictable · 2 = wild</span></label>
-          <label class="field">top k<input id="mTopK" type="number" min="0"><span class="hint">0 = off</span></label>
-          <label class="field">top p<input id="mTopP" type="number" step="0.01" min="0" max="1"><span class="hint">1 = off</span></label>
-          <label class="field">repeat penalty<input id="mRepeat" type="number" step="0.01" min="1" max="2"><span class="hint">1 = off</span></label>
-        </div>
-      </section>
+      <p class="hint">Sampling, reply length and context are the provider's settings, not the client's: for local models, set them in the Phoenix server's dashboard or console (<code>sampling</code>).</p>
       <div class="note" id="mNote"></div>
     </div>
     <footer><span class="keys">Enter save · Esc close</span><button id="mReset">defaults</button><button class="primary" id="mSave">save</button></footer>
@@ -107,11 +91,12 @@
 
 <div class="modal" id="provModal">
   <div class="window settings" role="dialog" aria-modal="true" aria-labelledby="provTitle">
-    <header><h2 id="provTitle">OPENAI V1 COMPATIBLE PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
+    <header><h2 id="provTitle">PROVIDER SETTINGS</h2><button class="x" id="closeProv" title="Close (Esc)">✕</button></header>
     <div class="body">
       <section>
         <label class="field">name<input id="pName" type="text" maxlength="60" spellcheck="false" placeholder="e.g. Phoenix Server, LM Studio, OpenAI"></label>
-        <label class="field" style="margin-top:10px">base url<input id="pUrl" type="text" spellcheck="false" placeholder="http://localhost:1234/v1"><span class="hint">where the provider's /models and /chat/completions live · this PC, the LAN or the internet</span></label>
+        <label class="field" style="margin-top:10px">base url<input id="pUrl" type="text" spellcheck="false" placeholder="http://localhost:1893/v1"><span class="hint" id="pUrlHint">where the provider's /models and /chat/completions live · this PC, the LAN or the internet</span></label>
+        <div class="field" style="margin-top:10px">api format<div class="radios" id="pFormat"></div><span class="hint" id="pFormatHint"></span></div>
       </section>
       <section>
         <div class="section">api key</div>
