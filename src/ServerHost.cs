@@ -168,7 +168,7 @@ namespace Phoenix
         }
 
         // The tray icon is drawn at the tray's own size for this display by FleetTrayArt.cs (edge-ops ui-kit/tray
-        // v1.0.0, commit 6498eaa), so Windows never shrinks it; the old 32 px PNG through GetHicon was small and blurry.
+        // v1.0.0, commit 8d6627b), so Windows never shrinks it; the old 32 px PNG through GetHicon was small and blurry.
         static Icon LoadIcon()
         {
             try { return FleetTray.Art.ForApp("phoenix", null); }
