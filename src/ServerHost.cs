@@ -167,14 +167,11 @@ namespace Phoenix
             try { t.BalloonTipTitle = title; t.BalloonTipText = text; t.ShowBalloonTip(3000); } catch { }
         }
 
+        // The tray icon is drawn at the tray's own size for this display by FleetTrayArt.cs (edge-ops ui-kit/tray
+        // v1.0.0, commit 2f90369), so Windows never shrinks it; the old 32 px PNG through GetHicon was small and blurry.
         static Icon LoadIcon()
         {
-            try
-            {
-                using (Bitmap b = new Bitmap(Path.Combine(_root, "html", "assets", "toolbar_icon.png")))
-                using (Bitmap small = new Bitmap(b, new Size(32, 32)))
-                    return Icon.FromHandle(small.GetHicon());
-            }
+            try { return FleetTray.Art.ForApp("phoenix", null); }
             catch { return SystemIcons.Application; }
         }
     }
