@@ -35,6 +35,13 @@ Describe 'Loopback-only bind' -Skip:($script:Servers.Count -eq 0) {
     }
 }
 
+Describe 'Console models command without a models folder' {
+    It 'models and load check the folder exists first' {
+        $text = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\WebServer.Dashboard.cs'))
+        ([regex]::Matches($text, 'if \(!Directory\.Exists\(_modelsDir\)\) return "No models folder yet')).Count | Should -BeGreaterOrEqual 2
+    }
+}
+
 Describe 'Headless client switch' {
     It 'PHOENIX_CLIENT_NOWINDOW skips OpenWindow and turns auto-stop off' {
         $text = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\WebServer.cs'))

@@ -328,6 +328,7 @@ namespace Phoenix
                 }
                 case "models":
                 {
+                    if (!Directory.Exists(_modelsDir)) return "No models folder yet. Copy Gemma 4 .gguf files into " + _modelsDir + " and type models again.";
                     StringBuilder sb = new StringBuilder();
                     string loaded = LoadedModelFile;
                     foreach (string f in Directory.GetFiles(_modelsDir, "*.gguf"))
@@ -336,11 +337,12 @@ namespace Phoenix
                         if (!IsListedModel(n)) continue;   // no vision projectors, no embedding model
                         sb.AppendFormat(ic, "{0} {1,-44} {2,8:F2} GB\n", string.Equals(n, loaded, StringComparison.OrdinalIgnoreCase) ? "*" : " ", n, new FileInfo(f).Length / 1073741824.0);
                     }
-                    return sb.ToString().TrimEnd();
+                    return sb.Length > 0 ? sb.ToString().TrimEnd() : "No models in " + _modelsDir + ". Copy Gemma 4 .gguf files there.";
                 }
                 case "load":
                 {
                     if (arg.Length == 0) return "Usage: load <name>  (models lists them; Tab completes)";
+                    if (!Directory.Exists(_modelsDir)) return "No models folder yet. Copy Gemma 4 .gguf files into " + _modelsDir + " first.";
                     string pick = null;
                     foreach (string f in Directory.GetFiles(_modelsDir, "*.gguf"))
                     {
