@@ -50,6 +50,15 @@ Describe 'Headless client switch' {
     }
 }
 
+Describe 'Docs search without an embedding model' {
+    It 'a server with no embedding model means keywords only, not an error' {
+        $prov = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\Providers.cs'))
+        $rag = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\Rag.cs'))
+        $prov | Should -Match 'class NoEmbedderException'
+        $rag | Should -Match 'catch \(NoEmbedderException\)'
+    }
+}
+
 BeforeAll {
     $script:RepoRootRun = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
