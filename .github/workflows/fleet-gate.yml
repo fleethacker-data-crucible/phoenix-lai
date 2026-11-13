@@ -9,4 +9,4 @@ permissions:
   contents: read
 jobs:
   fleet-gate:
-    uses: fleethacker-data-crucible/fleethacker-comms-data-crucible/.github/workflows/fleet-gate.yml@bce3129f6eae4f2e22649ef247595abac7b317ea
+    uses: fleethacker-data-crucible/org-fleet-gate/.github/workflows/fleet-gate.yml@7e9359416b2913de57307e079da1e1979cca9109
