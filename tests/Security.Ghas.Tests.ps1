@@ -22,6 +22,7 @@ Describe 'Model id path confinement' {
         $body.Contains('name.Contains(":")') | Should -BeTrue
         $body.IndexOf('name.Contains(') | Should -BeLessThan $body.IndexOf('Path.GetFullPath')
         $body.IndexOf('Path.GetFullPath') | Should -BeLessThan $body.IndexOf('File.Exists(full)')
+        $body.Contains('Path.Combine(') | Should -BeFalse
         $body.Contains('string.Equals(parent, root, StringComparison.OrdinalIgnoreCase)') | Should -BeTrue
         $body.Contains('full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)') | Should -BeTrue
         $script:OpenAi.Contains('ModelFileInModelsDir(id)') | Should -BeTrue

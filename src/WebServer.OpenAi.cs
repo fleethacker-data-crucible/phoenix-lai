@@ -434,7 +434,8 @@ namespace Phoenix
                     root = root.Substring(0, root.Length - 1);
             }
             string full;
-            try { full = Path.GetFullPath(Path.Combine(root, name)); }
+            // Append the file name so a rooted name cannot replace the models folder.
+            try { full = Path.GetFullPath(root + Path.DirectorySeparatorChar + name); }
             catch (ArgumentException) { return false; }
             catch (NotSupportedException) { return false; }
             catch (IOException) { return false; }
