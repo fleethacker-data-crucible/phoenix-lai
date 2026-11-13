@@ -61,7 +61,7 @@ Describe 'Skill name matcher' {
                 $x = [int]$i
                 for ($k = 0; $k -lt $n; $k++) {
                     $s += $chars[$x % $chars.Count]
-                    $x = [int]($x / $chars.Count)
+                    $x = [int][math]::Floor($x / $chars.Count)
                 }
                 $server.IsMatch($s) | Should -Be $page.IsMatch($s)
             }
