@@ -34,8 +34,26 @@ namespace Phoenix
     {
         public const int MaxName = 64, MaxDescription = 1024, MaxBodyLines = 500;
         const int MaxBodyChars = 12000, MaxFileChars = 6000, MaxInjected = 2;
-        static readonly Regex NameRe = new Regex(@"^[a-z0-9]+(-[a-z0-9]+)*$");
+        // Letters, digits and single hyphens (code-review): one character per step, not a nested repeater.
+        // The matcher gives up after one second.
+        static readonly Regex NameRe = new Regex(@"^[a-z0-9](-?[a-z0-9])*$", RegexOptions.None, TimeSpan.FromSeconds(1));
         public static readonly Regex FileNameRe = new Regex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(md|txt)$", RegexOptions.IgnoreCase);
+
+        // The name rule, without the length cap. A matcher timeout is a bad name, not a crash.
+        static bool NameMatches(string name)
+        {
+            if (name == null) return false;
+            try { return NameRe.IsMatch(name); }
+            catch (RegexMatchTimeoutException) { return false; }
+        }
+
+        // A request's skill folder name: at most MaxName characters, then the name rule.
+        // The length bound runs first so a huge query never reaches the matcher.
+        public static bool IsSkillName(string name)
+        {
+            if (name == null || name.Length == 0 || name.Length > MaxName) return false;
+            return NameMatches(name);
+        }
 
         // ---- parsing and validation ----
 
@@ -104,7 +122,7 @@ namespace Phoenix
             else
             {
                 if (s.Name.Length > MaxName) s.Errors.Add("name is longer than " + MaxName + " characters.");
-                if (!NameRe.IsMatch(s.Name)) s.Errors.Add("name may only use lowercase letters, digits and single hyphens (like code-review).");
+                if (!NameMatches(s.Name)) s.Errors.Add("name may only use lowercase letters, digits and single hyphens (like code-review).");
             }
             if (s.Description.Length == 0) s.Errors.Add("description is missing: say what the skill does and when to use it.");
             else
