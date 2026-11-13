@@ -65,8 +65,7 @@ namespace Phoenix
         // A skill folder by scope and name (the name is checked, so it can never leave the skills folder).
         string SkillDir(string scope, string name)
         {
-            if (name == null || !System.Text.RegularExpressions.Regex.IsMatch(name, @"^[a-z0-9]+(-[a-z0-9]+)*$") || name.Length > Skills.MaxName)
-                throw new ArgumentException("Bad skill name.");
+            if (!Skills.IsSkillName(name)) throw new ArgumentException("Bad skill name.");
             return Path.Combine(SkillsBase(scope), name);
         }
 

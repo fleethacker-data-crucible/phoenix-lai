@@ -214,7 +214,7 @@ namespace Phoenix
                 {
                     string id = Uri.UnescapeDataString(path.Substring(11));
                     string one = ModelJson(id);
-                    if (one == null) { ApiError(res, 404, new ApiModelNotFound(id, File.Exists(Path.Combine(_modelsDir, id.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? id : id + ".gguf"))).Message, "invalid_request_error", "model_not_found", "model"); return; }
+                    if (one == null) { ApiError(res, 404, new ApiModelNotFound(id, ModelFileInModelsDir(id)).Message, "invalid_request_error", "model_not_found", "model"); return; }
                     SendJson(res, 200, one);
                     return;
                 }
@@ -415,6 +415,39 @@ namespace Phoenix
             foreach (string p in Directory.GetFiles(_modelsDir, "*mmproj*.gguf"))
                 if (Path.GetFileName(p).ToLowerInvariant().StartsWith(stem)) return p;
             return null;
+        }
+
+        // True when models\<id>.gguf is a file in the models folder itself. id comes from the request.
+        // A separator or a drive is rejected, then the canonical path must stay in that folder, so ".."
+        // and an absolute path never reach the disk.
+        bool ModelFileInModelsDir(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            string name = id.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? id : id + ".gguf";
+            if (name.Contains("..") || name.Contains("/") || name.Contains("\\") || name.Contains(":")) return false;
+            string root = _modelsDir;
+            if (string.IsNullOrEmpty(root)) return false;
+            if (root.Length > 3)
+            {
+                char tail = root[root.Length - 1];
+                if (tail == Path.DirectorySeparatorChar || tail == Path.AltDirectorySeparatorChar)
+                    root = root.Substring(0, root.Length - 1);
+            }
+            string full;
+            // Append the file name so a rooted name cannot replace the models folder.
+            try { full = Path.GetFullPath(root + Path.DirectorySeparatorChar + name); }
+            catch (ArgumentException) { return false; }
+            catch (NotSupportedException) { return false; }
+            catch (IOException) { return false; }
+            string parent = Path.GetDirectoryName(full);
+            if (parent == null || !string.Equals(parent, root, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(Path.GetFileName(full), name, StringComparison.OrdinalIgnoreCase)) return false;
+            string prefix = root;
+            char end = root[root.Length - 1];
+            if (end != Path.DirectorySeparatorChar && end != Path.AltDirectorySeparatorChar)
+                prefix = root + Path.DirectorySeparatorChar;
+            if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+            return File.Exists(full);
         }
 
         string ModelJson(string id)
@@ -666,7 +699,7 @@ namespace Phoenix
             // An unknown model name is refused, as OpenAI does; no name (or "phoenixlai", the VS Code extension's) = the loaded model.
             string askedModel = Json.GetStr(o, "model", null);
             if (!string.IsNullOrEmpty(askedModel) && !string.Equals(askedModel, "phoenixlai", StringComparison.OrdinalIgnoreCase) && ModelJson(askedModel) == null)
-                throw new ApiModelNotFound(askedModel, File.Exists(Path.Combine(_modelsDir, askedModel.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? askedModel : askedModel + ".gguf")));
+                throw new ApiModelNotFound(askedModel, ModelFileInModelsDir(askedModel));
 
             string id = (chat ? "chatcmpl-" : "cmpl-") + Guid.NewGuid().ToString("N").Substring(0, 24);
             long created = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
