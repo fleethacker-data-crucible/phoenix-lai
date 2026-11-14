@@ -2,7 +2,11 @@
    Phoenix Client window's decorations (grid background, logo, banner, status line) are left out so it blends into the editor. */
 html.vscode #bg, html.vscode #bgLogo, html.vscode #banner { display: none !important; }
 html.vscode body { background: var(--bg); }
-html.vscode .empty .logo { display: none; }
+/* The client's light Phoenix logo in the middle of an empty chat (always the light one here, no dark/light swap) */
+html.vscode .empty .logos { width: min(240px, 62vw); cursor: default; }
+html.vscode .empty .logos .logo:not(.alt) { opacity: 0 !important; }
+html.vscode .empty .logos .alt { opacity: 1 !important; }
+html.vscode #chat > .empty { margin: auto 0; padding-right: 13px; }   /* centred in the panel, as Claude Code centres its own */
 html.vscode .window, html.vscode .modal .window { box-shadow: none; }
 html.vscode.vscode-light { --grid: rgba(0,0,0,.04); --grid-strong: rgba(0,0,0,.07); }
 
@@ -13,6 +17,10 @@ html.vscode #chat { padding-bottom: calc(var(--composer-h, 96px) - 16px); }   /*
 html.vscode .promptline { position: fixed; left: 10px; right: 10px; bottom: 6px; z-index: 5; display: block;
   padding: 11px 12px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); cursor: text; }
 html.vscode .promptline:focus-within { border-color: rgba(var(--accent-rgb),.55); }
+/* Claude Code's input box, in Phoenix gold: a gold outline always, brighter while typing */
+html.vscode .promptline { border: 1px solid rgba(232,193,90,.75); border-radius: 8px; padding: 10px 10px 7px; }
+html.vscode .promptline:focus-within { border-color: #e8c15a; box-shadow: 0 0 0 1px rgba(232,193,90,.25); }
+html.vscode .promptline.empty .typebox::before { content: "Ask Phoenix to edit… (/ for commands)"; }
 html.vscode .promptline > .chev { display: none; }
 html.vscode .typebox { min-height: 22px; max-height: 40vh; overflow-y: auto; }
 /* a normal text cursor here (the Phoenix Client window draws a block cursor through #mirror, which stays for sizing only) */
@@ -27,9 +35,85 @@ html.vscode .promptline.empty .typebox::before { content: "Ask Phoenix to edit�
 .pbar button { display: inline-flex; align-items: center; justify-content: center; height: 26px; min-width: 26px; padding: 0 7px;
   border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: var(--soft); font: inherit; cursor: pointer; }
 .pbar button:hover { color: var(--text); background: rgba(128,128,128,.12); }
-.pbar #pbNew { padding: 0; width: 26px; }   /* an SVG plus: exactly centred, unlike the font's "+" glyph */
-.pbar #pbCmd, .pbar #pbSettings { padding: 0; width: 26px; }
-.pbar .chip { border-color: transparent; background: rgba(128,128,128,.14); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; line-height: 24px; }
+.pbar #pbCmd { padding: 0; width: 26px; }
+/* Bottom row, Claude Code's order: + attach, / commands, model pill | open file … context, mode, send */
+.pbar { gap: 4px; margin-top: 8px; }
+.pbar button.ib { width: 24px; height: 24px; min-width: 24px; padding: 0; border: 0; border-radius: 5px; color: var(--soft); }
+.pbar button.ib:hover { background: rgba(128,128,128,.16); color: var(--text); }
+.pbar .sep { width: 1px; height: 16px; margin: 0 4px; background: var(--line-strong); flex: none; }
+/* Model picker: a grey pill that opens a list upward */
+.pbar .mpick { min-width: 0; flex: 0 1 auto; }
+.pbar #modelPick.pill { height: 22px; max-width: 100%; padding: 0 10px; border: 0; border-radius: 11px; background: rgba(128,128,128,.2); color: var(--text); font: 11.5px/22px var(--sans); }
+.pbar #modelPick.pill:hover { background: rgba(128,128,128,.3); }
+.pbar #modelPick.down { color: var(--err); }
+.pbar #topModel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+/* The open file, Claude Code style: icon, name, ✕ */
+.pbar #pbFileSlot { min-width: 0; display: flex; }
+html.vscode #pbFile { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 22px; margin: 0; padding: 0 4px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--soft); font: 11.5px var(--sans); cursor: pointer; }
+html.vscode #pbFile:hover { background: rgba(128,128,128,.16); color: var(--text); }
+html.vscode #pbFile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.vscode #pbFile svg { flex: none; }
+html.vscode #pbFile i { font-style: normal; color: var(--dim); margin-left: 2px; }
+html.vscode #pbFile.off span { text-decoration: line-through; opacity: .55; }
+/* Auto / Accept with a lightning bolt, like Claude Code's mode switch */
+.pbar .mode { gap: 4px; border: 0 !important; color: var(--text); font-weight: 600; }
+.pbar .mode::before { content: ""; width: 12px; height: 12px; background: currentColor; flex: none;
+  -webkit-mask: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBhdGggZD0nTTkuMiAxIDMgOWg0LjNMNi40IDE1IDEzIDYuNkg4LjZ6JyBmaWxsPSdub25lJyBzdHJva2U9J2JsYWNrJyBzdHJva2Utd2lkdGg9JzEuMycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjwvc3ZnPg==") center/contain no-repeat;
+          mask: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBhdGggZD0nTTkuMiAxIDMgOWg0LjNMNi40IDE1IDEzIDYuNkg4LjZ6JyBmaWxsPSdub25lJyBzdHJva2U9J2JsYWNrJyBzdHJva2Utd2lkdGg9JzEuMycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjwvc3ZnPg==") center/contain no-repeat; }
+html.vscode #modelMenu { top: auto; bottom: calc(100% + 6px); left: -4px; min-width: 240px; max-width: calc(100vw - 30px); max-height: 55vh; font-size: 13px;
+  background: var(--panel-solid); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+html.vscode #modelMenu button { justify-content: flex-start; height: auto; min-width: 0; padding: 5px 10px; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }   /* not the input bar's button look */
+html.vscode #modelMenu button.on { color: var(--ok); }
+html.vscode #modelMenu button.off { color: var(--dim); opacity: .6; }
+html.vscode #modelMenu button:hover { background: rgba(var(--accent-rgb),.14); }
+html.vscode #modelMenu button span:first-child { overflow: hidden; text-overflow: ellipsis; }
+
+/* View-title bar, as VS Code draws a view's toolbar: a small uppercase title, then icon buttons on the right */
+html.vscode #vhead { position: fixed; top: 0; left: 0; right: 0; z-index: 7; height: 38px; display: flex; align-items: center; gap: 4px;
+  padding: 0 8px 0 12px; background: var(--bg); border-bottom: 1px solid var(--line); font: 13px/1 var(--sans); user-select: none; }
+html.vscode #vhead .vtitle { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* the brand line under the title bar while the chat is empty (Claude Code shows its wordmark there) */
+html.vscode #vbrand { position: fixed; top: 52px; left: 0; right: 0; z-index: 6; display: none; justify-content: center; align-items: center; gap: 7px;
+  color: var(--text); font: 600 17px/1 var(--sans); pointer-events: none; }
+html.vscode.chat-empty #vbrand { display: flex; }
+html.vscode #vbrand img { width: 20px; height: 20px; }
+html.vscode #vbrand span { color: #e8c15a; }
+html.vscode #vhead .grow { flex: 1; }
+html.vscode #vhead button { display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--soft); cursor: pointer; }
+html.vscode #vhead button:hover { background: rgba(128,128,128,.18); color: var(--text); }
+html.vscode #chat { padding-top: 43px; }
+
+/* Lists in Settings (providers, skills) and in Show Chats: rows like VS Code's lists */
+html.vscode .vsec { display: flex; align-items: center; justify-content: space-between; }
+html.vscode .vsec > span { display: flex; gap: 6px; }
+html.vscode .vsec .vadd { margin-left: 6px; padding: 2px 8px; height: auto; border: 1px solid var(--line-strong); border-radius: 4px; background: transparent;
+  color: var(--soft); font: 11.5px/1.4 var(--sans); text-transform: none; letter-spacing: 0; white-space: nowrap; cursor: pointer; }
+html.vscode .vsec > span .vadd { margin-left: 0; }
+/* the client's sidebar styles these by id; here they are the same small buttons as "builder" */
+html.vscode #newProvider.vadd, html.vscode #newSkill.vadd, html.vscode #navSkills.vadd { display: inline-block; width: auto; height: auto; padding: 2px 8px;
+  border: 1px solid var(--line-strong); border-radius: 4px; background: transparent; color: var(--soft); font: 11.5px/1.4 var(--sans); }
+html.vscode #newProvider.vadd:hover, html.vscode #newSkill.vadd:hover, html.vscode #navSkills.vadd:hover { color: var(--text); border-color: var(--accent); }
+html.vscode .vsec .vadd:hover { color: var(--text); border-color: var(--accent); }
+html.vscode .vlist { display: flex; flex-direction: column; gap: 1px; margin: 2px -6px 6px; }
+html.vscode .vlist .sitem { position: relative; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; color: var(--text); font-size: 13px; cursor: pointer; min-width: 0; }
+html.vscode .vlist .sitem span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.vscode .vlist .sitem:hover { background: rgba(128,128,128,.12); }
+html.vscode .vlist .sitem.on { background: rgba(var(--accent-rgb),.12); }
+html.vscode .vlist .sitem svg { flex: none; color: var(--dim); }
+html.vscode .vlist .sitem .del, html.vscode .vlist .sitem .cedit { display: none; flex: none; color: var(--dim); }
+html.vscode .vlist .sitem:hover .del, html.vscode .vlist .sitem:hover .cedit { display: grid; }
+html.vscode .vlist .sitem .del svg { color: var(--err); }
+html.vscode .vlist .sitem .cedit:hover svg { color: var(--text); }
+html.vscode .vlist .sempty { color: var(--dim); font-size: 12px; padding: 2px 8px; }
+html.vscode #providerList .sitem .cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+html.vscode #providerList .sitem.st-up .cdot { background: var(--ok); }
+html.vscode #providerList .sitem.st-down .cdot { background: var(--err); }
+html.vscode #providerList .sitem.st-busy .cdot { background: #4a9eff; }
+html.vscode #providerList .sitem .ptag { flex: none; font-size: 10.5px; color: var(--dim); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 4px; }
+html.vscode #histModal .body { padding-top: 6px; }
+html.vscode #provModal, html.vscode #downModal { z-index: 40; }   /* over Settings, which opens them */
+html.vscode .settings .prow { flex-wrap: wrap; }
 .pbar .mode { border-color: transparent; }
 .pbar .ctx { padding: 0 4px; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pbar .ctx::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--ok); }
@@ -37,9 +121,9 @@ html.vscode .promptline.empty .typebox::before { content: "Ask Phoenix to edit�
 .pbar .ctx.bad::before { background: var(--err); }
 .pbar .ctx:empty { display: none; }
 /* The send key is always Phoenix gold, whatever the VS Code theme. */
-.pbar .send { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: #e8c15a; color: #1b1608; }
+.pbar .send { width: 24px; height: 24px; min-width: 24px; padding: 0; border: 0; border-radius: 5px; background: #e8c15a; color: #1b1608; }
 .pbar .send:hover { background: #f5d272; color: #1b1608; }
-.pbar .send:disabled { opacity: .4; cursor: default; background: #e8c15a; }
+.pbar .send:disabled { opacity: .35; cursor: default; background: #e8c15a; }
 
 /* Messages the VS Code way: your message in a rounded box on the right, replies as plain text. */
 html.vscode .user::before { display: none; }
@@ -75,8 +159,11 @@ html.vscode .settings .grid2 { grid-template-columns: 1fr; gap: 10px; }
 html.vscode .settings footer { padding: 8px 12px; }
 
 /* Line the chat up with the composer (10px from each side), so approval bars are exactly as wide as the box below. */
-html.vscode .wrap { width: calc(100% - 20px); }
-html.vscode #chat { padding-left: 0; padding-right: 0; }
+/* The column fills the panel minus 10px each side (the box's own inset); replies start 13px in, where the text inside the
+   box starts (12px padding + 1px border), and your messages end at the box's right edge. */
+html.vscode .wrap { width: auto; flex: 1; min-width: 0; margin: 0 10px; }
+html.vscode #chat { padding-left: 13px; padding-right: 0; }
+html.vscode .empty .hint { display: none; }   /* no welcome line in VS Code (the .empty block itself must stay: chat.js keeps the input box in it) */
 /* Approval bar: the question on top, Accept / Deny below it, left-aligned and the same width. */
 html.vscode .approve { flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-radius: 8px; }
 html.vscode .approve .q { flex: 0 0 100%; }
@@ -98,10 +185,6 @@ html.vscode details.fold > summary::before { content: "‹›"; color: var(--acc
 html.vscode details.fold[open] > summary { margin-bottom: 6px; }
 
 /* Editor context chip above the input (open file / selection sent with the message); dimmed and struck when left out. */
-html.vscode #pbFile { display: inline-block; max-width: 100%; margin: -3px 0 8px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
-  background: rgba(var(--accent-rgb),.10); color: var(--soft); font: 11.5px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-html.vscode #pbFile::before { content: "◆ "; color: var(--accent); }
-html.vscode #pbFile.off { opacity: .45; text-decoration: line-through; }
 /* Undo button after each file change */
 html.vscode .undo { display: inline-block; margin: 2px 0 8px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 5px;
   background: transparent; color: var(--dim); font: 11.5px var(--sans); cursor: pointer; }

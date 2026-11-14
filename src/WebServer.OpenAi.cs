@@ -1,4 +1,4 @@
-// OpenAI-compatible API server, the same paths and port LM Studio uses (http://localhost:1234/v1), for VS Code extensions
+// OpenAI-compatible API server, the same paths LM Studio uses, on its own port (http://localhost:1893/v1), for VS Code extensions
 // (Continue, Cline, Roo, ...), the Phoenix client and any other OpenAI /v1 client. C# 5 only. Loopback only: bound to
 // 127.0.0.1 / localhost, never makes outgoing connections. The API gives plain model access: no folder tools, no RAG, and
 // no commands (ShellGuard); tool calls are only described to the model and returned to the client, which decides whether
@@ -31,19 +31,85 @@ namespace Phoenix
                 : base(tooBig ? "The model '" + id + "' is not available: it does not fit the memory free on this machine now" : "The model '" + id + "' does not exist") { }
         }
 
-        public const int ApiPort = 1234;   // LM Studio's default, so tools configured for it work unchanged
-        HttpListener _api;
-        string _lastToolList;   // logged when a client's tool set changes
-        public string ApiUrl { get { return _api != null ? "http://localhost:" + ApiPort + "/v1" : null; } }
+        // The API port: 1893 by default (not LM Studio's 1234, so both can run side by side). Changed live with the console
+        // command "apiport <n>" or the dashboard's port box; kept in %LOCALAPPDATA%\LocalLLMStudio\api-port.txt, which the
+        // Phoenix client also reads for the Phoenix Local Server's URL.
+        public const int DefaultApiPort = 1893;
+        static string ApiPortFile { get { return Path.Combine(AppDataDir, "api-port.txt"); } }
+        static int _apiPort = SavedApiPort();
+        public static int ApiPort { get { return _apiPort; } }
 
-        void StartApi()
+        public static int SavedApiPort()
         {
             try
             {
-                HttpListener l = new HttpListener();
-                l.Prefixes.Add("http://127.0.0.1:" + ApiPort + "/");
-                l.Prefixes.Add("http://localhost:" + ApiPort + "/");
-                l.Start();
+                int p;
+                if (File.Exists(ApiPortFile) && int.TryParse(File.ReadAllText(ApiPortFile).Trim(), out p) && ApiPortProblem(p) == null) return p;
+            }
+            catch { }
+            return DefaultApiPort;
+        }
+
+        // null when p can be the API port, else why not
+        public static string ApiPortProblem(int p)
+        {
+            if (p < 1024 || p > 65535) return "the port must be a number from 1024 to 65535";
+            if (p >= 8765 && p <= 8799) return "ports 8765-8799 are Phoenix's own dashboard and client pages";
+            return null;
+        }
+
+        // The model whose sampling the console and dashboard show and change: the loaded one, else the one loading.
+        string SamplingModel()
+        {
+            IChatModel e = _engine;
+            if (e != null) return Path.GetFileName(e.ModelPath);
+            return _loading;
+        }
+
+        HttpListener _api;
+        readonly object _apiGate = new object();
+        string _lastToolList;   // logged when a client's tool set changes
+        public string ApiUrl { get { return _api != null ? "http://localhost:" + ApiPort + "/v1" : null; } }
+
+        // Moves the API to another port now. The new port is opened first: if it is busy the API stays where it is.
+        // Requests still running on the old port are cut off. Returns what happened, for the console and the dashboard.
+        public string SetApiPort(int p)
+        {
+            string why = ApiPortProblem(p);
+            if (why != null) throw new ArgumentException(why + ".");
+            lock (_apiGate)
+            {
+                if (p == _apiPort && _api != null) return "The API is already on port " + p + ".";
+                HttpListener l;
+                try { l = OpenApi(p); }
+                catch (Exception ex) { throw new InvalidOperationException("Port " + p + " could not be opened (" + ex.Message + "); the API stays on " + (_api != null ? "port " + _apiPort : "no port") + "."); }
+                StopApi();
+                _apiPort = p;
+                RunApi(l);
+                try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(ApiPortFile, p.ToString()); } catch { }
+            }
+            Log.Text("API port set to " + p + ": " + ApiUrl);
+            return "API now on " + ApiUrl + " (saved). Point clients (Fairlead, the VS Code extension, the Phoenix client's provider) at this port.";
+        }
+
+        static HttpListener OpenApi(int port)
+        {
+            HttpListener l = new HttpListener();
+            l.Prefixes.Add("http://127.0.0.1:" + port + "/");
+            l.Prefixes.Add("http://localhost:" + port + "/");
+            l.Start();
+            return l;
+        }
+
+        void StartApi()
+        {
+            try { RunApi(OpenApi(ApiPort)); }
+            catch (Exception ex) { _api = null; Log.Text("API server NOT started: port " + ApiPort + " is in use (" + ex.Message + ")"); }
+        }
+
+        void RunApi(HttpListener l)
+        {
+            {
                 _api = l;
                 Thread t = new Thread(delegate()
                 {
@@ -56,12 +122,11 @@ namespace Phoenix
                 });
                 t.IsBackground = true;
                 t.Start();
-                Log.Text("API server on " + ApiUrl + " (OpenAI-compatible)");
+                Log.Text("API server on " + ApiUrl + " (" + ApiFormatName + ")");
             }
-            catch (Exception ex) { _api = null; Log.Text("API server NOT started: port " + ApiPort + " is in use (" + ex.Message + ")"); }
         }
 
-        void StopApi() { try { if (_api != null) { _api.Stop(); _api.Close(); } } catch { } }
+        void StopApi() { try { if (_api != null) { _api.Stop(); _api.Close(); } } catch { } _api = null; }
 
         // Browsers may only call from loopback pages or VS Code webviews; tools without an Origin (Node, curl) are fine.
         static bool ApiOriginOk(string origin)
@@ -79,6 +144,7 @@ namespace Phoenix
         {
             public HttpListenerResponse Res;
             public MemoryStream Buffer;
+            public Func<Stream, Stream> Wrap;   // the Anthropic API turns the OpenAI events into its own (WebServer.Anthropic.cs)
             Stream _s;
             public Stream BeginStream()
             {
@@ -87,7 +153,7 @@ namespace Phoenix
                 Res.ContentType = "text/event-stream; charset=utf-8";
                 Res.Headers["Cache-Control"] = "no-cache";
                 Res.SendChunked = true;
-                return _s = Res.OutputStream;
+                return _s = Wrap != null ? Wrap(Res.OutputStream) : Res.OutputStream;
             }
             public void Json(int code, string json)
             {
@@ -112,7 +178,7 @@ namespace Phoenix
                 if (origin != null)
                 {
                     res.Headers["Access-Control-Allow-Origin"] = origin;
-                    res.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, OpenAI-Organization, OpenAI-Project, X-Stainless-OS, X-Stainless-Lang, X-Stainless-Package-Version, X-Stainless-Runtime, X-Stainless-Runtime-Version, X-Stainless-Arch, X-Stainless-Retry-Count, X-Stainless-Timeout";
+                    res.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, OpenAI-Organization, OpenAI-Project, X-Stainless-OS, X-Stainless-Lang, X-Stainless-Package-Version, X-Stainless-Runtime, X-Stainless-Runtime-Version, X-Stainless-Arch, X-Stainless-Retry-Count, X-Stainless-Timeout, x-api-key, anthropic-version, anthropic-beta, anthropic-dangerous-direct-browser-access";
                     res.Headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
                 }
                 if (req.HttpMethod == "OPTIONS") { res.StatusCode = 204; res.Close(); return; }
@@ -122,9 +188,14 @@ namespace Phoenix
                 if (path.StartsWith("/api/v0/")) path = "/v1/" + path.Substring(8);   // LM Studio's REST alias
                 string ua = req.Headers["User-Agent"];
                 SeeClient("api:" + (ua ?? "unknown"), "api", ClientName(ua), req.HttpMethod + " " + path);
-                if (!ApiKeyOk(req.Headers["Authorization"]))
+                // Anthropic's shapes (errors, model list) for /v1/messages, a request with anthropic-version, or the anthropic-only format
+                bool anth = AnthropicOn && (path.StartsWith("/v1/messages") || req.Headers["anthropic-version"] != null || !OpenAiOn);
+                string xKey = req.Headers["x-api-key"];   // Anthropic clients send the key here
+                if (!ApiKeyOk(req.Headers["Authorization"]) && !(xKey != null && ApiKeyOk("Bearer " + xKey)))
                 {
-                    ApiError(res, 401, "Incorrect API key provided. This Phoenix server requires its API key (console: apikey).", "invalid_request_error", "invalid_api_key");
+                    const string km = "Incorrect API key provided. This Phoenix server requires its API key (console: apikey).";
+                    if (anth) AnthError(res, 401, km, "authentication_error");
+                    else ApiError(res, 401, km, "invalid_request_error", "invalid_api_key");
                     return;
                 }
                 bool post = req.HttpMethod == "POST";
@@ -132,21 +203,31 @@ namespace Phoenix
                 try { body = post ? ReadJson(req) : null; }
                 catch (Exception ex) { ApiError(res, 400, "We could not parse the JSON body of your request. (" + ex.Message + ")", "invalid_request_error", null); return; }
                 if (post && body == null) { ApiError(res, 400, "The request body must be a JSON object.", "invalid_request_error", null); return; }
-                if (path == "/v1/models" && !post) { SendJson(res, 200, ModelsList()); return; }
+                if (path == "/v1/models" && !post) { SendJson(res, 200, anth ? AnthModelsList() : ModelsList()); return; }
+                if (path.StartsWith("/v1/models/") && !post && anth)
+                {
+                    string aid = Uri.UnescapeDataString(path.Substring(11)), one = AnthModelJson(aid);
+                    if (one == null) AnthError(res, 404, "model: " + aid, "not_found_error"); else SendJson(res, 200, one);
+                    return;
+                }
                 if (path.StartsWith("/v1/models/") && !post)
                 {
                     string id = Uri.UnescapeDataString(path.Substring(11));
                     string one = ModelJson(id);
-                    if (one == null) { ApiError(res, 404, new ApiModelNotFound(id, File.Exists(Path.Combine(_modelsDir, id.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? id : id + ".gguf"))).Message, "invalid_request_error", "model_not_found", "model"); return; }
+                    if (one == null) { ApiError(res, 404, new ApiModelNotFound(id, ModelFileInModelsDir(id)).Message, "invalid_request_error", "model_not_found", "model"); return; }
                     SendJson(res, 200, one);
                     return;
                 }
                 Dbg.Source = "api" + (ua != null ? " (" + ua + ")" : "");
                 ApiOut o = new ApiOut(); o.Res = res;
                 string src = ClientName(ua);
-                if (path == "/v1/chat/completions" && post) { Completion(body, o, true, src); return; }
-                if (path == "/v1/completions" && post) { Completion(body, o, false, src); return; }
-                if (path == "/v1/embeddings" && post) { Embeddings(body, res); return; }
+                if (AnthropicOn && path == "/v1/messages" && post) { Messages(body, res, src); return; }
+                if (AnthropicOn && path == "/v1/messages/count_tokens" && post) { SendJson(res, 200, CountTokensJson(body)); return; }
+                if (AnthropicOn && path.StartsWith("/v1/messages")) { AnthError(res, post ? 404 : 405, post ? "Not found: " + path : "Use POST for " + path + ".", post ? "not_found_error" : "invalid_request_error"); return; }
+                if (OpenAiOn && path == "/v1/chat/completions" && post) { Completion(body, o, true, src); return; }
+                if (OpenAiOn && path == "/v1/completions" && post) { Completion(body, o, false, src); return; }
+                if (path == "/v1/embeddings" && post) { Embeddings(body, res); return; }   // every format: the client's docs search uses it
+                if (anth) { AnthError(res, 404, "Not found: " + req.HttpMethod + " " + path + " (this server hosts the " + ApiFormatName + " API format; dashboard Settings or console apiformat)", "not_found_error"); return; }
                 if (path.StartsWith("/v1/") && (path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/embeddings"))
                 { ApiError(res, 405, "Use POST for " + path + ".", "invalid_request_error", null); return; }
                 ApiError(res, 404, "Invalid URL (" + req.HttpMethod + " " + path + ")", "invalid_request_error", "unknown_url");
@@ -336,6 +417,39 @@ namespace Phoenix
             return null;
         }
 
+        // True when models\<id>.gguf is a file in the models folder itself. id comes from the request.
+        // A separator or a drive is rejected, then the canonical path must stay in that folder, so ".."
+        // and an absolute path never reach the disk.
+        bool ModelFileInModelsDir(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            string name = id.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? id : id + ".gguf";
+            if (name.Contains("..") || name.Contains("/") || name.Contains("\\") || name.Contains(":")) return false;
+            string root = _modelsDir;
+            if (string.IsNullOrEmpty(root)) return false;
+            if (root.Length > 3)
+            {
+                char tail = root[root.Length - 1];
+                if (tail == Path.DirectorySeparatorChar || tail == Path.AltDirectorySeparatorChar)
+                    root = root.Substring(0, root.Length - 1);
+            }
+            string full;
+            // Append the file name so a rooted name cannot replace the models folder.
+            try { full = Path.GetFullPath(root + Path.DirectorySeparatorChar + name); }
+            catch (ArgumentException) { return false; }
+            catch (NotSupportedException) { return false; }
+            catch (IOException) { return false; }
+            string parent = Path.GetDirectoryName(full);
+            if (parent == null || !string.Equals(parent, root, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(Path.GetFileName(full), name, StringComparison.OrdinalIgnoreCase)) return false;
+            string prefix = root;
+            char end = root[root.Length - 1];
+            if (end != Path.DirectorySeparatorChar && end != Path.AltDirectorySeparatorChar)
+                prefix = root + Path.DirectorySeparatorChar;
+            if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+            return File.Exists(full);
+        }
+
         string ModelJson(string id)
         {
             foreach (string f in ApiModelFiles())
@@ -347,8 +461,22 @@ namespace Phoenix
         // The chat model the request names (file name, with or without .gguf); loads it if another one is loaded.
         // An unknown or empty name uses the loaded model, or the last used one (as LM Studio does, so clients configured
         // with any model name work).
+        // Two API clients asking for different models made the server swap 13-15 GB of weights every 20-60 s (18 loads in
+        // one session) until the GPU stopped responding (2026-11-04, twice). A request may swap the loaded model only when
+        // the last swap is at least SwapCooldown old; before that it is answered by the model already loaded.
+        static readonly TimeSpan SwapCooldown = TimeSpan.FromMinutes(2);
+        DateTime _lastApiSwap = DateTime.MinValue;
+        DateTime _swapNoteAt = DateTime.MinValue;
+        // After a GPU reset, no load of any kind starts from the API until this time (the driver is still recovering).
+        DateTime _gpuRecoverUntil = DateTime.MinValue;
+        DateTime _lastDeviceLoss = DateTime.MinValue;
+
         void EnsureModel(string requested)
         {
+            DateTime now = DateTime.UtcNow;
+            if (now < _gpuRecoverUntil)
+                throw new InvalidOperationException("The GPU was reset by the driver; Phoenix is waiting " +
+                    Math.Ceiling((_gpuRecoverUntil - now).TotalSeconds) + " s for it to recover before loading a model. Try again shortly.");
             string file = null;
             if (!string.IsNullOrEmpty(requested) && requested.IndexOfAny(new char[] { '/', '\\', ':' }) < 0)
             {
@@ -356,7 +484,23 @@ namespace Phoenix
                 if (File.Exists(Path.Combine(_modelsDir, f)) && !IsEmbeddingFile(f) && !IsProjector(f)) file = f;
             }
             IChatModel e = _engine;
-            if (file != null && (e == null || !string.Equals(Path.GetFileName(e.ModelPath), file, StringComparison.OrdinalIgnoreCase))) { LoadModel(file); return; }
+            if (file != null && (e == null || !string.Equals(Path.GetFileName(e.ModelPath), file, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (e != null && now - _lastApiSwap < SwapCooldown)
+                {
+                    if (now - _swapNoteAt > TimeSpan.FromSeconds(30))
+                    {
+                        _swapNoteAt = now;
+                        Log.Text("API asked for " + file + " but " + Path.GetFileName(e.ModelPath) + " was loaded " +
+                            Math.Floor((now - _lastApiSwap).TotalSeconds) + " s ago; answering with the loaded model (no swap within " +
+                            SwapCooldown.TotalMinutes + " min)");
+                    }
+                    return;
+                }
+                _lastApiSwap = now;
+                LoadModel(file);
+                return;
+            }
             if (e != null) return;
             // nothing loaded and no model named: the last used one, else the first, of the models that fit now
             List<string> fit = ApiModelFiles();
@@ -499,11 +643,13 @@ namespace Phoenix
             }
             if (!fim && !msgs.Exists(delegate(ChatMessage x) { return x.Role == "user"; })) throw new ArgumentException("The messages must contain at least one user message.");
 
+            // Values the request sends win; what it leaves out comes from the answering model's server settings
+            // (ModelSettings.FillRequest, once the model is known), which default to Google's Gemma 4 sampling.
             SamplerSettings s = new SamplerSettings();
-            s.Temperature = (float)Json.GetNum(o, "temperature", 0.7);
-            s.TopK = (int)Json.GetNum(o, "top_k", 40);
-            s.TopP = (float)Json.GetNum(o, "top_p", 0.95);
-            s.RepeatPenalty = (float)Json.GetNum(o, "repeat_penalty", 1.1);
+            s.Temperature = (float)Json.GetNum(o, "temperature", ModelSettings.GemmaTemperature);
+            s.TopK = (int)Json.GetNum(o, "top_k", ModelSettings.GemmaTopK);
+            s.TopP = (float)Json.GetNum(o, "top_p", ModelSettings.GemmaTopP);
+            s.RepeatPenalty = (float)Json.GetNum(o, "repeat_penalty", 1.0);
             if (s.Temperature < 0 || s.Temperature > 2) throw new ArgumentException("temperature must be between 0 and 2.");
             if (s.TopP <= 0 || s.TopP > 1) throw new ArgumentException("top_p must be greater than 0 and at most 1.");
             double fp = Json.GetNum(o, "frequency_penalty", 0), pp = Json.GetNum(o, "presence_penalty", 0);
@@ -553,7 +699,7 @@ namespace Phoenix
             // An unknown model name is refused, as OpenAI does; no name (or "phoenixlai", the VS Code extension's) = the loaded model.
             string askedModel = Json.GetStr(o, "model", null);
             if (!string.IsNullOrEmpty(askedModel) && !string.Equals(askedModel, "phoenixlai", StringComparison.OrdinalIgnoreCase) && ModelJson(askedModel) == null)
-                throw new ApiModelNotFound(askedModel, File.Exists(Path.Combine(_modelsDir, askedModel.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? askedModel : askedModel + ".gguf")));
+                throw new ApiModelNotFound(askedModel, ModelFileInModelsDir(askedModel));
 
             string id = (chat ? "chatcmpl-" : "cmpl-") + Guid.NewGuid().ToString("N").Substring(0, 24);
             long created = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
@@ -588,6 +734,7 @@ namespace Phoenix
                 EnsureModel(Json.GetStr(o, "model", null));
                 lock (wl) waiting = false;   // from here on only this request writes to the stream
                 ChatEngine eng = (ChatEngine)_engine;   // the API runs in the server, on the local engine
+                ModelSettings.FillRequest(s, o, eng.ModelPath, ref maxTokens);
                 eng.PrefillProgress = null;
                 string modelId = Path.GetFileNameWithoutExtension(eng.ModelPath);
                 Stream outS = early;
@@ -815,7 +962,12 @@ namespace Phoenix
         // load the same model on a fresh device in the background; requests meanwhile get "loading" errors, not a dead server.
         void RecoverFromDeviceLoss(int rid)
         {
+            // Reloading at once hit the driver while it was still recovering: the reload failed or fell back to the CPU
+            // (284 s) and a second reset followed (2026-11-04). Now: wait RecoverDelay, try once, and after a second reset
+            // within RepeatWindow do not reload at all (load it again by hand from the console or dashboard).
+            TimeSpan RecoverDelay = TimeSpan.FromSeconds(20), RepeatWindow = TimeSpan.FromMinutes(10);
             string file = null;
+            bool repeat;
             lock (_engineLock)
             {
                 IChatModel e = _engine;
@@ -824,11 +976,29 @@ namespace Phoenix
                 try { e.Dispose(); } catch { }
                 _engine = null;
                 _loadedSig = null;
-                _loadError = "GPU reset by the driver; reloading";
+                DateTime now = DateTime.UtcNow;
+                repeat = now - _lastDeviceLoss < RepeatWindow;
+                _lastDeviceLoss = now;
+                _gpuRecoverUntil = now + RecoverDelay;
+                _loadError = repeat ? "GPU reset twice within " + RepeatWindow.TotalMinutes + " min; not reloading. Load a model by hand when ready."
+                                    : "GPU reset by the driver; reloading in " + RecoverDelay.TotalSeconds + " s";
             }
-            Log.Text("#" + rid + " GPU device lost; reloading " + Path.GetFileName(file));
+            if (repeat)
+            {
+                // keep the API from loading anything by itself until someone loads a model by hand
+                _gpuRecoverUntil = DateTime.MaxValue;
+                Log.Text("#" + rid + " GPU device lost again within " + RepeatWindow.TotalMinutes + " min; NOT reloading " + Path.GetFileName(file) +
+                    ". Load a model from the console or dashboard when ready.");
+                return;
+            }
+            Log.Text("#" + rid + " GPU device lost; reloading " + Path.GetFileName(file) + " in " + RecoverDelay.TotalSeconds + " s");
             string f = file;
-            ThreadPool.QueueUserWorkItem(delegate { try { LoadModel(f); } catch (Exception ex) { Log.Text("reload after GPU reset FAILED: " + ex.Message); } });
+            int delayMs = (int)RecoverDelay.TotalMilliseconds;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Thread.Sleep(delayMs);
+                try { LoadModel(f); } catch (Exception ex) { Log.Text("reload after GPU reset FAILED: " + ex.Message + " (not retrying)"); }
+            });
         }
 
         void Embeddings(Dictionary<string, object> o, HttpListenerResponse res)

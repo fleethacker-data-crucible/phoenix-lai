@@ -1,5 +1,5 @@
-# Phoenix LAI launcher (run-phoenix-server.ps1 and run-phoenix-client.ps1 call it). Windows PowerShell 5.1 only.
-# Two separate programs, never one process: the server (models + OpenAI API on localhost:1234/v1, tray) and the
+﻿# Phoenix LAI launcher (run-phoenix-server.ps1 and run-phoenix-client.ps1 call it). Windows PowerShell 5.1 only.
+# Two separate programs, never one process: the server (models + OpenAI API on localhost:1893/v1, tray) and the
 # Phoenix Client (the chat window, an OpenAI /v1 client for any provider).
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Role Client        # checks, compile, chat in a Chrome/Edge app window
 #   powershell.exe -NoProfile -STA -File src\run.ps1 -Role Server -Model models\x.gguf -Context 8192
@@ -75,7 +75,7 @@ function Test-Locality {
             $where = "$($f.Name):$($i + 1)"
 
             # 2. Banned APIs / URLs (the loopback server file gets a narrow exception, checked below).
-            $isLoopback = $f.Name -eq $LoopbackFile -or $f.Name -eq 'WebServer.OpenAi.cs' -or $f.Name -eq $ClientFile
+            $isLoopback = $f.Name -eq $LoopbackFile -or $f.Name -eq 'WebServer.OpenAi.cs' -or $f.Name -eq 'WebServer.Anthropic.cs' -or $f.Name -eq $ClientFile
             foreach ($p in $BannedPatterns.Keys) {
                 if ($isLoopback -and $LoopbackAllowed -contains $p) { continue }
                 if ($f.Name -eq $ClientFile -and $p -eq 'WebRequest' -and $line -match $ClientRequestOk) { continue }
@@ -104,7 +104,7 @@ function Test-Locality {
                 }
             }
 
-            if ($f.Name -eq 'WebServer.OpenAi.cs' -and $line -match 'Process\.|ShellGuard\.CheckLaunch') { $failures.Add("$where starts a process (the API server may not)") }
+            if (($f.Name -eq 'WebServer.OpenAi.cs' -or $f.Name -eq 'WebServer.Anthropic.cs') -and $line -match 'Process\.|ShellGuard\.CheckLaunch') { $failures.Add("$where starts a process (the API server may not)") }
 
             # 3. P/Invoke targets must be on the allowlist.
             foreach ($m in [regex]::Matches($line, '(DllImport|LibraryImport)\s*\(\s*"([^"]+)"')) {
@@ -190,7 +190,7 @@ if ($CheckOnly) { exit 0 }
 
 # FleetHacker port block (edge-ops PORTS.md, src\FleetPorts.psd1): the server is 'exclusive' on 8780-8789. Checked
 # before the compile through /__fleethacker/id, so a second launch exits at once, and an older running server is never
-# stopped (it holds the GPU and port 1234). The client roles are 'multi' (8790-8798) and keep their own one-window rule.
+# stopped (it holds the GPU and the API port). The client roles are 'multi' (8790-8798) and keep their own one-window rule.
 if ($Role -eq 'Server') {
     Import-Module (Join-Path $src 'FleetPort.psm1') -Force
     $fleetVersion = (([string](Get-Content -LiteralPath (Join-Path $Root '__version.info') -TotalCount 1 -ErrorAction SilentlyContinue)).Trim() -replace '_', '.')

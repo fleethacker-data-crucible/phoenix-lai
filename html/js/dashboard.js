@@ -1,7 +1,4 @@
 // Server dashboard (dashboard.html on the server's own port): polls /api/server-status every second.
-// Optional Fleet skin (css/fleet-skin.css): set with "skin fleet" / "skin phoenix" in the console; this page remembers it.
-document.documentElement.dataset.skin = 'phoenix';   // Phoenix's own look is the default skin
-try { if (localStorage.getItem('phoenix.skin') === 'fleet') document.documentElement.dataset.skin = 'fleet'; } catch (e) { }
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const gb = b => (b / 1073741824).toFixed(2) + ' GB';
@@ -50,7 +47,12 @@ async function poll() {
       '</td><td class="num">' + r.generated + '</td><td class="num">' + r.tps.toFixed(1) + '</td><td>' + esc(r.finish) + '</td></tr>').join('') + '</table>' : '<div class="empty">No requests yet.</div>';
   // CPU mode (off): $('devNote').textContent = 'now ' + s.device.toUpperCase() + ' · switching reloads the model';
   $('dbgNote').textContent = s.debug ? 'on: every step goes to the session log' : 'off';
-  $('eps').textContent = (s.api ? 'OpenAI ' + s.api + (s.apiKey ? ' (API key required)' : ' (no API key)') : 'OpenAI API not listening (port 1234 busy)');
+  const fmt = { openai: 'OpenAI', anthropic: 'Anthropic', both: 'OpenAI + Anthropic' }[s.apiFormat] || 'OpenAI';
+  if (document.activeElement !== $('sFormat')) $('sFormat').value = s.apiFormat || 'openai';
+  $('fmtNote').textContent = s.apiFormat === 'anthropic' ? 'the Phoenix client needs openai or both' : '';
+  if (document.activeElement !== $('sPort') && s.apiPort) $('sPort').value = s.apiPort;
+  showSampling(s.sampling);
+  $('eps').textContent = (s.api ? fmt + ' ' + s.api + (s.apiKey ? ' (API key required)' : ' (no API key)') : 'API not listening (port ' + s.apiPort + ' busy)');
   if (!modelsLoaded) loadModels();
   setTimeout(poll, 1000);
 }
@@ -72,5 +74,44 @@ function note(t) { $('sNote').textContent = t; setTimeout(() => { $('sNote').inn
 $('sLoad').onclick = async () => { const n = $('sModel').value; note('Loading ' + n + '…'); try { await post('/api/load', { name: n }); note('Loaded ' + n + '.'); } catch (e) { note('Could not load: ' + e.message); } };
 $('sUnload').onclick = async () => { try { await post('/api/unload'); note('Model unloaded.'); } catch (e) { note(e.message); } };
 // CPU mode (off): document.querySelectorAll('[data-dev]').forEach(b => b.onclick = async () => { note('Switching to ' + b.dataset.dev.toUpperCase() + '…'); try { await post('/api/device', { device: b.dataset.dev }); note('Now on ' + b.dataset.dev.toUpperCase() + '.'); } catch (e) { note(e.message); } });
+$('sFormat').onchange = async () => { try { await post('/api/api-format', { format: $('sFormat').value }); note('API format: ' + $('sFormat').selectedOptions[0].textContent + '.'); } catch (e) { note(e.message); } };
+// Sampling for the loaded model, kept by the server: used when a request leaves a value out (the Phoenix client sends
+// none). Starts at Google's Gemma 4 values; a field being edited is not overwritten by the 1 s refresh.
+const SP = { spTemp: 'temperature', spTopK: 'top_k', spTopP: 'top_p', spRepeat: 'repeat_penalty', spMax: 'max_tokens' };
+let spEditing = false;
+function showSampling(sp) {
+  const ids = Object.keys(SP);
+  ids.forEach(id => { $(id).disabled = !sp; });
+  $('spSave').disabled = $('spReset').disabled = !sp;
+  if (!sp) { $('spNote').textContent = 'load a model to see its settings'; return; }
+  if (!spEditing) ids.forEach(id => { $(id).value = SP[id] === 'max_tokens' && !sp.values.max_tokens ? '' : sp.values[SP[id]]; });
+  if (!spEditing) $('spNote').textContent = sp.model.replace(/\.gguf$/i, '') + (sp.default ? ' · Gemma 4 defaults' : ' · changed') + ' · max tokens empty = no limit';
+}
+Object.keys(SP).forEach(id => {
+  $(id).addEventListener('input', () => { spEditing = true; $('spNote').textContent = 'not saved yet'; });
+  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') saveSampling(); });
+});
+async function saveSampling() {
+  const values = {};
+  for (const id of Object.keys(SP)) {
+    const t = $(id).value.trim(), k = SP[id];
+    if (t === '' && k === 'max_tokens') { values[k] = 0; continue; }
+    const v = Number(t);
+    if (t === '' || !isFinite(v)) { $('spNote').textContent = k + ' needs a number'; return; }
+    values[k] = v;
+  }
+  try { await post('/api/sampling', { values }); spEditing = false; note('Sampling saved for the loaded model.'); }
+  catch (e) { $('spNote').textContent = 'Not saved: ' + e.message; }
+}
+$('spSave').onclick = saveSampling;
+$('spReset').onclick = async () => { try { await post('/api/sampling', { reset: true }); spEditing = false; note('Sampling back to Gemma 4 defaults.'); } catch (e) { note(e.message); } };
+
+async function setPort() {
+  const v = $('sPort').value.trim();
+  if (!/^\d{4,5}$/.test(v)) { note('The API port must be a number from 1024 to 65535.'); return; }
+  try { const j = await post('/api/api-port', { port: +v }); note(j.message); $('sPort').blur(); } catch (e) { note('Port not changed: ' + e.message); }
+}
+$('sPortSet').onclick = setPort;
+$('sPort').onkeydown = e => { if (e.key === 'Enter') setPort(); };
 $('sDebug').onclick = async () => { try { await post('/api/debug', { on: !(last && last.debug) }); } catch (e) { note(e.message); } };
 poll();

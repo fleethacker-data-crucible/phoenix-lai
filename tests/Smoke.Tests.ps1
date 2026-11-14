@@ -42,6 +42,23 @@ Describe 'Console models command without a models folder' {
     }
 }
 
+Describe 'Headless client switch' {
+    It 'PHOENIX_CLIENT_NOWINDOW skips OpenWindow and turns auto-stop off' {
+        $text = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\WebServer.cs'))
+        $text | Should -Match 'PHOENIX_CLIENT_NOWINDOW'
+        $text | Should -Match '(?s)PHOENIX_CLIENT_NOWINDOW.{0,400}ClientAutoStop = false'
+    }
+}
+
+Describe 'Docs search without an embedding model' {
+    It 'a server with no embedding model means keywords only, not an error' {
+        $prov = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\Providers.cs'))
+        $rag = [IO.File]::ReadAllText((Join-Path $script:RepoRootRun 'src\Rag.cs'))
+        $prov | Should -Match 'class NoEmbedderException'
+        $rag | Should -Match 'catch \(NoEmbedderException\)'
+    }
+}
+
 BeforeAll {
     $script:RepoRootRun = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }

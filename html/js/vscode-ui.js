@@ -1,35 +1,50 @@
-// vscode.html only: the composer box at the bottom (input on top; + new chat, / commands, model chip, Auto / Accept
-// mode and a gold send button below). Uses chat.js's own functions, so it behaves exactly like typing in the Phoenix Client.
+// vscode.html only: VS Code's Chat view layout around chat.js. The view-title bar (New Chat, Show Chats, Settings), the
+// chat history panel, and the input box (text on top; Auto / Accept mode, model picker, context use, / commands and a
+// gold send button below). Providers, models, skills and settings are chat.js / providers.js / skills.js, exactly as in
+// the Phoenix Client window.
 (function () {
   const $ = (id) => document.getElementById(id);
-  const ctxEl = $('pbCtx'), line = $('promptLine'), send = $('pbSend'), modelChip = $('pbModel'), modeBtn = $('pbMode');
+  const ctxEl = $('pbCtx'), line = $('promptLine'), send = $('pbSend'), modeBtn = $('pbMode');
 
   function update() {
     line.classList.toggle('empty', !input.value);
     send.disabled = !input.value.trim();
-    const file = (info && info.file) || '';
-    const pDown = window.activeProviderDown && window.activeProviderDown();
-    modelChip.textContent = info && info.loading ? 'loading…' : pDown ? (info.provider ? info.provider.name : 'provider') + ' offline'
-      : file ? String(file).split(/[\\/]/).pop().replace(/\.gguf$/i, '') : 'Select model';
     modeBtn.textContent = info && info.mode === 'accept' ? 'Accept' : 'Auto';
     const ctx = (info && info.context) || 0, f = ctx ? ctxUsed / ctx : 0;
     const k = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
     ctxEl.textContent = ctx ? k(ctxUsed) + ' / ' + k(ctx) : '';
     ctxEl.className = 'ctx ' + (f < 0.7 ? 'ok' : f < 0.9 ? 'gold' : 'bad');
     ctxEl.title = ctx ? ctxUsed.toLocaleString() + ' of ' + ctx.toLocaleString() + ' context tokens used by this chat' : '';
-    modelChip.title = 'Model: ' + (file || 'none') + (info && info.provider ? ' on ' + info.provider.name : '') + (info && info.folder ? ' · folder ' + info.folder : '') + ' (click to change)';
+    // title bar: this chat's title ("Untitled" until the first message); the brand line only while the chat is empty
+    const empty = !!document.querySelector('#chat .empty');
+    $('vtitle').textContent = !empty && typeof chatTitle === 'function' && history.length ? chatTitle() : 'Untitled';
+    document.documentElement.classList.toggle('chat-empty', empty);
+    // the model pill: provider in the tooltip, red when the provider is offline
+    const down = !!(window.activeProviderDown && window.activeProviderDown()) || !!(info && info.providerError);
+    $('modelPick').classList.toggle('down', down);
+    $('modelPick').title = 'Pick model' + (info && info.provider ? ' · ' + info.provider.name + (down ? ' (offline)' : '') : '');
   }
+  $('pbAdd').onclick = () => { if (typeof imgPick !== 'undefined') imgPick.click(); };
 
-  $('pbNew').onclick = () => newChat();
+  // ---- view-title bar
+  $('vhNew').onclick = () => { newChat(); input.focus(); };
+  $('vhSettings').onclick = () => openSettings();
+  // Show Chats: the saved chats (chat.js keeps #recentList filled); picking one opens it and closes the list
+  const hist = $('histModal');
+  const closeHist = () => { Modal.close(hist); input.focus(); };
+  $('vhHistory').onclick = async () => { if (typeof loadSidebar === 'function') await loadSidebar(); Modal.open(hist, { onClose: closeHist }); };
+  $('closeHist').onclick = closeHist;
+  hist.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeHist(); } });
+  $('recentList').addEventListener('click', (e) => { const it = e.target.closest('.sitem'); if (it && !e.target.closest('.del')) setTimeout(closeHist, 0); });
+  // a provider picked in Settings: back to the chat. Close through the helper so the inert background is restored.
+  $('providerList').addEventListener('click', (e) => { if (e.target.closest('.sitem') && !e.target.closest('.cedit')) setTimeout(() => Modal.close($('settingsModal')), 0); });
+
   $('pbCmd').onclick = () => {
     input.value = '/';
     input.focus();
     input.setSelectionRange(1, 1);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  // every provider's models, as in the Phoenix Client's top bar (the gear next to a model opens its settings)
-  modelChip.onclick = (e) => { e.stopPropagation(); toggleModelMenu($('modelMenu')); };
-  $('pbSettings').onclick = () => openSettings();
   modeBtn.onclick = async () => {
     const m = info && info.mode === 'accept' ? 'auto' : 'accept';
     try { info = await api('/api/mode', { mode: m }); } catch (e) { /* the client reports it */ }
@@ -68,17 +83,21 @@
   new ResizeObserver(() => document.documentElement.style.setProperty('--composer-h', (line.offsetHeight + 6) + 'px')).observe(line);
   // ---- Editor context: the extension reports the open file, cursor and selection; they go with each message (not shown
   // in the chat), so "fix this" works without naming files. A chip above the input shows it; click it to leave it out.
+  // In the input box's bottom row (as Claude Code shows the open file): file icon, name, ✕ to leave it out / + to add it back.
   let editor = null, useEditor = true;
-  const chip = document.createElement('div');
-  chip.id = 'pbFile';
-  chip.title = 'Sent with your message: the open file and your selection (click to leave it out)';
-  line.insertBefore(chip, line.firstChild);
+  const chip = document.createElement('button');
+  chip.id = 'pbFile'; chip.type = 'button';
+  $('pbFileSlot').appendChild(chip);
   chip.onclick = () => { useEditor = !useEditor; drawChip(); input.focus(); };
+  const FILE_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M4 1.8h5.2L12.5 5v9.2H4z"/><path d="M9 1.8V5.2h3.5"/></svg>';
   function drawChip() {
     chip.style.display = editor ? '' : 'none';
+    $('pbSep').style.display = editor ? '' : 'none';
     if (!editor) return;
     const sel = editor.selection ? editor.selection.split('\n').length : 0;
-    chip.textContent = editor.file + (sel ? ' · ' + sel + ' selected line' + (sel > 1 ? 's' : '') : ':' + editor.line);
+    const name = editor.file.split(/[\\/]/).pop();
+    chip.innerHTML = FILE_ICON + '<span>' + esc(name) + (sel ? ' · ' + sel + ' line' + (sel > 1 ? 's' : '') : '') + '</span><i>' + (useEditor ? '✕' : '+') + '</i>';
+    chip.title = (useEditor ? 'Sent with your message: ' : 'Left out: ') + editor.file + (sel ? ' (' + sel + ' selected lines)' : ', line ' + editor.line) + ' · click to ' + (useEditor ? 'leave it out' : 'add it back');
     chip.classList.toggle('off', !useEditor);
   }
   window.phxContext = () => {

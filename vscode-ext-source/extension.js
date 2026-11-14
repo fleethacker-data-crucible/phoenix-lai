@@ -1,7 +1,7 @@
 // Phoenix for VS Code: another Phoenix Client window in a VS Code sidebar (same chats, settings and providers; the
 // model chip lists every provider's models), connected to the folder VS Code has open, plus inline code completion. Zero dependencies: VS Code API +
 // Node's http + child_process only. Starts its own hidden Phoenix Client (src\run-phoenix-vscode.ps1, the one process it may
-// start) and talks only to this computer: that client on 127.0.0.1:8790-8799 and the Phoenix server's API on 127.0.0.1:1234.
+// start) and talks only to this computer: that client on 127.0.0.1:8790-8799 and the Phoenix server's API on 127.0.0.1 at its saved port (default 1893).
 "use strict";
 const vscode = require("vscode");
 const http = require("http");
@@ -11,7 +11,17 @@ const fs = require("fs");
 const cp = require("child_process");
 
 const HOST = "127.0.0.1";
-const API_PORT = 1234;
+// The Phoenix server's API port: what the server saved (console apiport / dashboard), else 1893. Read on every use, so a
+// port change in the server reaches completion at once, with no VS Code restart.
+const DEFAULT_API_PORT = 1893;
+const API_PORT_FILE = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "LocalLLMStudio", "api-port.txt");
+function apiPort() {
+  try {
+    const p = parseInt(fs.readFileSync(API_PORT_FILE, "utf8").trim(), 10);
+    if (p >= 1024 && p <= 65535) return p;
+  } catch (e) { /* no file yet: the default */ }
+  return DEFAULT_API_PORT;
+}
 const CHAT_PORTS = [8790, 8799]; // the Phoenix Client takes the first free port in this range
 const PROJECTS_ROOT = path.join(os.homedir(), "Phoenix_Projects"); // the server's project jail
 
@@ -355,8 +365,10 @@ const inlineProvider = {
     const lineRest = line.slice(position.character);
     let text = "";
     try {
-      await request(API_PORT, "POST", "/v1/completions",
-        { model: "phoenixlai", prompt: prefix, suffix, max_tokens: 96, temperature: 0.1, stream: true, stop: ["\n\n\n"] },
+      // No sampling fields: the Phoenix server's per-model settings apply (dashboard / console "sampling", Gemma 4's
+      // recommended values by default). max_tokens and stop only keep a ghost-text suggestion short.
+      await request(apiPort(), "POST", "/v1/completions",
+        { model: "phoenixlai", prompt: prefix, suffix, max_tokens: 96, stream: true, stop: ["\n\n\n"] },
         token, (ev) => {
           const ch = ev.choices && ev.choices[0];
           if (ch && typeof ch.text === "string") text += ch.text;
